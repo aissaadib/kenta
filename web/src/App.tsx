@@ -47,6 +47,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [recordingKey, setRecordingKey] = useState<"save" | "manual" | null>(null);
   const statusInterval = useRef<number | null>(null);
 
   useEffect(() => {
@@ -56,6 +57,33 @@ export default function App() {
     }, 1000);
     return () => { if (statusInterval.current) window.clearInterval(statusInterval.current); };
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!recordingKey) return;
+      e.preventDefault();
+      if (e.key === "Escape") { setRecordingKey(null); return; }
+      const parts: string[] = [];
+      if (e.ctrlKey) parts.push("Ctrl");
+      if (e.shiftKey) parts.push("Shift");
+      if (e.altKey) parts.push("Alt");
+      if (e.metaKey) parts.push("Win");
+      const key = e.key;
+      const ignoreKeys = ["Control","Shift","Alt","Meta","Windows","Escape","CapsLock","Tab"];
+      if (ignoreKeys.includes(key)) return;
+      parts.push(key.charAt(0).toUpperCase() + key.slice(1));
+      const combo = parts.join("+");
+      setSettings(prev => {
+        const next = { ...prev };
+        if (recordingKey === "save") next.hotkey_save_replay = combo;
+        else next.hotkey_start_stop = combo;
+        return next;
+      });
+      setRecordingKey(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [recordingKey, setSettings]);
 
   useEffect(() => {
     const tick = async () => {
@@ -188,7 +216,7 @@ export default function App() {
         <div className="panel">
           {view === "home" && <HomeView {...{ settings, status, saving, manual, handleStart, handleStop, handleSaveReplay, handleToggleManual, setSettings, REPLAY_OPTIONS }} />}
           {view === "clips" && <ClipsView {...{ clips, loading, handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, refreshClips, setError, error }} />}
-          {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, error }} />}
+          {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, recordingKey, setRecordingKey }} />}
         </div>
       </div>
     </div>
@@ -308,7 +336,11 @@ function ClipsView({
   );
 }
 
-function SettingsView({ settings, setSettings, handleSaveSettings }: any) {
+function SettingsView({ settings, setSettings, handleSaveSettings, recordingKey, setRecordingKey }: any) {
+  const captureShortcut = async (type: "save" | "manual") => {
+    setRecordingKey(type);
+  };
+
   return (
     <div>
       <div className="section">
@@ -317,10 +349,10 @@ function SettingsView({ settings, setSettings, handleSaveSettings }: any) {
           <div className="field">
             <label>Output directory</label>
             <div style={{ display: "flex", gap: 8 }}>
-              <input className="input" value={settings.output_dir ?? ""} readOnly />
-              <button className="btn btn-ghost" onClick={() => {}}>Choose</button>
+              <input className="input" value={settings.output_dir ?? ""} onChange={e => setSettings({ ...settings, output_dir: e.target.value || null })} />
+              <button className="btn btn-ghost" onClick={() => handleSaveSettings()}>Apply</button>
             </div>
-            <p className="metric">Clips are saved to your chosen folder.</p>
+            <p className="metric">Default: Downloads/ClipVault (editable above).</p>
           </div>
         </div>
       </div>
@@ -338,14 +370,14 @@ function SettingsView({ settings, setSettings, handleSaveSettings }: any) {
             <div style={{ display: "flex", gap: 6 }}>
               <select className="select" value={String(settings.resolution_width)} onChange={e => setSettings({ ...settings, resolution_width: Number(e.target.value) })}>
                 <option>1280</option>
-              <option>1920</option>
-              <option>2560</option>
+                <option>1920</option>
+                <option>2560</option>
               </select>
               <span style={{ color: "#94949a", alignSelf: "center" }}>{"\u00D7"}</span>
               <select className="select" value={String(settings.resolution_height)} onChange={e => setSettings({ ...settings, resolution_height: Number(e.target.value) })}>
                 <option>720</option>
-              <option>1080</option>
-              <option>1440</option>
+                <option>1080</option>
+                <option>1440</option>
               </select>
             </div>
           </div>
@@ -390,15 +422,36 @@ function SettingsView({ settings, setSettings, handleSaveSettings }: any) {
         <div className="section-title"><Save size={16} /> Hotkeys</div>
         <div className="card grid-2">
           <div className="field">
-            <label>Save replay</label>
-            <input className="input" value={settings.hotkey_save_replay} onChange={e => setSettings({ ...settings, hotkey_save_replay: e.target.value })} />
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Save size={14} /> Save replay</label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                className={`btn ${recordingKey === "save" ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => captureShortcut("save")}
+                disabled={recordingKey === "manual"}
+              >
+                {recordingKey === "save" ? "Press a key…" : settings.hotkey_save_replay}
+              </button>
+            </div>
             <p className="metric">Global hotkey, works without focus</p>
           </div>
           <div className="field">
-            <label>Start/stop manual</label>
-            <input className="input" value={settings.hotkey_start_stop} onChange={e => setSettings({ ...settings, hotkey_start_stop: e.target.value })} />
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Play size={14} /> Start/stop manual</label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                className={`btn ${recordingKey === "manual" ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => captureShortcut("manual")}
+                disabled={recordingKey === "save"}
+              >
+                {recordingKey === "manual" ? "Press a key…" : settings.hotkey_start_stop}
+              </button>
+            </div>
           </div>
         </div>
+        {recordingKey && (
+          <div className="alert" style={{ marginTop: 10, fontSize: 12 }}>
+            Press the key combination you want. Press Esc to cancel.
+          </div>
+        )}
       </div>
       <div className="section">
         <div className="card">

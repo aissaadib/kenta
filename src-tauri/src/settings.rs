@@ -147,7 +147,8 @@ mod tests {
 }
 
 pub fn default_output_dir() -> AppResult<PathBuf> {
-  let base = dirs::video_dir().ok_or_else(|| AppError::Settings("no video dir".into()))?;
+  let base = dirs::download_dir().or_else(|| dirs::video_dir())
+    .ok_or_else(|| AppError::Settings("no download/video dir".into()))?;
   Ok(base.join("ClipVault"))
 }
 
