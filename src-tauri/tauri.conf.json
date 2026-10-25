@@ -5,8 +5,8 @@
   "identifier": "com.clipvault.app",
   "build": {
     "frontendDist": "../web/dist",
-    "beforeDevCommand": "cd web && npm run dev",
-    "beforeBuildCommand": "cd web && npm run build"
+    "beforeDevCommand": "cd web; npm run dev",
+    "beforeBuildCommand": "cd web; npm run build"
   },
   "app": {
     "windows": [

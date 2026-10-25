@@ -72,7 +72,7 @@ export async function openFileLocation(path: string): Promise<void> {
   return invoke("open_file_location", { path });
 }
 export async function registerHotkeys(saveKey: string, recordKey: string): Promise<void> {
-  return invoke("register_hotkeys", { save_key: saveKey, record_key: recordKey });
+  return invoke("register_hotkeys", { saveKey, recordKey });
 }
 export async function unregisterHotkeys(): Promise<void> {
   return invoke("unregister_hotkeys");

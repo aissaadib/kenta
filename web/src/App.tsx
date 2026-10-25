@@ -103,6 +103,7 @@ export default function App() {
       const s = await getSettings();
       setSettings(s);
       await registerHotkeys(s.hotkey_save_replay, s.hotkey_start_stop);
+      await captureStart().catch(() => {});
       await refreshStatus();
       await refreshClips();
     } catch (e: any) { setError(String(e)); }
@@ -396,13 +397,13 @@ function SettingsView({ settings, setSettings, handleSaveSettings, recordingKey,
         <div className="card grid-2">
           <div className="field">
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Mic size={14} /> Microphone</label>
-            <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle">
+            <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, mic_enabled: !settings.mic_enabled })}>
               <span style={{ color: settings.mic_enabled ? "#4ade80" : "#94949a" }}>{settings.mic_enabled ? "ON" : "OFF"}</span>
             </button>
           </div>
           <div className="field">
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Headphones size={14} /> Desktop Audio</label>
-            <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle">
+            <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, desktop_audio_enabled: !settings.desktop_audio_enabled })}>
               <span style={{ color: settings.desktop_audio_enabled ? "#4ade80" : "#94949a" }}>{settings.desktop_audio_enabled ? "ON" : "OFF"}</span>
             </button>
           </div>
