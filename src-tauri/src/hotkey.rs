@@ -22,7 +22,7 @@ const VK_LWIN: i32 = 0x5B;
 const VK_RWIN: i32 = 0x5C;
 
 #[derive(Debug, Clone, PartialEq)]
-struct HotkeyBinding {
+pub struct HotkeyBinding {
   id: i32,
   ctrl: bool,
   shift: bool,

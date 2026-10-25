@@ -227,7 +227,13 @@ impl CaptureEngine {
       args.push("-f".into());
       args.push("dshow".into());
       args.push("-i".into());
-      args.push("audio=virtual-audio-capturer".into());
+      let device = self
+        .config
+        .desktop_audio_device
+        .clone()
+        .or_else(|| self.config.mic_device.clone())
+        .unwrap_or_else(|| "virtual-audio-capturer".into());
+      args.push(format!("audio={device}"));
     }
     args.push("-c:v".into());
     args.push(self.config.encoder.clone());

@@ -8,7 +8,7 @@ import {
   getSettings, saveSettings, captureStart, captureStop, captureStatus,
   captureSaveReplay, captureStartManual, captureStopManual,
   listClips, deleteClip, openFileLocation, openOutputDir, registerHotkeys,
-  pollHotkeyEvent, selectOutputDir, renameClip,
+  pollHotkeyEvent, selectOutputDir, enumerateAudioDevices, renameClip,
   type Settings, type ClipListItem, type CaptureStatus
 } from "./tauri";
 
@@ -400,6 +400,24 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
   const captureShortcut = async (type: "save" | "manual") => {
     setRecordingKey(type);
   };
+  const [audioDevices, setAudioDevices] = useState<{ kind: string; name: string; alt_name: string | null }[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      setDevicesLoading(true);
+      try {
+        const devs = await enumerateAudioDevices();
+        if (mounted) setAudioDevices(devs);
+      } catch { /* ignore */ }
+      finally { if (mounted) setDevicesLoading(false); }
+    };
+    load();
+    return () => { mounted = false; };
+  }, []);
+
+  const audioOptions = audioDevices.filter(d => d.kind === "audio");
 
   return (
     <div>
@@ -459,15 +477,31 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
         <div className="card grid-2">
           <div className="field">
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Mic size={14} /> Microphone</label>
-            <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, mic_enabled: !settings.mic_enabled })}>
-              <span style={{ color: settings.mic_enabled ? "#4ade80" : "#94949a" }}>{settings.mic_enabled ? "ON" : "OFF"}</span>
-            </button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, mic_enabled: !settings.mic_enabled })}>
+                <span style={{ color: settings.mic_enabled ? "#4ade80" : "#94949a" }}>{settings.mic_enabled ? "ON" : "OFF"}</span>
+              </button>
+              <select className="select" disabled={!settings.mic_enabled || devicesLoading} value={settings.mic_device ?? ""} onChange={e => setSettings({ ...settings, mic_device: e.target.value || null })}>
+                <option value="">Default</option>
+                {audioOptions.map((d: { kind: string; name: string; alt_name: string | null }) => (
+                  <option key={d.alt_name ?? d.name} value={d.alt_name ?? d.name}>{d.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="field">
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Headphones size={14} /> Desktop Audio</label>
-            <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, desktop_audio_enabled: !settings.desktop_audio_enabled })}>
-              <span style={{ color: settings.desktop_audio_enabled ? "#4ade80" : "#94949a" }}>{settings.desktop_audio_enabled ? "ON" : "OFF"}</span>
-            </button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, desktop_audio_enabled: !settings.desktop_audio_enabled })}>
+                <span style={{ color: settings.desktop_audio_enabled ? "#4ade80" : "#94949a" }}>{settings.desktop_audio_enabled ? "ON" : "OFF"}</span>
+              </button>
+              <select className="select" disabled={!settings.desktop_audio_enabled || devicesLoading} value={settings.desktop_audio_device ?? ""} onChange={e => setSettings({ ...settings, desktop_audio_device: e.target.value || null })}>
+                <option value="">Default</option>
+                {audioOptions.map((d: { kind: string; name: string; alt_name: string | null }) => (
+                  <option key={d.alt_name ?? d.name} value={d.alt_name ?? d.name}>{d.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="field">
             <label>Encoder</label>

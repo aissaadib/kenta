@@ -190,6 +190,66 @@ pub fn select_output_dir(
   Ok(dir)
 }
 
+#[derive(Clone, Serialize)]
+pub struct AudioDevice {
+  pub kind: String,
+  pub name: String,
+  pub alt_name: Option<String>,
+}
+
+#[tauri::command]
+pub fn enumerate_audio_devices() -> Result<Vec<AudioDevice>, String> {
+  let output = std::process::Command::new("ffmpeg")
+    .args(["-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped())
+    .output()
+    .map_err(|e| format!("ffmpeg not found or failed to run: {e}"))?;
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  let mut devices: Vec<AudioDevice> = Vec::new();
+  for line in stderr.lines() {
+    let line = line.trim();
+    if !line.starts_with('[') {
+      continue;
+    }
+    // Lines look like: [in#0 @ ...] "Name" (audio)
+    let rest = line.splitn(2, ']').nth(1).unwrap_or("");
+    let name_start = rest.find('"');
+    let name_end = name_start.and_then(|s| rest[s + 1..].find('"'));
+    let paren_start = rest.find('(');
+    let paren_end = paren_start.and_then(|p| rest[p + 1..].find(')'));
+    let (name, kind) = match (name_start, name_end, paren_start, paren_end) {
+      (Some(s), Some(e), Some(p), Some(pe)) => {
+        let n = rest[s + 1..s + 1 + e].to_string();
+        let k = rest[p + 1..p + 1 + pe].to_string();
+        (Some(n), Some(k))
+      }
+      _ => (None, None),
+    };
+    let name = match name {
+      Some(n) if !n.is_empty() => n,
+      _ => continue,
+    };
+    let kind = match kind {
+      Some(k) => k,
+      None => "unknown".into(),
+    };
+    let alt_start = rest.find("Alternative name");
+    let alt = alt_start.map(|a| {
+      let seg = &rest[a..];
+      let qs = seg.find('"');
+      let qe = qs.and_then(|s| seg[s + 1..].find('"'));
+      match (qs, qe) {
+        (Some(s), Some(e)) => seg[s + 1..s + 1 + e].to_string(),
+        _ => String::new(),
+      }
+    });
+    let alt = alt.filter(|a| !a.is_empty());
+    devices.push(AudioDevice { kind, name, alt_name: alt });
+  }
+  Ok(devices)
+}
+
 #[tauri::command]
 pub fn list_clips(
   state: State<'_, AppState>,

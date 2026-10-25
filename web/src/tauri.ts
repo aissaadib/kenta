@@ -89,3 +89,6 @@ export async function openOutputDir(): Promise<void> {
 export async function selectOutputDir(currentDir?: string | null): Promise<string> {
   return invoke("select_output_dir", { current_dir: currentDir ?? null });
 }
+export async function enumerateAudioDevices(): Promise<{ kind: string; name: string; alt_name: string | null }[]> {
+  return invoke("enumerate_audio_devices");
+}

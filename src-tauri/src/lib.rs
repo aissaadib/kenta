@@ -33,6 +33,7 @@ use tauri::State;
       commands::open_output_dir,
       commands::select_output_dir,
       commands::rename_clip,
+      commands::enumerate_audio_devices,
     ])
     .setup(|app| {
       let storage = storage::Storage::open().map_err(|e| AppError::Storage(e.to_string()))?;
@@ -44,8 +45,6 @@ use tauri::State;
       }
       // Start buffering according to settings
       let settings = state.settings.lock().unwrap().clone();
-      let auto = settings.start_at_startup; // reuse as auto-buffer flag? 
-      // We'll always start buffering by default for replay buffer
       let output_dir = settings
         .output_dir
         .clone()
