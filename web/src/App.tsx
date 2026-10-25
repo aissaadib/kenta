@@ -9,7 +9,7 @@ import {
   captureSaveReplay, captureStartManual, captureStopManual,
   listClips, deleteClip, openFileLocation, openOutputDir, registerHotkeys,
   pollHotkeyEvent, selectOutputDir, enumerateAudioDevices, enumerateVideoEncoders,
-  generateThumbnail, openInPlayer, renameClip,
+  generateThumbnail, renameClip,
   type Settings, type ClipListItem, type CaptureStatus
 } from "./tauri";
 
@@ -306,6 +306,15 @@ function ClipsView({
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+  const [previewClip, setPreviewClip] = useState<ClipListItem | null>(null);
+
+  const handlePreview = (c: ClipListItem) => {
+    setPreviewClip(c);
+  };
+
+  const handleClosePreview = () => {
+    setPreviewClip(null);
+  };
 
   const getThumbnail = async (clipPath: string) => {
     if (thumbnails[clipPath]) return thumbnails[clipPath];
@@ -405,7 +414,7 @@ function ClipsView({
                   <td>{fmtDate(c.created_at)}</td>
                   <td>{c.has_audio ? "Yes" : "No"}</td>
                   <td className="actions">
-                    <button className="btn btn-ghost btn-sm" title="Play" onClick={() => openInPlayer(c.path)}><Play size={14} /></button>
+                    <button className="btn btn-ghost btn-sm" title="Preview" onClick={() => handlePreview(c)}><Play size={14} /></button>
                     <button className="btn btn-ghost btn-sm" title="Open location" onClick={() => handleOpenLocation(c.path)}><ExternalLink size={14} /></button>
                     <button className="btn btn-ghost btn-sm" title="Delete" onClick={() => handleDelete(c.id, c.path)}><Trash2 size={14} /></button>
                   </td>
@@ -415,6 +424,27 @@ function ClipsView({
           </table>
         )}
       </div>
+      {previewClip && (
+        <div className="modal-overlay" onClick={handleClosePreview}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+              <button className="btn btn-ghost btn-sm" onClick={handleClosePreview}>×</button>
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>{previewClip.name}</div>
+            <video
+              src={previewClip.path}
+              controls
+              autoPlay
+              style={{ width: "100%", maxWidth: 720, maxHeight: 480, background: "#000" }}
+            >
+              Your browser does not support the video tag.
+            </video>
+            <div style={{ marginTop: 10, fontSize: 12, color: "#94949a" }}>
+              {previewClip.path}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
