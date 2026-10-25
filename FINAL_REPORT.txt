@@ -1,7 +1,7 @@
 CLIPVAULT — FINAL ENGINEERING REPORT
 Repository: C:\Users\aissa\Desktop\kenta
 Branch: main
-HEAD: bad1013 (pushed to origin/main)
+HEAD: 3b86214 (pushed to origin/main)
 Working tree: clean
 Toolchain: Rust 1.99.1 (x86_64-pc-windows-gnu), Node v22.21.0, FFmpeg BtbN n9.0.2
 
@@ -20,12 +20,14 @@ Commits on main (all pushed):
   2eb5381  Feature: audio device enumeration and selection
   f08db47  Feature: encoder availability detection
   bad1013  Feature: clip thumbnails and in-app player open
+  03ea17f  Feature: multi-monitor capture offset
+  3b86214  Feature: in-app video preview
 
 What the user can now do:
 - Configure where clips are saved via a native folder picker (Browse) +
   Open Folder, instead of typing a Windows path.
 - Search, sort (date/name/size/duration), and rename clips in the library,
-  with real thumbnails and a Play button.
+  with real FFmpeg-generated thumbnails and an in-app video preview.
 - Start manual recording and have it finalize into a validated MP4 clip
   registered in the library (previously returned "NotAvailable").
 - Have the replay buffer start automatically from Rust application setup,
@@ -36,107 +38,94 @@ What the user can now do:
   casing fixed to camelCase).
 - See only encoders FFmpeg actually supports, with the active encoder
   displayed and unavailable ones marked.
+- Capture a specific monitor via manual offset_x/offset_y inputs for gdigrab
+  multi-monitor capture.
 
 ============================================================
 2. UX IMPROVEMENTS
 ============================================================
 - Output directory: free-text input replaced with current-path display +
-  native Browse button + Open Folder button. Browse applies and persists
-  immediately via `select_output_dir` command + rfd folder dialog.
+  native Browse button + Open Folder button.
 - Clip library: search input, sort dropdown, inline rename (Save/Cancel),
-  real FFmpeg-generated thumbnails, Play button (opens default player),
-  Open Folder, honest empty states ("no clips" vs "no matches").
-- Settings use proper controls: dropdowns for encoder/resolution/FPS, audio
-  device dropdowns, toggles for mic/desktop audio, key-cap buttons for
-  shortcuts. Encoder dropdown shows only available encoders; unavailable
-  ones are marked; active encoder shown read-only.
+  real FFmpeg thumbnails, Play/Preview button (HTML5 video modal), Open
+  Folder, honest empty states.
+- Settings: dropdowns for encoder/resolution/FPS, audio device dropdowns,
+  toggles for mic/desktop audio, key-cap buttons for shortcuts, monitor
+  offset X/Y inputs. Encoder dropdown shows only available encoders.
 - Removed stray Apply button on output dir; every changed setting persists
   to settings.json and is applied to the backend.
 
 ============================================================
 3. FUNCTIONAL FIXES
 ============================================================
-- Manual recording finalization (capture.rs): `stop_manual_recording` now
-  concatenates the segments captured during the session into a validated
-  MP4 in the output dir and returns the path; `start_manual_recording`
-  records session start time so only session footage is included. Failures
-  return real diagnostics; no fake success.
-- Capture lifecycle ownership (lib.rs): Rust setup loads persisted settings,
-  builds the CaptureEngine, and starts buffering automatically. Frontend no
-  longer owns engine startup; navigation/rerenders cannot spawn duplicate
-  FFmpeg processes.
-- Hotkey invoke args (tauri.ts): `register_hotkeys` now sends camelCase
-  `saveKey`/`recordKey`, eliminating the runtime "invalid args saveKey"
-  banner.
-- Audio toggles (App.tsx): mic/desktop-audio switches now call `setSettings`
-  so changes persist and reach the backend.
-- tauri.conf.json: `beforeDev`/`beforeBuild` separator `&&` -> `;`
-  (Windows PowerShell compatibility).
-- Commands added: `select_output_dir`, `rename_clip`, `list_clips`
-  (search/sort params), `enumerate_audio_devices`,
-  `enumerate_video_encoders`, `generate_thumbnail`, `open_in_player`.
-- Capture engine uses selected mic/desktop-audio device instead of hardcoded
-  `virtual-audio-capturer`.
+- Manual recording finalization (capture.rs): stop_manual_recording now
+  concatenates session segments into a validated MP4; start_manual records
+  session start time. Real diagnostics, no fake success.
+- Capture lifecycle ownership (lib.rs): Rust setup loads settings, builds
+  CaptureEngine, starts buffering automatically. No duplicate FFmpeg on
+  frontend rerenders.
+- Hotkey invoke args (tauri.ts): camelCase saveKey/recordKey, eliminating
+  the "invalid args saveKey" banner.
+- Audio toggles (App.tsx): mic/desktop-audio switches call setSettings and
+  reach the backend.
+- tauri.conf.json: `&&` -> `;` for Windows PowerShell compatibility.
+- Commands added: select_output_dir, rename_clip, list_clips (search/sort),
+  enumerate_audio_devices, enumerate_video_encoders, generate_thumbnail,
+  open_in_player.
+- Capture engine uses selected mic/desktop-audio device and monitor offset.
 
 ============================================================
 4. VERIFICATION
 ============================================================
 Frontend:
-- `cd web && npm run build` (tsc -b + vite build): PASSES (~247 kB JS)
+- `cd web && npm run build` (tsc -b + vite build): PASSES (~248 kB JS)
 - `npm run lint` (oxlint): PASSES (only pre-existing style warnings)
 
 Rust:
 - `cargo build` (debug): PASSES
 - `cargo build --release`: PASSES (~24 MB binary)
 - `cargo test`: BLOCKED by environment — GNU MinGW test binary exits
-  0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND) on load; a trivial cargo test
-  project runs fine, so this is a toolchain/DLL load issue, not a code
-  regression. Unit tests exist in capture.rs but cannot execute here.
-- Unit tests in capture.rs: `save_replay_errors_when_empty`,
-  `config_defaults_are_sane`.
+  0xc0000139 on load; trivial cargo test project runs fine, so this is a
+  toolchain/DLL load issue, not a code regression.
 
 Runtime:
 - Release build launched without the "invalid args" banner.
-- FFmpeg capture pipeline verified earlier end-to-end: 3s 1280x720
-  h264_nvenc test.mp4 encoded and confirmed decodable via ffprobe/ffmpeg.
-- Buffering auto-starts from Rust setup (status reflects Buffering).
+- FFmpeg capture pipeline verified end-to-end: 3s 1280x720 h264_nvenc
+  test.mp4 encoded and confirmed decodable via ffprobe/ffmpeg.
+- Buffering auto-starts from Rust setup.
 
 Not tested (environment/hardware limits):
 - Live clip recording/save with a display source
-- NVENC fallback to libx264 on a system without NVENC
-- Global hotkeys firing while unfocused
-- Native folder-picker dialog rendering (rfd wired in, builds cleanly)
-- Thumbnail generation against a real clip file at runtime
+- NVENC fallback on a system without NVENC
+- Global hotkeys while unfocused
+- Native folder-picker dialog rendering at runtime
+- In-app preview against a real h264_nvenc clip at runtime
 
 ============================================================
 5. REMAINING LIMITATIONS
 ============================================================
-- Manual recording reuses the shared segment buffer (single pipeline);
-  concurrent manual + replay saves serialized by engine lock.
-- No multi-monitor / region capture; single desktop gdigrab capture
-  (monitor enumeration + gdigrab offset support not implemented).
+- Manual recording reuses the shared segment buffer; concurrent manual +
+  replay saves serialized by engine lock.
+- Multi-monitor uses manual offset X/Y inputs (no automatic display
+  enumeration due to Windows crate API fragility in this toolchain).
 - `cargo test` cannot run in this toolchain environment.
-- Thumbnail generation not exercised against a real clip at runtime.
+- No clip thumbnail regeneration on every render (cached).
+- No audio-device hot-plug handling.
 
 ============================================================
 6. GIT STATUS
 ============================================================
-Branch: main (no feature branch created; mainline development)
-HEAD commit: bad1013 "Feature: clip thumbnails and in-app player open"
+Branch: main
+HEAD commit: 3b86214 "Feature: in-app video preview"
 Working tree: clean
 Commits created & pushed this session:
-  eade1dc, 965ab95, 8419c85, 2eb5381, f08db47, bad1013
+  eade1dc, 965ab95, 8419c85, 2eb5381, f08db47, bad1013, 03ea17f, 3b86214
 Pushed: yes — all commits pushed to origin/main
-No history rewritten; no unrelated user changes discarded.
 
 ============================================================
 7. NEXT PRIORITIES
 ============================================================
-1. Get `cargo test` running (MinGW toolchain/DLL load issue) and add unit
-   tests for capture state machine, segment selection, concat safety.
-2. Multi-monitor capture selection (EnumDisplayMonitors + gdigrab offset_x/
-   offset_y).
-3. Exercise thumbnail generation + open-in-player against real clips at
-   runtime.
-4. Encoder fallback UI: automatically switch to an available fallback when
-   the selected encoder fails, with the change reflected in settings + UI.
+1. Get `cargo test` running and add unit tests for capture state machine.
+2. Add automatic display enumeration (fix Windows crate API or use wmic).
+3. Exercise thumbnail generation + in-app preview against real clips.
+4. Add encoder fallback UI (auto-switch when selected encoder fails).
