@@ -42,6 +42,7 @@ export default function App() {
     desktop_audio_enabled: true, desktop_audio_device: null, audio_sample_rate: 48000,
     hotkey_save_replay: "Ctrl+Shift+S", hotkey_start_stop: "Ctrl+Shift+R",
     start_at_startup: false, minimize_to_tray: true,
+    monitor_offset_x: null, monitor_offset_y: null,
   });
   const [status, setStatus] = useState<CaptureStatus>({ state: "Idle", buffered_seconds: 0, segment_count: 0 });
   const [error, setError] = useState<string | null>(null);
@@ -486,6 +487,15 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
               <option>desktop</option>
             </select>
           </div>
+          <div className="field">
+            <label>Monitor Offset X</label>
+            <input className="input" type="number" value={settings.monitor_offset_x ?? 0} onChange={e => setSettings({ ...settings, monitor_offset_x: Number(e.target.value) || undefined })} />
+          </div>
+          <div className="field">
+            <label>Monitor Offset Y</label>
+            <input className="input" type="number" value={settings.monitor_offset_y ?? 0} onChange={e => setSettings({ ...settings, monitor_offset_y: Number(e.target.value) || undefined })} />
+          </div>
+          <p className="metric">Set offset_x/offset_y for gdigrab multi-monitor capture. Leave at 0 for primary display.</p>
           <div className="field">
             <label>Resolution</label>
             <div style={{ display: "flex", gap: 6 }}>

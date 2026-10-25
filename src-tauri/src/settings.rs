@@ -28,6 +28,8 @@ pub struct Settings {
   pub hotkey_start_stop: String,
   pub start_at_startup: bool,
   pub minimize_to_tray: bool,
+  pub monitor_offset_x: Option<u32>,
+  pub monitor_offset_y: Option<u32>,
 }
 
 impl Settings {
@@ -52,6 +54,8 @@ impl Settings {
       hotkey_start_stop: "Ctrl+Shift+R".to_string(),
       start_at_startup: false,
       minimize_to_tray: true,
+      monitor_offset_x: None,
+      monitor_offset_y: None,
     }
   }
 }

@@ -89,6 +89,8 @@ pub fn capture_start(state: State<'_, AppState>) -> Result<CaptureStatus, String
     desktop_audio_device: settings.desktop_audio_device.clone(),
     audio_sample_rate: settings.audio_sample_rate,
     capture_source: settings.capture_source.clone(),
+    monitor_offset_x: settings.monitor_offset_x,
+    monitor_offset_y: settings.monitor_offset_y,
   };
   let mut capture = state.capture.lock().unwrap();
   if capture.is_none() {

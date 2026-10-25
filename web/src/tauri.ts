@@ -36,6 +36,8 @@ export interface Settings {
   hotkey_start_stop: string;
   start_at_startup: boolean;
   minimize_to_tray: boolean;
+  monitor_offset_x: number | null;
+  monitor_offset_y: number | null;
 }
 
 export async function getSettings(): Promise<Settings> {

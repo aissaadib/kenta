@@ -25,6 +25,8 @@ pub struct CaptureConfig {
   pub desktop_audio_device: Option<String>,
   pub audio_sample_rate: u32,
   pub capture_source: String,
+  pub monitor_offset_x: Option<u32>,
+  pub monitor_offset_y: Option<u32>,
 }
 
 impl Default for CaptureConfig {
@@ -46,6 +48,8 @@ impl Default for CaptureConfig {
       desktop_audio_device: None,
       audio_sample_rate: 48000,
       capture_source: "desktop".into(),
+      monitor_offset_x: None,
+      monitor_offset_y: None,
     }
   }
 }
@@ -218,11 +222,17 @@ impl CaptureEngine {
       "gdigrab".into(),
       "-framerate".into(),
       self.config.frame_rate.to_string(),
-      "-video_size".into(),
-      format!("{}x{}", self.config.width, self.config.height),
-      "-i".into(),
-      "desktop".into(),
     ];
+    if let (Some(ox), Some(oy)) = (self.config.monitor_offset_x, self.config.monitor_offset_y) {
+      args.push("-offset_x".into());
+      args.push(ox.to_string());
+      args.push("-offset_y".into());
+      args.push(oy.to_string());
+    }
+    args.push("-video_size".into());
+    args.push(format!("{}x{}", self.config.width, self.config.height));
+    args.push("-i".into());
+    args.push("desktop".into());
     if self.config.desktop_audio_enabled || self.config.mic_enabled {
       args.push("-f".into());
       args.push("dshow".into());
