@@ -8,7 +8,7 @@ import {
   getSettings, saveSettings, captureStart, captureStop, captureStatus,
   captureSaveReplay, captureStartManual, captureStopManual,
   listClips, deleteClip, openFileLocation, openOutputDir, registerHotkeys,
-  pollHotkeyEvent, selectOutputDir, enumerateAudioDevices, renameClip,
+  pollHotkeyEvent, selectOutputDir, enumerateAudioDevices, enumerateVideoEncoders, renameClip,
   type Settings, type ClipListItem, type CaptureStatus
 } from "./tauri";
 
@@ -402,6 +402,8 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
   };
   const [audioDevices, setAudioDevices] = useState<{ kind: string; name: string; alt_name: string | null }[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
+  const [videoEncoders, setVideoEncoders] = useState<{ name: string; available: boolean }[]>([]);
+  const [encodersLoading, setEncodersLoading] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -417,7 +419,23 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
     return () => { mounted = false; };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      setEncodersLoading(true);
+      try {
+        const encs = await enumerateVideoEncoders();
+        if (mounted) setVideoEncoders(encs);
+      } catch { /* ignore */ }
+      finally { if (mounted) setEncodersLoading(false); }
+    };
+    load();
+    return () => { mounted = false; };
+  }, []);
+
   const audioOptions = audioDevices.filter(d => d.kind === "audio");
+  const encoderOptions = videoEncoders.filter(e => e.available);
+  const activeEncoder = settings.encoder;
 
   return (
     <div>
@@ -505,9 +523,13 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
           </div>
           <div className="field">
             <label>Encoder</label>
-            <select className="select" value={settings.encoder} onChange={e => setSettings({ ...settings, encoder: e.target.value })}>
-              <option>h264_nvenc</option><option>libx264</option><option>h264_amf</option><option>hevc_nvenc</option>
+            <select className="select" disabled={encodersLoading} value={settings.encoder} onChange={e => setSettings({ ...settings, encoder: e.target.value })}>
+              {encoderOptions.map((e: { name: string; available: boolean }) => (
+                <option key={e.name} value={e.name}>{e.name}{e.available ? "" : " (unavailable)"}</option>
+              ))}
+              {encoderOptions.length === 0 && <option value="" disabled>No encoders detected</option>}
             </select>
+            <p className="metric">Active: {activeEncoder}{videoEncoders.find(e => e.name === activeEncoder)?.available ? "" : " (may not be supported)"}</p>
           </div>
           <div className="field">
             <label>Bitrate (kbps)</label>

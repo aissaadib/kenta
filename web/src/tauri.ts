@@ -92,3 +92,6 @@ export async function selectOutputDir(currentDir?: string | null): Promise<strin
 export async function enumerateAudioDevices(): Promise<{ kind: string; name: string; alt_name: string | null }[]> {
   return invoke("enumerate_audio_devices");
 }
+export async function enumerateVideoEncoders(): Promise<{ name: string; available: boolean }[]> {
+  return invoke("enumerate_video_encoders");
+}

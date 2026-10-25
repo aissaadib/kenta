@@ -34,6 +34,7 @@ use tauri::State;
       commands::select_output_dir,
       commands::rename_clip,
       commands::enumerate_audio_devices,
+      commands::enumerate_video_encoders,
     ])
     .setup(|app| {
       let storage = storage::Storage::open().map_err(|e| AppError::Storage(e.to_string()))?;

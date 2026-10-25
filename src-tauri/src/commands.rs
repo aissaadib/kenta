@@ -250,6 +250,41 @@ pub fn enumerate_audio_devices() -> Result<Vec<AudioDevice>, String> {
   Ok(devices)
 }
 
+#[derive(Clone, Serialize)]
+pub struct EncoderInfo {
+  pub name: String,
+  pub available: bool,
+}
+
+#[tauri::command]
+pub fn enumerate_video_encoders() -> Result<Vec<EncoderInfo>, String> {
+  let candidates = [
+    "h264_nvenc",
+    "hevc_nvenc",
+    "h264_amf",
+    "libx264",
+    "libx265",
+  ];
+  let output = std::process::Command::new("ffmpeg")
+    .args(["-hide_banner", "-encoders"])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .output()
+    .map_err(|e| format!("ffmpeg not found or failed to run: {e}"))?;
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  let mut available: Vec<EncoderInfo> = Vec::new();
+  for name in candidates {
+    let available_flag = stdout
+      .lines()
+      .any(|l| l.trim_start().starts_with(&format!("V.... {name}")) || l.contains(&format!(" {name} ")));
+    available.push(EncoderInfo {
+      name: name.to_string(),
+      available: available_flag,
+    });
+  }
+  Ok(available)
+}
+
 #[tauri::command]
 pub fn list_clips(
   state: State<'_, AppState>,
