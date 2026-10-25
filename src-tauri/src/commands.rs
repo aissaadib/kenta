@@ -158,10 +158,11 @@ pub fn capture_stop_manual(state: State<'_, AppState>) -> Result<SaveResult, Str
     engine.stop_manual_recording().map_err(|e| e.to_string())?
   };
   add_clip_to_storage(state, &path).map_err(|e| e.to_string())?;
+  let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
   Ok(SaveResult {
     path,
     duration_seconds: 0.0,
-    file_size_bytes: 0,
+    file_size_bytes: meta.len(),
   })
 }
 

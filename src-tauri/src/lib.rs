@@ -36,6 +36,40 @@ use tauri::State;
       let storage = storage::Storage::open().map_err(|e| AppError::Storage(e.to_string()))?;
       let state: State<'_, AppState> = app.handle().state();
       *state.storage.lock().unwrap() = Some(storage);
+      // Load persisted settings
+      if let Ok(s) = settings::SettingsStore::load() {
+        *state.settings.lock().unwrap() = s;
+      }
+      // Start buffering according to settings
+      let settings = state.settings.lock().unwrap().clone();
+      let auto = settings.start_at_startup; // reuse as auto-buffer flag? 
+      // We'll always start buffering by default for replay buffer
+      let output_dir = settings
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| settings::default_output_dir().unwrap_or(std::env::temp_dir()));
+      let temp_dir = std::env::temp_dir().join("clipvault_buffer");
+      let config = capture::CaptureConfig {
+        output_dir,
+        temp_dir,
+        width: settings.resolution_width,
+        height: settings.resolution_height,
+        frame_rate: settings.frame_rate,
+        bitrate_kbps: settings.bitrate_kbps,
+        encoder: settings.encoder.clone(),
+        quality_preset: settings.quality_preset.clone(),
+        replay_duration_seconds: settings.replay_duration_seconds,
+        segment_seconds: 4,
+        mic_enabled: settings.mic_enabled,
+        mic_device: settings.mic_device.clone(),
+        desktop_audio_enabled: settings.desktop_audio_enabled,
+        desktop_audio_device: settings.desktop_audio_device.clone(),
+        audio_sample_rate: settings.audio_sample_rate,
+        capture_source: settings.capture_source.clone(),
+      };
+      let mut engine = capture::CaptureEngine::new(config);
+      let _ = engine.start();
+      *state.capture.lock().unwrap() = Some(engine);
       Ok(())
     })
     .run(tauri::generate_context!())

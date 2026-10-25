@@ -72,6 +72,7 @@ pub struct CaptureEngine {
   child: Option<std::process::Child>,
   segments: VecDeque<SegmentInfo>,
   segment_counter: u64,
+  recording_started_at: Option<DateTime<Utc>>,
 }
 
 impl CaptureEngine {
@@ -82,6 +83,7 @@ impl CaptureEngine {
       child: None,
       segments: VecDeque::new(),
       segment_counter: 0,
+      recording_started_at: None,
     }
   }
 
@@ -164,6 +166,7 @@ impl CaptureEngine {
     if !matches!(self.state, CaptureState::Buffering) {
       return Err(AppError::Capture("capture not buffering".into()));
     }
+    self.recording_started_at = Some(Utc::now());
     self.state = CaptureState::Recording;
     Ok(())
   }
@@ -172,8 +175,21 @@ impl CaptureEngine {
     if !matches!(self.state, CaptureState::Recording) {
       return Err(AppError::Capture("not recording".into()));
     }
+    let start = self.recording_started_at.unwrap_or_else(Utc::now);
+    let relevant: Vec<SegmentInfo> = self
+      .segments
+      .iter()
+      .filter(|s| s.end_time >= start)
+      .cloned()
+      .collect();
     self.state = CaptureState::Buffering;
-    Err(AppError::NotAvailable("manual clip finalization not yet wired".into()))
+    self.recording_started_at = None;
+    if relevant.is_empty() {
+      return Err(AppError::Capture("no recorded footage".into()));
+    }
+    let output = self.next_output_path("mp4")?;
+    self.concatenate_segments(&relevant, &output)?;
+    Ok(output)
   }
 
   fn validate_config(&self) -> AppResult<()> {
