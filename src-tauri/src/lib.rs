@@ -31,6 +31,7 @@ use tauri::State;
       commands::unregister_hotkeys,
       commands::poll_hotkey_event,
       commands::open_output_dir,
+      commands::select_output_dir,
     ])
     .setup(|app| {
       let storage = storage::Storage::open().map_err(|e| AppError::Storage(e.to_string()))?;

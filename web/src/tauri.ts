@@ -83,3 +83,6 @@ export async function pollHotkeyEvent(): Promise<string | null> {
 export async function openOutputDir(): Promise<void> {
   return invoke("open_output_dir");
 }
+export async function selectOutputDir(currentDir?: string | null): Promise<string> {
+  return invoke("select_output_dir", { current_dir: currentDir ?? null });
+}

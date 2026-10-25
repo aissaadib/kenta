@@ -7,8 +7,8 @@ import {
 import {
   getSettings, saveSettings, captureStart, captureStop, captureStatus,
   captureSaveReplay, captureStartManual, captureStopManual,
-  listClips, deleteClip, openFileLocation, registerHotkeys,
-  pollHotkeyEvent,
+  listClips, deleteClip, openFileLocation, openOutputDir, registerHotkeys,
+  pollHotkeyEvent, selectOutputDir,
   type Settings, type ClipListItem, type CaptureStatus
 } from "./tauri";
 
@@ -166,6 +166,16 @@ export default function App() {
     } catch (e: any) { setError(String(e)); }
   };
 
+  const handleSelectOutputDir = async () => {
+    setError(null);
+    try {
+      const picked = await selectOutputDir(settings.output_dir ?? null);
+      setSettings(prev => ({ ...prev, output_dir: picked }));
+      await saveSettings({ ...settings, output_dir: picked, schema_version: 1 });
+      await registerHotkeys(settings.hotkey_save_replay, settings.hotkey_start_stop);
+    } catch (e: any) { setError(String(e)); }
+  };
+
   const handleDelete = async (id: string, path: string) => {
     if (!window.confirm(`Delete "${path}"?`)) return;
     setError(null);
@@ -217,7 +227,7 @@ export default function App() {
         <div className="panel">
           {view === "home" && <HomeView {...{ settings, status, saving, manual, handleStart, handleStop, handleSaveReplay, handleToggleManual, setSettings, REPLAY_OPTIONS }} />}
           {view === "clips" && <ClipsView {...{ clips, loading, handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, refreshClips, setError, error }} />}
-          {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, recordingKey, setRecordingKey }} />}
+          {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, handleSelectOutputDir, recordingKey, setRecordingKey }} />}
         </div>
       </div>
     </div>
@@ -337,7 +347,7 @@ function ClipsView({
   );
 }
 
-function SettingsView({ settings, setSettings, handleSaveSettings, recordingKey, setRecordingKey }: any) {
+function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectOutputDir, recordingKey, setRecordingKey }: any) {
   const captureShortcut = async (type: "save" | "manual") => {
     setRecordingKey(type);
   };
@@ -349,11 +359,14 @@ function SettingsView({ settings, setSettings, handleSaveSettings, recordingKey,
         <div className="card">
           <div className="field">
             <label>Output directory</label>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input className="input" value={settings.output_dir ?? ""} onChange={e => setSettings({ ...settings, output_dir: e.target.value || null })} />
-              <button className="btn btn-ghost" onClick={() => handleSaveSettings()}>Apply</button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className="metric" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {settings.output_dir ?? "Default: Downloads/ClipVault"}
+              </span>
+              <button className="btn btn-ghost" onClick={handleSelectOutputDir}>Browse</button>
+              <button className="btn btn-ghost" onClick={() => openOutputDir()}>Open</button>
             </div>
-            <p className="metric">Default: Downloads/ClipVault (editable above).</p>
+            <p className="metric">Clips are saved here. Browse chooses a different folder.</p>
           </div>
         </div>
       </div>

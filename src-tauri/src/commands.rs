@@ -167,6 +167,30 @@ pub fn capture_stop_manual(state: State<'_, AppState>) -> Result<SaveResult, Str
 }
 
 #[tauri::command]
+pub fn select_output_dir(
+  state: State<'_, AppState>,
+  current_dir: Option<String>,
+) -> Result<PathBuf, String> {
+  let picked = rfd::FileDialog::new()
+    .set_directory(current_dir.as_deref().unwrap_or(""))
+    .pick_folder();
+  let dir = match picked {
+    Some(d) => d,
+    None => return Err("folder selection cancelled".into()),
+  };
+  if !dir.is_dir() {
+    return Err(format!("not a directory: {}", dir.display()));
+  }
+  let mut settings = state.settings.lock().unwrap();
+  settings.output_dir = Some(dir.clone());
+  drop(settings);
+  SettingsStore::default()
+    .save(&state.settings.lock().unwrap().clone())
+    .map_err(|e| e.to_string())?;
+  Ok(dir)
+}
+
+#[tauri::command]
 pub fn list_clips(state: State<'_, AppState>) -> Result<Vec<ClipListItem>, String> {
   let mut storage = state.storage.lock().unwrap();
   let storage = storage
