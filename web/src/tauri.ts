@@ -62,11 +62,14 @@ export async function captureStartManual(): Promise<CaptureStatus> {
 export async function captureStopManual(): Promise<{ path: string; duration_seconds: number; file_size_bytes: number }> {
   return invoke("capture_stop_manual");
 }
-export async function listClips(): Promise<ClipListItem[]> {
-  return invoke("list_clips");
+export async function listClips(search?: string | null, sort?: string | null): Promise<ClipListItem[]> {
+  return invoke("list_clips", { search, sort });
 }
 export async function deleteClip(id: string): Promise<void> {
   return invoke("delete_clip", { id });
+}
+export async function renameClip(id: string, newName: string): Promise<void> {
+  return invoke("rename_clip", { id, new_name: newName });
 }
 export async function openFileLocation(path: string): Promise<void> {
   return invoke("open_file_location", { path });

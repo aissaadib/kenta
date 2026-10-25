@@ -86,12 +86,36 @@ impl Storage {
     Ok(())
   }
 
-  pub fn list_clips(&mut self) -> AppResult<Vec<Clip>> {
-    let mut stmt = self.conn.prepare(
-      "SELECT id, path, duration_seconds, file_size_bytes, created_at, source, width, height, frame_rate, has_audio, thumbnail
-       FROM clips ORDER BY created_at DESC",
-    )?;
-    let rows = stmt.query_map([], |r| {
+  pub fn list_clips(&mut self, search: Option<String>, sort: Option<String>) -> AppResult<Vec<Clip>> {
+    let order = match sort.as_deref() {
+      Some("name") => "path COLLATE NOCASE ASC".to_string(),
+      Some("size") => "file_size_bytes DESC".to_string(),
+      Some("duration") => "duration_seconds DESC".to_string(),
+      _ => "created_at DESC".to_string(),
+    };
+    let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = match search {
+      Some(q) if !q.is_empty() => {
+        let like = format!("%{}%", q);
+        (
+          format!(
+            "SELECT id, path, duration_seconds, file_size_bytes, created_at, source, width, height, frame_rate, has_audio, thumbnail
+             FROM clips WHERE path LIKE ?1 ORDER BY {}",
+            order
+          ),
+          vec![Box::new(like) as Box<dyn rusqlite::ToSql>],
+        )
+      }
+      _ => (
+        format!(
+          "SELECT id, path, duration_seconds, file_size_bytes, created_at, source, width, height, frame_rate, has_audio, thumbnail
+           FROM clips ORDER BY {}",
+          order
+        ),
+        Vec::new(),
+      ),
+    };
+    let mut stmt = self.conn.prepare(&sql)?;
+      let rows = stmt.query_map(rusqlite::params_from_iter(&params), |r| {
       Ok(Clip {
         id: r.get(0)?,
         path: PathBuf::from(r.get::<_, String>(1)?),

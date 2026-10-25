@@ -8,7 +8,7 @@ import {
   getSettings, saveSettings, captureStart, captureStop, captureStatus,
   captureSaveReplay, captureStartManual, captureStopManual,
   listClips, deleteClip, openFileLocation, openOutputDir, registerHotkeys,
-  pollHotkeyEvent, selectOutputDir,
+  pollHotkeyEvent, selectOutputDir, renameClip,
   type Settings, type ClipListItem, type CaptureStatus
 } from "./tauri";
 
@@ -43,11 +43,10 @@ export default function App() {
     start_at_startup: false, minimize_to_tray: true,
   });
   const [status, setStatus] = useState<CaptureStatus>({ state: "Idle", buffered_seconds: 0, segment_count: 0 });
-  const [clips, setClips] = useState<ClipListItem[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [recordingKey, setRecordingKey] = useState<"save" | "manual" | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const statusInterval = useRef<number | null>(null);
 
   useEffect(() => {
@@ -98,23 +97,17 @@ export default function App() {
   }, []);
 
   const loadAll = async () => {
-    setLoading(true);
     try {
       const s = await getSettings();
       setSettings(s);
       await registerHotkeys(s.hotkey_save_replay, s.hotkey_start_stop);
       await captureStart().catch(() => {});
       await refreshStatus();
-      await refreshClips();
     } catch (e: any) { setError(String(e)); }
-    finally { setLoading(false); }
   };
 
   const refreshStatus = async () => {
     try { setStatus(await captureStatus()); } catch { /* ignore */ }
-  };
-  const refreshClips = async () => {
-    try { setClips(await listClips()); } catch (e: any) { setError(String(e)); }
   };
 
   const handleStart = async () => {
@@ -135,7 +128,7 @@ export default function App() {
     setSaving(true);
     try {
       await captureSaveReplay(secs);
-      await refreshClips();
+      setRefreshKey(k => k + 1);
       setStatus(await captureStatus());
       setError(null);
     } catch (e: any) { setError(String(e)); }
@@ -151,7 +144,7 @@ export default function App() {
       } else {
         await captureStopManual();
         setManual(false);
-        await refreshClips();
+        setRefreshKey(k => k + 1);
         setStatus(await captureStatus());
       }
     } catch (e: any) { setError(String(e)); }
@@ -181,7 +174,7 @@ export default function App() {
     setError(null);
     try {
       await deleteClip(id);
-      await refreshClips();
+      setRefreshKey(k => k + 1);
     } catch (e: any) { setError(String(e)); }
   };
 
@@ -226,7 +219,7 @@ export default function App() {
         </header>
         <div className="panel">
           {view === "home" && <HomeView {...{ settings, status, saving, manual, handleStart, handleStop, handleSaveReplay, handleToggleManual, setSettings, REPLAY_OPTIONS }} />}
-          {view === "clips" && <ClipsView {...{ clips, loading, handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, refreshClips, setError, error }} />}
+          {view === "clips" && <ClipsView {...{ handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, setError, refreshKey }} />}
           {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, handleSelectOutputDir, recordingKey, setRecordingKey }} />}
         </div>
       </div>
@@ -303,20 +296,63 @@ function Record({ size }: { size?: number }) {
 }
 
 function ClipsView({
-  clips, handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, refreshClips,
+  handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, setError, refreshKey,
 }: any) {
+  const [clips, setClips] = useState<ClipListItem[]>([]);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("date");
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+
+  const loadClips = async () => {
+    try {
+      const loaded = await listClips(search || null, sort || null);
+      setClips(loaded);
+    } catch (e: any) { setError(String(e)); }
+  };
+
+  useEffect(() => { loadClips(); }, [search, sort, refreshKey]);
+
+  const handleRename = async (id: string, currentName: string) => {
+    setRenaming(id);
+    setNewName(currentName);
+  };
+  const handleConfirmRename = async (id: string) => {
+    if (!newName.trim()) return;
+    setError(null);
+    try {
+      await renameClip(id, newName.trim());
+      setRenaming(null);
+      setNewName("");
+      await loadClips();
+    } catch (e: any) { setError(String(e)); }
+  };
+
   return (
     <div>
       <div className="section">
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
           <div className="section-title"><Video size={16} /> Library</div>
-          <button className="btn btn-ghost btn-sm" onClick={refreshClips}><RefreshCw size={16} /></button>
+          <input
+            className="input"
+            placeholder="Search clips…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ minWidth: 180 }}
+          />
+          <select className="select" value={sort} onChange={e => setSort(e.target.value)}>
+            <option value="date">Date (newest)</option>
+            <option value="name">Name</option>
+            <option value="size">Size</option>
+            <option value="duration">Duration</option>
+          </select>
+          <button className="btn btn-ghost btn-sm" onClick={loadClips}><RefreshCw size={16} /></button>
           <button className="btn btn-primary" onClick={() => handleOpenLocation("")}>Open Folder</button>
         </div>
         {clips.length === 0 && (
           <div className="empty-state">
             <Video size={48} style={{ opacity: 0.3 }} />
-            <div>No clips yet</div>
+            <div>{search ? "No clips match your search" : "No clips yet"}</div>
             <div className="metric">Save a replay or record to create clips</div>
           </div>
         )}
@@ -328,7 +364,20 @@ function ClipsView({
             <tbody>
               {clips.map((c: ClipListItem) => (
                 <tr key={c.id}>
-                  <td>{c.name}</td>
+                  <td>
+                    {renaming === c.id ? (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input className="input" value={newName} onChange={e => setNewName(e.target.value)} autoFocus />
+                        <button className="btn btn-ghost btn-sm" onClick={() => handleConfirmRename(c.id)}>Save</button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setRenaming(null)}>Cancel</button>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <span title={c.name} style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => handleRename(c.id, c.name)}>{c.name}</span>
+                        <button className="btn btn-ghost btn-sm" title="Rename" onClick={() => handleRename(c.id, c.name)}><span style={{ fontSize: 12 }}>✎</span></button>
+                      </div>
+                    )}
+                  </td>
                   <td>{fmtTime(c.duration_seconds)}</td>
                   <td>{fmtSize(c.file_size_bytes)}</td>
                   <td>{fmtDate(c.created_at)}</td>

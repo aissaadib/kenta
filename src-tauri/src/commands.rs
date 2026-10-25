@@ -191,12 +191,16 @@ pub fn select_output_dir(
 }
 
 #[tauri::command]
-pub fn list_clips(state: State<'_, AppState>) -> Result<Vec<ClipListItem>, String> {
+pub fn list_clips(
+  state: State<'_, AppState>,
+  search: Option<String>,
+  sort: Option<String>,
+) -> Result<Vec<ClipListItem>, String> {
   let mut storage = state.storage.lock().unwrap();
   let storage = storage
     .as_mut()
     .ok_or_else(|| "storage not open".to_string())?;
-  let clips = storage.list_clips().map_err(|e| e.to_string())?;
+  let clips = storage.list_clips(search, sort).map_err(|e| e.to_string())?;
   Ok(clips
     .into_iter()
     .map(|c| ClipListItem {
@@ -212,6 +216,37 @@ pub fn list_clips(state: State<'_, AppState>) -> Result<Vec<ClipListItem>, Strin
       has_audio: c.has_audio,
     })
     .collect())
+}
+
+#[tauri::command]
+pub fn rename_clip(state: State<'_, AppState>, id: String, new_name: String) -> Result<(), String> {
+  let path = {
+    let mut storage = state.storage.lock().unwrap();
+    let storage = storage
+      .as_mut()
+      .ok_or_else(|| "storage not open".to_string())?;
+    match storage.remove_clip(&id) {
+      Ok(Some(p)) => p,
+      Ok(None) => return Err("clip not found".to_string()),
+      Err(e) => return Err(e.to_string()),
+    }
+  };
+  let new_path = path
+    .parent()
+    .map(|p| p.join(new_name))
+    .ok_or_else(|| "invalid path".to_string())?;
+  if new_path.exists() {
+    return Err("a file with that name already exists".to_string());
+  }
+  let _ = std::fs::rename(&path, &new_path).map_err(|e| e.to_string())?;
+  let mut storage = state.storage.lock().unwrap();
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "storage not open".to_string())?;
+  storage
+    .rename_clip(&id, new_path)
+    .map_err(|e| e.to_string())?;
+  Ok(())
 }
 
 #[tauri::command]
