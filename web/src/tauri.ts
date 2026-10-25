@@ -95,3 +95,9 @@ export async function enumerateAudioDevices(): Promise<{ kind: string; name: str
 export async function enumerateVideoEncoders(): Promise<{ name: string; available: boolean }[]> {
   return invoke("enumerate_video_encoders");
 }
+export async function generateThumbnail(clipPath: string): Promise<string> {
+  return invoke("generate_thumbnail", { clip_path: clipPath });
+}
+export async function openInPlayer(path: string): Promise<void> {
+  return invoke("open_in_player", { path });
+}

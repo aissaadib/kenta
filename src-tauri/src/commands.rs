@@ -1,10 +1,10 @@
 use crate::capture::{CaptureConfig, CaptureEngine, SaveResult};
-use crate::errors::AppResult;
+use crate::errors::{AppError, AppResult};
 use crate::hotkey::HotkeyManager;
 use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
 use crate::storage::Clip;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
 
@@ -283,6 +283,56 @@ pub fn enumerate_video_encoders() -> Result<Vec<EncoderInfo>, String> {
     });
   }
   Ok(available)
+}
+
+fn thumbnail_cache_dir() -> AppResult<PathBuf> {
+  let base = std::env::temp_dir().join("clipvault_thumbs");
+  std::fs::create_dir_all(&base).map_err(|e| AppError::Capture(format!("thumb cache: {e}")))?;
+  Ok(base)
+}
+
+fn thumbnail_path_for(clip_path: &Path) -> AppResult<PathBuf> {
+  let cache = thumbnail_cache_dir()?;
+  let stem = clip_path
+    .file_stem()
+    .map(|s| s.to_string_lossy().to_string())
+    .unwrap_or_else(|| "clip".into());
+  Ok(cache.join(format!("{stem}.jpg")))
+}
+
+#[tauri::command]
+pub fn generate_thumbnail(clip_path: String) -> Result<String, String> {
+  let src = PathBuf::from(clip_path);
+  if !src.exists() {
+    return Err("clip file not found".into());
+  }
+  let out = thumbnail_path_for(&src).map_err(|e| e.to_string())?;
+  let status = std::process::Command::new("ffmpeg")
+    .args([
+      "-hide_banner", "-loglevel", "error",
+      "-i", src.to_string_lossy().as_ref(),
+      "-ss", "1",
+      "-frames:v", "1",
+      "-q:v", "2",
+      "-y",
+      out.to_string_lossy().as_ref(),
+    ])
+    .status()
+    .map_err(|e| format!("ffmpeg thumbnail failed: {e}"))?;
+  if !status.success() {
+    return Err("ffmpeg thumbnail extraction failed".into());
+  }
+  Ok(out.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn open_in_player(path: String) -> Result<(), String> {
+  let p = PathBuf::from(path);
+  if !p.exists() {
+    return Err("clip file not found".into());
+  }
+  let _ = std::process::Command::new("explorer").arg(&p).spawn();
+  Ok(())
 }
 
 #[tauri::command]

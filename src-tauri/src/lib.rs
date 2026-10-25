@@ -35,6 +35,8 @@ use tauri::State;
       commands::rename_clip,
       commands::enumerate_audio_devices,
       commands::enumerate_video_encoders,
+      commands::generate_thumbnail,
+      commands::open_in_player,
     ])
     .setup(|app| {
       let storage = storage::Storage::open().map_err(|e| AppError::Storage(e.to_string()))?;

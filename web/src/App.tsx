@@ -8,7 +8,8 @@ import {
   getSettings, saveSettings, captureStart, captureStop, captureStatus,
   captureSaveReplay, captureStartManual, captureStopManual,
   listClips, deleteClip, openFileLocation, openOutputDir, registerHotkeys,
-  pollHotkeyEvent, selectOutputDir, enumerateAudioDevices, enumerateVideoEncoders, renameClip,
+  pollHotkeyEvent, selectOutputDir, enumerateAudioDevices, enumerateVideoEncoders,
+  generateThumbnail, openInPlayer, renameClip,
   type Settings, type ClipListItem, type CaptureStatus
 } from "./tauri";
 
@@ -301,13 +302,26 @@ function ClipsView({
   const [clips, setClips] = useState<ClipListItem[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("date");
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+
+  const getThumbnail = async (clipPath: string) => {
+    if (thumbnails[clipPath]) return thumbnails[clipPath];
+    try {
+      const thumb = await generateThumbnail(clipPath);
+      setThumbnails(prev => ({ ...prev, [clipPath]: thumb }));
+      return thumb;
+    } catch { return null; }
+  };
 
   const loadClips = async () => {
     try {
       const loaded = await listClips(search || null, sort || null);
       setClips(loaded);
+      loaded.forEach(c => {
+        getThumbnail(c.path);
+      });
     } catch (e: any) { setError(String(e)); }
   };
 
@@ -365,24 +379,32 @@ function ClipsView({
               {clips.map((c: ClipListItem) => (
                 <tr key={c.id}>
                   <td>
-                    {renaming === c.id ? (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <input className="input" value={newName} onChange={e => setNewName(e.target.value)} autoFocus />
-                        <button className="btn btn-ghost btn-sm" onClick={() => handleConfirmRename(c.id)}>Save</button>
-                        <button className="btn btn-ghost btn-sm" onClick={() => setRenaming(null)}>Cancel</button>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <span title={c.name} style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => handleRename(c.id, c.name)}>{c.name}</span>
-                        <button className="btn btn-ghost btn-sm" title="Rename" onClick={() => handleRename(c.id, c.name)}><span style={{ fontSize: 12 }}>✎</span></button>
-                      </div>
-                    )}
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      {thumbnails[c.path] ? (
+                        <img src={thumbnails[c.path]} alt="" style={{ width: 36, height: 24, borderRadius: 4, objectFit: "cover" }} />
+                      ) : (
+                        <div style={{ width: 36, height: 24, borderRadius: 4, background: "#1a1a1d", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#666" }}>{"-"}</div>
+                      )}
+                      {renaming === c.id ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input className="input" value={newName} onChange={e => setNewName(e.target.value)} autoFocus />
+                          <button className="btn btn-ghost btn-sm" onClick={() => handleConfirmRename(c.id)}>Save</button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => setRenaming(null)}>Cancel</button>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <span title={c.name} style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => handleRename(c.id, c.name)}>{c.name}</span>
+                          <button className="btn btn-ghost btn-sm" title="Rename" onClick={() => handleRename(c.id, c.name)}><span style={{ fontSize: 12 }}>✎</span></button>
+                        </div>
+                      )}
+                    </div>
                   </td>
                   <td>{fmtTime(c.duration_seconds)}</td>
                   <td>{fmtSize(c.file_size_bytes)}</td>
                   <td>{fmtDate(c.created_at)}</td>
                   <td>{c.has_audio ? "Yes" : "No"}</td>
                   <td className="actions">
+                    <button className="btn btn-ghost btn-sm" title="Play" onClick={() => openInPlayer(c.path)}><Play size={14} /></button>
                     <button className="btn btn-ghost btn-sm" title="Open location" onClick={() => handleOpenLocation(c.path)}><ExternalLink size={14} /></button>
                     <button className="btn btn-ghost btn-sm" title="Delete" onClick={() => handleDelete(c.id, c.path)}><Trash2 size={14} /></button>
                   </td>
