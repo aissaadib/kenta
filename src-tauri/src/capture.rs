@@ -131,6 +131,9 @@ pub struct CaptureEngine {
   segments: VecDeque<SegmentInfo>,
   session_dir: PathBuf,
   segment_list_path: PathBuf,
+  /// Last observed (modified, length) of `segments.csv`. Status polling runs
+  /// twice a second; skipping unchanged lists avoids re-statting every segment.
+  segment_list_stamp: Option<(std::time::SystemTime, u64)>,
   recording_started_at: Option<DateTime<Utc>>,
   recording_start_elapsed: f64,
   encoder_in_use: String,
@@ -148,6 +151,7 @@ impl CaptureEngine {
       segments: VecDeque::new(),
       session_dir: PathBuf::new(),
       segment_list_path: PathBuf::new(),
+      segment_list_stamp: None,
       recording_started_at: None,
       recording_start_elapsed: 0.0,
       encoder_in_use: String::new(),
@@ -424,6 +428,7 @@ impl CaptureEngine {
       .map_err(|e| AppError::Capture(format!("Could not create a buffer session: {e}")))?;
     self.session_dir = session;
     self.segment_list_path = self.session_dir.join("segments.csv");
+    self.segment_list_stamp = None;
     self.segments.clear();
     self.recording_started_at = None;
     self.recording_start_elapsed = 0.0;
@@ -559,6 +564,14 @@ impl CaptureEngine {
   }
 
   fn reload_segments(&mut self) {
+    let Ok(meta) = std::fs::metadata(&self.segment_list_path) else {
+      return;
+    };
+    let stamp = meta.modified().ok().map(|modified| (modified, meta.len()));
+    if stamp.is_some() && stamp == self.segment_list_stamp {
+      return;
+    }
+    self.segment_list_stamp = stamp;
     let Ok(content) = std::fs::read_to_string(&self.segment_list_path) else {
       return;
     };
