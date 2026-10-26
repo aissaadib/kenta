@@ -1,19 +1,34 @@
+mod autostart;
 mod buffer;
 mod capture;
 mod commands;
 mod errors;
+mod ffmpeg;
 mod hotkey;
+mod monitors;
 mod settings;
 mod storage;
+mod worker;
 
+use capture::{CaptureConfig, CaptureEngine};
 use commands::AppState;
 use errors::AppError;
-use tauri::Manager;
-use tauri::State;
+use hotkey::HotkeyManager;
+use std::sync::atomic::Ordering;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
+
+const TRAY_SHOW: &str = "tray-show";
+const TRAY_SAVE: &str = "tray-save-replay";
+const TRAY_RECORD: &str = "tray-toggle-recording";
+const TRAY_FOLDER: &str = "tray-open-folder";
+const TRAY_QUIT: &str = "tray-quit";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-  pub fn run() {
+pub fn run() {
   tauri::Builder::default()
+    .plugin(tauri_plugin_log::Builder::default().build())
     .manage(AppState::new())
     .invoke_handler(tauri::generate_handler![
       commands::get_settings,
@@ -29,61 +44,240 @@ use tauri::State;
       commands::open_file_location,
       commands::register_hotkeys,
       commands::unregister_hotkeys,
-      commands::poll_hotkey_event,
+      commands::get_hotkey_status,
+      commands::normalize_shortcut,
       commands::open_output_dir,
       commands::select_output_dir,
       commands::rename_clip,
       commands::enumerate_audio_devices,
       commands::enumerate_video_encoders,
+      commands::enumerate_monitors,
+      commands::check_ffmpeg,
       commands::generate_thumbnail,
       commands::open_in_player,
     ])
     .setup(|app| {
-      let storage = storage::Storage::open().map_err(|e| AppError::Storage(e.to_string()))?;
-      let state: State<'_, AppState> = app.handle().state();
-      *state.storage.lock().unwrap() = Some(storage);
-      // Load persisted settings
-      if let Ok(s) = settings::SettingsStore::load() {
-        *state.settings.lock().unwrap() = s;
-      }
-      // Start buffering according to settings
-      let settings = state.settings.lock().unwrap().clone();
-      let output_dir = settings
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| settings::default_output_dir().unwrap_or(std::env::temp_dir()));
-      let temp_dir = std::env::temp_dir().join("clipvault_buffer");
-      let config = capture::CaptureConfig {
-        output_dir,
-        temp_dir,
-        width: settings.resolution_width,
-        height: settings.resolution_height,
-        frame_rate: settings.frame_rate,
-        bitrate_kbps: settings.bitrate_kbps,
-        encoder: settings.encoder.clone(),
-        quality_preset: settings.quality_preset.clone(),
-        replay_duration_seconds: settings.replay_duration_seconds,
-        segment_seconds: 4,
-        mic_enabled: settings.mic_enabled,
-        mic_device: settings.mic_device.clone(),
-        desktop_audio_enabled: settings.desktop_audio_enabled,
-        desktop_audio_device: settings.desktop_audio_device.clone(),
-        audio_sample_rate: settings.audio_sample_rate,
-        capture_source: settings.capture_source.clone(),
-        monitor_offset_x: settings.monitor_offset_x,
-        monitor_offset_y: settings.monitor_offset_y,
-      };
-      let mut engine = capture::CaptureEngine::new(config);
-      match engine.start() {
-        Ok(()) => {
-          *state.capture.lock().unwrap() = Some(engine);
-        }
-        Err(e) => {
-          *state.capture_error.lock().unwrap() = Some(e.to_string());
-        }
-      }
+      let handle = app.handle().clone();
+      initialise(&handle)?;
+      build_tray(app)?;
+      worker::start(handle);
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while building tauri application");
+    .on_window_event(|window, event| {
+      if let WindowEvent::CloseRequested { api, .. } = event {
+        let app = window.app_handle();
+        let state = app.state::<AppState>();
+        let minimise_to_tray = state
+          .settings
+          .lock()
+          .map(|settings| settings.minimize_to_tray)
+          .unwrap_or(false);
+        if minimise_to_tray {
+          api.prevent_close();
+          let _ = window.hide();
+        }
+      }
+    })
+    .build(tauri::generate_context!())
+    .expect("error while building the ClipVault application")
+    .run(|app, event| {
+      if let RunEvent::Exit = event {
+        shutdown(app);
+      }
+    });
+}
+
+fn initialise(handle: &AppHandle) -> Result<(), AppError> {
+  let (settings, mut warnings) = commands::initial_settings();
+
+  {
+    let state = handle.state::<AppState>();
+    *state
+      .settings
+      .lock()
+      .map_err(|_| AppError::Settings("settings lock poisoned".into()))? = settings.clone();
+  }
+
+  {
+    let state = handle.state::<AppState>();
+    match storage::Storage::open() {
+      Ok(storage) => {
+        *state
+          .storage
+          .lock()
+          .map_err(|_| AppError::Storage("library lock poisoned".into()))? = Some(storage);
+      }
+      Err(error) => warnings.push(format!(
+        "The clip library could not be opened ({error}). Saving clips will be unavailable until ClipVault is restarted."
+      )),
+    }
+  }
+
+  commands::allow_clip_scope(handle, &settings.output_dir_or_default());
+  commands::allow_clip_scope(handle, &commands::thumbnail_cache_dir());
+
+  // Keep the registry in sync with the persisted preference (for example after
+  // the executable has been moved to a new folder).
+  if settings.start_at_startup {
+    if let Err(error) = autostart::set_enabled(true) {
+      warnings.push(error.to_string());
+    }
+  }
+
+  {
+    let state = handle.state::<AppState>();
+    let mut manager = state
+      .hotkey
+      .lock()
+      .map_err(|_| AppError::Hotkey("shortcut lock poisoned".into()))?;
+    *manager = Some(HotkeyManager::new());
+    if let Some(manager) = manager.as_mut() {
+      if let Err(error) =
+        manager.register(&settings.hotkey_save_replay, &settings.hotkey_start_stop)
+      {
+        warnings.push(format!(
+          "Global shortcuts are unavailable: {error}. You can change them in Settings."
+        ));
+      }
+    }
+  }
+
+  let config = match commands::build_capture_config(&settings) {
+    Ok((config, capture_warnings)) => {
+      {
+        let state = handle.state::<AppState>();
+        *state
+          .capture_warnings
+          .lock()
+          .map_err(|_| AppError::Capture("capture warning lock poisoned".into()))? =
+          capture_warnings;
+      }
+      config
+    }
+    Err(error) => {
+      let state = handle.state::<AppState>();
+      *state
+        .last_error
+        .lock()
+        .map_err(|_| AppError::Capture("capture error lock poisoned".into()))? =
+        Some(error.to_string());
+      warnings.push(error);
+      CaptureConfig::default()
+    }
+  };
+
+  {
+    let state = handle.state::<AppState>();
+    *state
+      .startup_warnings
+      .lock()
+      .map_err(|_| AppError::Settings("warning lock poisoned".into()))? = warnings;
+  }
+
+  let state = handle.state::<AppState>();
+  let should_start = state.last_error.lock().map(|e| e.is_none()).unwrap_or(false);
+  if should_start {
+    let mut engine = CaptureEngine::new(config);
+    match engine.start() {
+      Ok(()) => {
+        *state
+          .capture
+          .lock()
+          .map_err(|_| AppError::Capture("capture lock poisoned".into()))? = Some(engine);
+      }
+      Err(error) => {
+        *state
+          .last_error
+          .lock()
+          .map_err(|_| AppError::Capture("capture error lock poisoned".into()))? =
+          Some(error.to_string());
+      }
+    }
+  }
+
+  let _ = handle.emit("capture-status", commands::current_status(&state));
+  Ok(())
+}
+
+fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
+  let show = MenuItem::with_id(app, TRAY_SHOW, "Open ClipVault", true, None::<&str>)?;
+  let save = MenuItem::with_id(app, TRAY_SAVE, "Save replay", true, None::<&str>)?;
+  let record = MenuItem::with_id(app, TRAY_RECORD, "Start / stop recording", true, None::<&str>)?;
+  let folder = MenuItem::with_id(app, TRAY_FOLDER, "Open clips folder", true, None::<&str>)?;
+  let separator = PredefinedMenuItem::separator(app)?;
+  let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit ClipVault", true, None::<&str>)?;
+  let menu = Menu::with_items(
+    app,
+    &[&show, &save, &record, &folder, &separator, &quit],
+  )?;
+
+  let mut builder = TrayIconBuilder::new()
+    .menu(&menu)
+    .show_menu_on_left_click(false)
+    .tooltip("ClipVault")
+    .on_menu_event(|app, event| match event.id().as_ref() {
+      TRAY_SHOW => show_window(app),
+      TRAY_SAVE => {
+        if let Err(error) = commands::perform_save_replay(app, None) {
+          let _ = app.emit("app-error", error);
+        }
+      }
+      TRAY_RECORD => {
+        if let Err(error) = commands::perform_toggle_manual(app) {
+          let _ = app.emit("app-error", error);
+        }
+      }
+      TRAY_FOLDER => {
+        if let Err(error) = commands::open_output_folder(app) {
+          let _ = app.emit("app-error", error);
+        }
+      }
+      TRAY_QUIT => {
+        shutdown(app);
+        app.exit(0);
+      }
+      _ => {}
+    })
+    .on_tray_icon_event(|tray, event| {
+      if let TrayIconEvent::Click {
+        button: MouseButton::Left,
+        button_state: MouseButtonState::Up,
+        ..
+      } = event
+      {
+        show_window(tray.app_handle());
+      }
+    });
+
+  if let Some(icon) = app.default_window_icon() {
+    builder = builder.icon(icon.clone());
+  }
+  builder.build(app)?;
+  Ok(())
+}
+
+fn show_window(app: &AppHandle) {
+  if let Some(window) = app.get_webview_window("main") {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+  }
+}
+
+/// Stop background work before the process exits. Dropping the engine finalises
+/// FFmpeg and removes temporary buffers; dropping the shortcut manager releases
+/// every global hotkey.
+pub fn shutdown(app: &AppHandle) {
+  let state = app.state::<AppState>();
+  state.exporting.store(false, Ordering::SeqCst);
+  if let Ok(mut capture) = state.capture.lock() {
+    if let Some(engine) = capture.take() {
+      drop(engine);
+    }
+  }
+  if let Ok(mut hotkey) = state.hotkey.lock() {
+    if let Some(mut manager) = hotkey.take() {
+      let _ = manager.unregister();
+    }
+  }
 }
