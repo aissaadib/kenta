@@ -198,9 +198,7 @@ Not verified (environment or hardware limits):
 6. Add a packaging step that bundles ffmpeg.exe/ffprobe.exe or documents
    the PATH requirement in the installer.
 
-============================================================
 8. PERFORMANCE & RELIABILITY PASS (2026-10-26)
-============================================================
 This pass followed the requested order: public research, source inspection,
 baseline measurement, architecture comparison, implementation, re-measurement,
 and verification. The neon-yellow UI was left unchanged. Section 6 above is

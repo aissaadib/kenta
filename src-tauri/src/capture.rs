@@ -97,6 +97,24 @@ pub struct SegmentInfo {
   pub start_seconds: f64,
   pub end_seconds: f64,
   pub duration_seconds: f64,
+  pub file_size_bytes: u64,
+  pub source: String,
+  pub has_audio: bool,
+  pub width: u32,
+  pub height: u32,
+  pub frame_rate: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportPlan {
+  pub segments: Vec<SegmentInfo>,
+  pub output_path: PathBuf,
+  pub list_path: PathBuf,
+  pub source: String,
+  pub has_audio: bool,
+  pub width: u32,
+  pub height: u32,
+  pub frame_rate: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -570,6 +588,19 @@ impl CaptureEngine {
     let stamp = meta.modified().ok().map(|modified| (modified, meta.len()));
     if stamp.is_some() && stamp == self.segment_list_stamp {
       return;
+    };
+    match child.try_wait() {
+      Ok(Some(_)) => {
+        self.child = None;
+        let details = self.stderr_summary();
+        let message = friendly_ffmpeg_error(&details, &self.encoder_in_use);
+        self.state = CaptureState::Error(message);
+      }
+      Ok(None) => {}
+      Err(e) => {
+        self.child = None;
+        self.state = CaptureState::Error(format!("Could not monitor FFmpeg: {e}"));
+      }
     }
     self.segment_list_stamp = stamp;
     let Ok(content) = std::fs::read_to_string(&self.segment_list_path) else {
