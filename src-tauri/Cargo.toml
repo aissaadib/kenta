@@ -10,7 +10,10 @@ rust-version = "1.90"
 
 [lib]
 name = "app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# `cdylib` is only needed for mobile targets. On Windows it produces a 14 MB
+# app_lib.dll that the desktop executable never loads, but Tauri's MSI bundler
+# globs every *.dll in the output directory and ships it anyway.
+crate-type = ["staticlib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }
