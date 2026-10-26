@@ -214,6 +214,16 @@ select { appearance: none; }
 .metric { font-size: 13px; color: var(--muted); }
 .metric-value { font-size: 16px; color: var(--text); font-weight: 600; margin-left: 6px; }
 
+.keycap {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; height: 24px; padding: 0 6px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: #161619; color: var(--text); font-size: 12px; font-weight: 600;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  user-select: none;
+}
+.keycap + .keycap { margin-left: 4px; }
+
 select.input { min-height: 38px; }
 
 .modal-overlay {

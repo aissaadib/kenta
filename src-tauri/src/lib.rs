@@ -74,8 +74,14 @@ use tauri::State;
         monitor_offset_y: settings.monitor_offset_y,
       };
       let mut engine = capture::CaptureEngine::new(config);
-      let _ = engine.start();
-      *state.capture.lock().unwrap() = Some(engine);
+      match engine.start() {
+        Ok(()) => {
+          *state.capture.lock().unwrap() = Some(engine);
+        }
+        Err(e) => {
+          *state.capture_error.lock().unwrap() = Some(e.to_string());
+        }
+      }
       Ok(())
     })
     .run(tauri::generate_context!())

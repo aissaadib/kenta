@@ -47,7 +47,7 @@ export default function App() {
   const [status, setStatus] = useState<CaptureStatus>({ state: "Idle", buffered_seconds: 0, segment_count: 0 });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [recordingKey, setRecordingKey] = useState<"save" | "manual" | null>(null);
+  const [bitrateError, setBitrateError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const statusInterval = useRef<number | null>(null);
 
@@ -58,33 +58,6 @@ export default function App() {
     }, 1000);
     return () => { if (statusInterval.current) window.clearInterval(statusInterval.current); };
   }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!recordingKey) return;
-      e.preventDefault();
-      if (e.key === "Escape") { setRecordingKey(null); return; }
-      const parts: string[] = [];
-      if (e.ctrlKey) parts.push("Ctrl");
-      if (e.shiftKey) parts.push("Shift");
-      if (e.altKey) parts.push("Alt");
-      if (e.metaKey) parts.push("Win");
-      const key = e.key;
-      const ignoreKeys = ["Control","Shift","Alt","Meta","Windows","Escape","CapsLock","Tab"];
-      if (ignoreKeys.includes(key)) return;
-      parts.push(key.charAt(0).toUpperCase() + key.slice(1));
-      const combo = parts.join("+");
-      setSettings(prev => {
-        const next = { ...prev };
-        if (recordingKey === "save") next.hotkey_save_replay = combo;
-        else next.hotkey_start_stop = combo;
-        return next;
-      });
-      setRecordingKey(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [recordingKey, setSettings]);
 
   useEffect(() => {
     const tick = async () => {
@@ -154,6 +127,7 @@ export default function App() {
 
   const handleSaveSettings = async () => {
     setError(null);
+    if (bitrateError) return;
     try {
       await saveSettings({ ...settings, schema_version: 1 });
       await registerHotkeys(settings.hotkey_save_replay, settings.hotkey_start_stop);
@@ -222,7 +196,7 @@ export default function App() {
         <div className="panel">
           {view === "home" && <HomeView {...{ settings, status, saving, manual, handleStart, handleStop, handleSaveReplay, handleToggleManual, setSettings, REPLAY_OPTIONS }} />}
           {view === "clips" && <ClipsView {...{ handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, setError, refreshKey }} />}
-          {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, handleSelectOutputDir, recordingKey, setRecordingKey }} />}
+          {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, handleSelectOutputDir, bitrateError, setBitrateError }} />}
         </div>
       </div>
     </div>
@@ -449,10 +423,76 @@ function ClipsView({
   );
 }
 
-function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectOutputDir, recordingKey, setRecordingKey }: any) {
-  const captureShortcut = async (type: "save" | "manual") => {
-    setRecordingKey(type);
+function ShortcutCapture({
+  value,
+  onChange,
+}: any) {
+  const [capturing, setCapturing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const keyName = (key: string) => {
+    const map: Record<string, string> = {
+      " ": "Space", Esc: "Esc", Escape: "Esc", Enter: "Enter", Tab: "Tab",
+      CapsLock: "CapsLock", Control: "Ctrl", Shift: "Shift", Alt: "Alt",
+      Meta: "Win", Windows: "Win", ArrowUp: "Up", ArrowDown: "Down",
+      ArrowLeft: "Left", ArrowRight: "Right",
+    };
+    if (map[key]) return map[key];
+    return key.charAt(0).toUpperCase() + key.slice(1);
   };
+
+  useEffect(() => {
+    if (!capturing) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      if (e.key === "Escape") { setCapturing(false); setError(null); return; }
+      if (e.key === "Backspace" || e.key === "Delete") { onChange(""); setCapturing(false); setError(null); return; }
+      const mods: string[] = [];
+      if (e.ctrlKey) mods.push("Ctrl");
+      if (e.shiftKey) mods.push("Shift");
+      if (e.altKey) mods.push("Alt");
+      if (e.metaKey) mods.push("Win");
+      const ignore = ["Control","Shift","Alt","Meta","Windows","Escape","CapsLock","Tab"];
+      if (ignore.includes(e.key)) return;
+      const combo = mods.length ? mods.join("+") + "+" + keyName(e.key) : keyName(e.key);
+      setError(null);
+      onChange(combo);
+      setCapturing(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [capturing, onChange]);
+
+  const parts = value ? value.split("+") : [];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {parts.map((p: string) => (
+          <span key={p} className="keycap">{p}</span>
+        ))}
+        {!value && <span style={{ color: "#94949a", fontSize: 12 }}>Not set</span>}
+        <button
+          className={`btn ${capturing ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => { setCapturing(true); setError(null); }}
+          disabled={capturing}
+        >
+          {capturing ? "Press keys…" : "Set"}
+        </button>
+        {capturing && (
+          <button className="btn btn-ghost btn-sm" onClick={() => { setCapturing(false); setError(null); }}>Cancel</button>
+        )}
+        {!capturing && value && (
+          <button className="btn btn-ghost btn-sm" onClick={() => { onChange(""); setError(null); }} title="Clear">×</button>
+        )}
+      </div>
+      {capturing && <div style={{ fontSize: 11, color: "#94949a" }}>Press a key combination. Esc to cancel.</div>}
+      {error && <div style={{ fontSize: 11, color: "#e45858" }}>{error}</div>}
+    </div>
+  );
+}
+
+function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectOutputDir, bitrateError, setBitrateError }: any) {
   const [audioDevices, setAudioDevices] = useState<{ kind: string; name: string; alt_name: string | null }[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [videoEncoders, setVideoEncoders] = useState<{ name: string; available: boolean }[]>([]);
@@ -595,7 +635,19 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
           </div>
           <div className="field">
             <label>Bitrate (kbps)</label>
-            <input className="input" type="number" value={settings.bitrate_kbps} onChange={e => setSettings({ ...settings, bitrate_kbps: Number(e.target.value) || 8000 })} />
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input className="input" type="number" value={settings.bitrate_kbps} onChange={e => {
+                const v = Number(e.target.value);
+                if (!Number.isFinite(v) || v < 1 || v > 100000) {
+                  setBitrateError("Enter 1–100000 kbps");
+                  return;
+                }
+                setBitrateError(null);
+                setSettings({ ...settings, bitrate_kbps: v });
+              }} />
+              <span style={{ color: "#94949a", fontSize: 11 }}>1–100000 kbps</span>
+            </div>
+            {bitrateError && <div style={{ fontSize: 11, color: "#e45858" }}>{bitrateError}</div>}
           </div>
         </div>
       </div>
@@ -604,35 +656,20 @@ function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectO
         <div className="card grid-2">
           <div className="field">
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Save size={14} /> Save replay</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button
-                className={`btn ${recordingKey === "save" ? "btn-primary" : "btn-ghost"}`}
-                onClick={() => captureShortcut("save")}
-                disabled={recordingKey === "manual"}
-              >
-                {recordingKey === "save" ? "Press a key…" : settings.hotkey_save_replay}
-              </button>
-            </div>
+            <ShortcutCapture
+              value={settings.hotkey_save_replay}
+              onChange={(v: string) => setSettings({ ...settings, hotkey_save_replay: v })}
+            />
             <p className="metric">Global hotkey, works without focus</p>
           </div>
           <div className="field">
             <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Play size={14} /> Start/stop manual</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button
-                className={`btn ${recordingKey === "manual" ? "btn-primary" : "btn-ghost"}`}
-                onClick={() => captureShortcut("manual")}
-                disabled={recordingKey === "save"}
-              >
-                {recordingKey === "manual" ? "Press a key…" : settings.hotkey_start_stop}
-              </button>
-            </div>
+            <ShortcutCapture
+              value={settings.hotkey_start_stop}
+              onChange={(v: string) => setSettings({ ...settings, hotkey_start_stop: v })}
+            />
           </div>
         </div>
-        {recordingKey && (
-          <div className="alert" style={{ marginTop: 10, fontSize: 12 }}>
-            Press the key combination you want. Press Esc to cancel.
-          </div>
-        )}
       </div>
       <div className="section">
         <div className="card">

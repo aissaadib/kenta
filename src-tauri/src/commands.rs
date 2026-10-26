@@ -11,6 +11,7 @@ use tauri::State;
 pub struct AppState {
   pub settings: Mutex<Settings>,
   pub capture: Mutex<Option<CaptureEngine>>,
+  pub capture_error: Mutex<Option<String>>,
   pub storage: Mutex<Option<crate::storage::Storage>>,
   pub hotkey: Mutex<Option<HotkeyManager>>,
 }
@@ -38,6 +39,7 @@ impl AppState {
     Self {
       settings: Mutex::new(Settings::default()),
       capture: Mutex::new(None),
+      capture_error: Mutex::new(None),
       storage: Mutex::new(None),
       hotkey: Mutex::new(None),
     }
@@ -116,6 +118,13 @@ pub fn capture_stop(state: State<'_, AppState>) -> Result<CaptureStatus, String>
 
 #[tauri::command]
 pub fn capture_status(state: State<'_, AppState>) -> Result<CaptureStatus, String> {
+  if let Some(e) = &*state.capture_error.lock().unwrap() {
+    return Ok(CaptureStatus {
+      state: "Error".into(),
+      buffered_seconds: 0.0,
+      segment_count: 0,
+    });
+  }
   let capture = state.capture.lock().unwrap();
   match &*capture {
     Some(engine) => Ok(status(engine)),
