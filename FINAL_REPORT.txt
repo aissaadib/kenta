@@ -25,7 +25,8 @@ Commits in this pass (local main):
 2. UX IMPROVEMENTS
 ============================================================
 - Dedicated Capture, Clips, and Settings views with a consistent dark
-  mint/teal design system, readable hierarchy, and responsive layout.
+  neon-yellow accent design system, readable hierarchy, and responsive
+  layout.
 - Capture dashboard shows live buffering/recording time, buffer readiness,
   encoder in use, audio state, and real warnings.
 - Save replay and Record are explicit primary actions; Stop buffer and
