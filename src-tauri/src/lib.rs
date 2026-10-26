@@ -6,6 +6,7 @@ mod errors;
 mod ffmpeg;
 mod hotkey;
 mod monitors;
+mod process;
 mod settings;
 mod storage;
 mod worker;
@@ -27,6 +28,10 @@ const TRAY_QUIT: &str = "tray-quit";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // Any FFmpeg child is tied to this process. If ClipVault crashes or is
+  // force-terminated, Windows closes the job and the encoder exits with it.
+  process::init();
+
   tauri::Builder::default()
     .plugin(tauri_plugin_log::Builder::default().build())
     .manage(AppState::new())
