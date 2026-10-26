@@ -456,7 +456,9 @@ impl CaptureEngine {
       &self.segment_list_path,
       encoder,
     )?;
-    let mut child = Command::new(ffmpeg::ffmpeg())
+    let mut command = Command::new(ffmpeg::ffmpeg());
+    crate::process::hide_console(&mut command);
+    let mut child = command
       .args(&args)
       .stdin(Stdio::piped())
       .stdout(Stdio::null())
