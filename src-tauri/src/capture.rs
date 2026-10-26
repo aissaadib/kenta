@@ -1023,11 +1023,7 @@ fn cleanup_old_sessions(base: &Path, max_age_seconds: u64) {
     if !path.is_dir() {
       continue;
     }
-    let is_session = path
-      .file_name()
-      .map(|name| name.to_string_lossy().starts_with("session_"))
-      .unwrap_or(false);
-    if !is_session {
+    if !is_session_dir(&path) {
       continue;
     }
     let old = entry
@@ -1041,6 +1037,31 @@ fn cleanup_old_sessions(base: &Path, max_age_seconds: u64) {
       let _ = std::fs::remove_dir_all(path);
     }
   }
+}
+
+/// Remove every replay session directory. Called once at startup, before this
+/// process creates its own session. With the single-instance guard in place,
+/// any session on disk at that moment belongs to a previous run that did not
+/// shut down cleanly. Returns the number of directories removed.
+pub fn cleanup_stale_sessions(base: &Path) -> usize {
+  let Ok(entries) = std::fs::read_dir(base) else {
+    return 0;
+  };
+  let mut removed = 0;
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.is_dir() && is_session_dir(&path) && std::fs::remove_dir_all(&path).is_ok() {
+      removed += 1;
+    }
+  }
+  removed
+}
+
+fn is_session_dir(path: &Path) -> bool {
+  path
+    .file_name()
+    .map(|name| name.to_string_lossy().starts_with("session_"))
+    .unwrap_or(false)
 }
 
 impl Drop for CaptureEngine {

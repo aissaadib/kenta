@@ -185,6 +185,17 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
       .map_err(|_| AppError::Settings("warning lock poisoned".into()))? = warnings;
   }
 
+  // A previous run that crashed or was force-terminated can leave whole
+  // replay sessions behind. With the single-instance guard in place, every
+  // session directory present before this process starts is stale.
+  let reclaimed = capture::cleanup_stale_sessions(&config.temp_dir);
+  if reclaimed > 0 {
+    log::info!(
+      "Removed {reclaimed} stale replay session(s) from {}",
+      config.temp_dir.display()
+    );
+  }
+
   let state = handle.state::<AppState>();
   let should_start = state.last_error.lock().map(|e| e.is_none()).unwrap_or(false);
   if should_start {
