@@ -5,6 +5,7 @@ mod commands;
 mod errors;
 mod ffmpeg;
 mod hotkey;
+mod instance;
 mod monitors;
 mod process;
 mod settings;
@@ -28,6 +29,11 @@ const TRAY_QUIT: &str = "tray-quit";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // One capture pipeline per machine. A second launch focuses the running
+  // window instead of starting another encoder.
+  if !instance::acquire() {
+    return;
+  }
   // Any FFmpeg child is tied to this process. If ClipVault crashes or is
   // force-terminated, Windows closes the job and the encoder exits with it.
   process::init();
