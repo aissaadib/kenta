@@ -1,692 +1,445 @@
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  Play, StopCircle, Save, Clock, ExternalLink,
-  Settings as SettingsIcon, Video, Mic, Headphones,
-  Trash2, RefreshCw,
+  AlertTriangle,
+  Clapperboard,
+  Film,
+  Gamepad2,
+  Loader2,
+  Save,
+  Settings2,
+  Square,
+  Circle,
 } from "lucide-react";
 import {
-  getSettings, saveSettings, captureStart, captureStop, captureStatus,
-  captureSaveReplay, captureStartManual, captureStopManual,
-  listClips, deleteClip, openFileLocation, openOutputDir, registerHotkeys,
-  pollHotkeyEvent, selectOutputDir, enumerateAudioDevices, enumerateVideoEncoders,
-  generateThumbnail, renameClip,
-  type Settings, type ClipListItem, type CaptureStatus
+  captureSaveReplay,
+  captureStart,
+  captureStartManual,
+  captureStatus,
+  captureStop,
+  captureStopManual,
+  getSettings,
+  openOutputDir,
+  saveSettings,
+  type CaptureStatus,
+  type ClipListItem,
+  type Settings,
+  type SettingsPayload,
 } from "./tauri";
+import { CaptureView } from "./views/CaptureView";
+import { ClipsView } from "./views/ClipsView";
+import { SettingsView } from "./views/SettingsView";
+import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
+import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
 
-const REPLAY_OPTIONS = [30, 60, 90, 120, 300];
+type View = "capture" | "clips" | "settings";
 
-function fmtTime(s: number) {
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${sec.toString().padStart(2, "0")}`;
-}
-function fmtSize(b: number) {
-  if (b < 1024) return `${b} B`;
-  const kb = b / 1024;
-  if (kb < 1024) return `${Math.round(kb)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${Math.round(mb * 10) / 10} MB`;
-  return `${Math.round(mb / 1024 * 10) / 10} GB`;
-}
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString();
-}
+const NAV: { key: View; label: string; icon: ReactNode; caption: string }[] = [
+  { key: "capture", label: "Capture", icon: <Gamepad2 size={18} />, caption: "Replay buffer" },
+  { key: "clips", label: "Clips", icon: <Film size={18} />, caption: "Your library" },
+  { key: "settings", label: "Settings", icon: <Settings2 size={18} />, caption: "Tune ClipVault" },
+];
+
+const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
+  capture: { title: "Capture", subtitle: "Ready when something worth keeping happens." },
+  clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
+  settings: { title: "Settings", subtitle: "Make ClipVault fit your setup." },
+};
 
 export default function App() {
-  const [view, setView] = useState<"home" | "clips" | "settings">("home");
-  const [settings, setSettings] = useState<Settings>({
-    schema_version: 1, output_dir: null, replay_duration_seconds: 60,
-    capture_source: "desktop", resolution_width: 1920, resolution_height: 1080,
-    frame_rate: 60, bitrate_kbps: 8000, encoder: "h264_nvenc",
-    quality_preset: "balanced", mic_enabled: false, mic_device: null,
-    desktop_audio_enabled: true, desktop_audio_device: null, audio_sample_rate: 48000,
-    hotkey_save_replay: "Ctrl+Shift+S", hotkey_start_stop: "Ctrl+Shift+R",
-    start_at_startup: false, minimize_to_tray: true,
-    monitor_offset_x: null, monitor_offset_y: null,
-  });
-  const [status, setStatus] = useState<CaptureStatus>({ state: "Idle", buffered_seconds: 0, segment_count: 0 });
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [bitrateError, setBitrateError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const statusInterval = useRef<number | null>(null);
+  const [view, setView] = useState<View>("capture");
+  const [payload, setPayload] = useState<SettingsPayload | null>(null);
+  const [saved, setSaved] = useState<Settings | null>(null);
+  const [draft, setDraft] = useState<Settings | null>(null);
+  const [status, setStatus] = useState<CaptureStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fatalError, setFatalError] = useState<string | null>(null);
+  const [settingsWarnings, setSettingsWarnings] = useState<string[]>([]);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [captureBusy, setCaptureBusy] = useState(false);
+  const [savingReplay, setSavingReplay] = useState(false);
+  const [togglingRecording, setTogglingRecording] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
 
-  useEffect(() => {
-    loadAll();
-    statusInterval.current = window.setInterval(() => {
-      if (status.state !== "Idle") refreshStatus();
-    }, 1000);
-    return () => { if (statusInterval.current) window.clearInterval(statusInterval.current); };
+  const addToast = useCallback((kind: ToastKind, title: string, message?: string) => {
+    const id = ++toastId.current;
+    setToasts((previous) => [...previous.slice(-3), { id, kind, title, message }]);
+    window.setTimeout(() => {
+      setToasts((previous) => previous.filter((toast) => toast.id !== id));
+    }, kind === "error" ? 9000 : 5000);
+  }, []);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((previous) => previous.filter((toast) => toast.id !== id));
   }, []);
 
   useEffect(() => {
-    const tick = async () => {
-      const ev = await pollHotkeyEvent().catch(() => null as any);
-      if (ev) {
-        if (ev === "save_replay") handleSaveReplay();
-        else if (ev === "start_stop") handleToggleManual();
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const loaded = await getSettings();
+        const initialStatus = await captureStatus();
+        if (cancelled) return;
+        setPayload(loaded);
+        setSaved(loaded.settings);
+        setDraft(loaded.settings);
+        setSettingsWarnings(loaded.warnings);
+        setStatus(initialStatus);
+      } catch (reason) {
+        if (!cancelled) setFatalError(String(reason));
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     };
-    const id = setInterval(tick, 400);
-    return () => clearInterval(id);
+    void load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const loadAll = async () => {
-    try {
-      const s = await getSettings();
-      setSettings(s);
-      await registerHotkeys(s.hotkey_save_replay, s.hotkey_start_stop);
-      await captureStart().catch(() => {});
-      await refreshStatus();
-    } catch (e: any) { setError(String(e)); }
-  };
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+    const register = async () => {
+      const listeners = await Promise.all([
+        listen<CaptureStatus>("capture-status", (event) => {
+          setStatus(event.payload);
+        }),
+        listen<ClipListItem>("clip-saved", (event) => {
+          const clip = event.payload;
+          setRefreshToken((value) => value + 1);
+          addToast(
+            "success",
+            clip.source === "recording" ? "Recording saved" : "Replay saved",
+            `${clip.display_name || clip.name} · ${formatDuration(clip.duration_seconds)} · ${formatBytes(
+              clip.file_size_bytes,
+            )}`,
+          );
+        }),
+        listen<string>("app-error", (event) => {
+          addToast("error", "ClipVault could not finish that action", event.payload);
+        }),
+      ]);
+      if (disposed) {
+        listeners.forEach((unlisten) => unlisten());
+      } else {
+        unlisteners.push(...listeners);
+      }
+    };
+    void register();
+    return () => {
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [addToast]);
+
+  const dirty = useMemo(() => {
+    if (!saved || !draft) return false;
+    return JSON.stringify(saved) !== JSON.stringify(draft);
+  }, [saved, draft]);
+
+  const tone = statusTone(status?.state ?? "Idle");
+  const running = tone === "buffering" || tone === "recording" || tone === "saving";
 
   const refreshStatus = async () => {
-    try { setStatus(await captureStatus()); } catch { /* ignore */ }
+    try {
+      setStatus(await captureStatus());
+    } catch {
+      // The event stream will recover; do not interrupt the user for a transient read.
+    }
   };
 
   const handleStart = async () => {
-    setError(null);
+    if (captureBusy) return;
+    setCaptureBusy(true);
     try {
       setStatus(await captureStart());
-    } catch (e: any) { setError(String(e)); }
+    } catch (reason) {
+      addToast("error", "Capture could not start", String(reason));
+      await refreshStatus();
+    } finally {
+      setCaptureBusy(false);
+    }
   };
+
   const handleStop = async () => {
-    setError(null);
+    if (captureBusy) return;
+    setCaptureBusy(true);
     try {
       setStatus(await captureStop());
-    } catch (e: any) { setError(String(e)); }
+    } catch (reason) {
+      addToast("error", "Capture could not stop", String(reason));
+      await refreshStatus();
+    } finally {
+      setCaptureBusy(false);
+    }
   };
+
   const handleSaveReplay = async () => {
-    setError(null);
-    const secs = settings.replay_duration_seconds;
-    setSaving(true);
+    if (savingReplay || !status) return;
+    setSavingReplay(true);
     try {
-      await captureSaveReplay(secs);
-      setRefreshKey(k => k + 1);
-      setStatus(await captureStatus());
-      setError(null);
-    } catch (e: any) { setError(String(e)); }
-    finally { setSaving(false); }
+      await captureSaveReplay(status.replay_duration_seconds);
+      setRefreshToken((value) => value + 1);
+    } catch {
+      // The Rust layer emits an app-error event with the real reason.
+    } finally {
+      setSavingReplay(false);
+      await refreshStatus();
+    }
   };
-  const [manual, setManual] = useState(false);
-  const handleToggleManual = async () => {
-    setError(null);
+
+  const handleToggleRecording = async () => {
+    if (togglingRecording || !status) return;
+    setTogglingRecording(true);
     try {
-      if (!manual) {
-        setStatus(await captureStartManual());
-        setManual(true);
-      } else {
+      if (statusTone(status.state) === "recording") {
         await captureStopManual();
-        setManual(false);
-        setRefreshKey(k => k + 1);
-        setStatus(await captureStatus());
+        setRefreshToken((value) => value + 1);
+      } else {
+        setStatus(await captureStartManual());
       }
-    } catch (e: any) { setError(String(e)); }
+    } catch (reason) {
+      if (statusTone(status.state) !== "recording") {
+        addToast("error", "Recording could not start", String(reason));
+      }
+      await refreshStatus();
+    } finally {
+      setTogglingRecording(false);
+    }
   };
 
   const handleSaveSettings = async () => {
-    setError(null);
-    if (bitrateError) return;
+    if (!draft || savingSettings) return;
+    setSavingSettings(true);
     try {
-      await saveSettings({ ...settings, schema_version: 1 });
-      await registerHotkeys(settings.hotkey_save_replay, settings.hotkey_start_stop);
-      await refreshStatus();
-    } catch (e: any) { setError(String(e)); }
+      const result = await saveSettings(draft);
+      setSaved(draft);
+      setStatus(result.status);
+      setSettingsWarnings(result.warnings);
+      setPayload((previous) =>
+        previous
+          ? { ...previous, settings: draft, warnings: result.warnings }
+          : previous,
+      );
+      if (result.capture_restarted) {
+        addToast("info", "Settings saved", "Capture restarted with the new settings.");
+      } else {
+        addToast("success", "Settings saved");
+      }
+      if (result.warnings.length > 0) {
+        addToast(
+          "info",
+          "Some settings needed attention",
+          result.warnings[0],
+        );
+      }
+    } catch (reason) {
+      addToast("error", "Settings were not saved", String(reason));
+    } finally {
+      setSavingSettings(false);
+    }
   };
 
-  const handleSelectOutputDir = async () => {
-    setError(null);
-    try {
-      const picked = await selectOutputDir(settings.output_dir ?? null);
-      setSettings(prev => ({ ...prev, output_dir: picked }));
-      await saveSettings({ ...settings, output_dir: picked, schema_version: 1 });
-      await registerHotkeys(settings.hotkey_save_replay, settings.hotkey_start_stop);
-    } catch (e: any) { setError(String(e)); }
+  const handleReset = () => {
+    if (!saved) return;
+    setDraft(saved);
   };
 
-  const handleDelete = async (id: string, path: string) => {
-    if (!window.confirm(`Delete "${path}"?`)) return;
-    setError(null);
-    try {
-      await deleteClip(id);
-      setRefreshKey(k => k + 1);
-    } catch (e: any) { setError(String(e)); }
+  const handleNavigate = (next: View) => {
+    setView(next);
+    if (next === "clips") setRefreshToken((value) => value + 1);
   };
 
-  const handleOpenLocation = (path: string) => openFileLocation(path);
+  const openSettings = () => setView("settings");
 
-  const nav = [
-    { key: "home", label: "Capture", icon: <Video size={18} /> },
-    { key: "clips", label: "Clips", icon: <Save size={18} /> },
-    { key: "settings", label: "Settings", icon: <SettingsIcon size={18} /> },
-  ];
+  if (loading) {
+    return (
+      <div className="boot-screen">
+        <span className="brand-mark"><Clapperboard size={22} /></span>
+        <Loader2 size={22} className="spin" />
+        <span>Opening ClipVault…</span>
+      </div>
+    );
+  }
+
+  if (fatalError || !payload || !saved || !draft || !status) {
+    return (
+      <div className="boot-screen boot-error">
+        <span className="brand-mark brand-mark-error"><AlertTriangle size={22} /></span>
+        <strong>ClipVault could not start</strong>
+        <p>{fatalError ?? "The capture service did not respond."}</p>
+        <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="app">
+    <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-dot" />
-          ClipVault
+          <span className="brand-mark"><Clapperboard size={19} /></span>
+          <span className="brand-copy">
+            <strong>ClipVault</strong>
+            <span>Replay studio</span>
+          </span>
         </div>
-        <div className="nav">
-          {nav.map(n => (
-            <button key={n.key} className={`nav-item ${view === n.key ? "active" : ""}`} onClick={() => setView(n.key as typeof view)}>
-              {n.icon} {n.label}
+
+        <nav className="nav" aria-label="Main navigation">
+          {NAV.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`nav-item ${view === item.key ? "is-active" : ""}`}
+              onClick={() => handleNavigate(item.key)}
+              aria-current={view === item.key ? "page" : undefined}
+            >
+              <span className="nav-icon">{item.icon}</span>
+              <span className="nav-copy">
+                <strong>{item.label}</strong>
+                <span>{item.caption}</span>
+              </span>
             </button>
           ))}
-        </div>
-        <div className="sidebar-footer">
-          <div style={{ marginBottom: 8, fontWeight: 600 }}>Status</div>
-          <div className={`status-pill ${status.state.toLowerCase() === "idle" ? "status-idle" : status.state.toLowerCase() === "recording" ? "status-recording" : "status-buffering"}`}>
-            <div className="dot" />
-            {status.state}
+        </nav>
+
+        <div className={`sidebar-status tone-${tone}`}>
+          <div className="sidebar-status-head">
+            <span className={`status-pill tone-${tone}`}>
+              <span className="status-dot" />
+              {status.state}
+            </span>
+            {status.exporting ? <span className="mini-spinner" /> : null}
           </div>
-          <div className="metric">Buffer {fmtTime(status.buffered_seconds)} ({status.segment_count} seg)</div>
+          <div className="sidebar-metric">
+            <span>{tone === "recording" ? "Recording" : "Buffered"}</span>
+            <strong>
+              {tone === "recording"
+                ? formatClock(status.recording_seconds)
+                : formatClock(status.buffered_seconds)}
+            </strong>
+          </div>
+          <div className="sidebar-track">
+            <span
+              style={{
+                width: `${Math.min(
+                  100,
+                  (status.buffered_seconds / Math.max(1, status.replay_duration_seconds)) * 100,
+                )}%`,
+              }}
+            />
+          </div>
+          <p className="sidebar-status-foot">
+            {tone === "error"
+              ? "Capture needs attention"
+              : running
+                ? `${formatDuration(status.replay_duration_seconds)} ready to save`
+                : "Buffer is stopped"}
+          </p>
+          {running ? (
+            <div className="sidebar-quick-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => void handleSaveReplay()}
+                disabled={savingReplay || tone === "saving"}
+              >
+                <Save size={14} /> Save
+              </button>
+              <button
+                type="button"
+                className={`btn btn-sm ${tone === "recording" ? "btn-danger" : "btn-ghost"}`}
+                onClick={() => void handleToggleRecording()}
+                disabled={togglingRecording}
+              >
+                {tone === "recording" ? <Square size={12} /> : <Circle size={11} fill="currentColor" />}
+                {tone === "recording" ? "Stop" : "Record"}
+              </button>
+            </div>
+          ) : null}
         </div>
+
+        <p className="sidebar-footnote">Local capture · No cloud uploads</p>
       </aside>
-      <div className="main">
-        <header className="header">
-          <h1>{view === "home" ? "Capture" : view === "clips" ? "Clips" : "Settings"}</h1>
-          <div className="header-right">
-            {error && <div className="alert" style={{ padding: "6px 10px", fontSize: 12 }}>{error}</div>}
-            <button className="btn btn-ghost btn-sm" onClick={() => setError(null)}>×</button>
+
+      <main className="main">
+        <header className="topbar">
+          <div className="topbar-heading">
+            <h1>{VIEW_TITLES[view].title}</h1>
+            <p>{VIEW_TITLES[view].subtitle}</p>
+          </div>
+          <div className="topbar-actions">
+            {status.warnings.length > 0 ? (
+              <span className="badge badge-warn" title={status.warnings[0]}>
+                <AlertTriangle size={13} /> {status.warnings.length} note
+                {status.warnings.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
+            <span className={`topbar-status tone-${tone}`}>
+              <span className="status-dot" />
+              {status.state}
+            </span>
+            <button
+              type="button"
+              className="icon-btn"
+              title="Settings"
+              aria-label="Open settings"
+              onClick={openSettings}
+            >
+              <Settings2 size={17} />
+            </button>
           </div>
         </header>
-        <div className="panel">
-          {view === "home" && <HomeView {...{ settings, status, saving, manual, handleStart, handleStop, handleSaveReplay, handleToggleManual, setSettings, REPLAY_OPTIONS }} />}
-          {view === "clips" && <ClipsView {...{ handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, setError, refreshKey }} />}
-          {view === "settings" && <SettingsView {...{ settings, setSettings, handleSaveSettings, handleSelectOutputDir, bitrateError, setBitrateError }} />}
-        </div>
-      </div>
-    </div>
-  );
-}
 
-function HomeView({
-  settings, status, saving, manual, handleStart, handleStop,
-  handleSaveReplay, handleToggleManual, setSettings, REPLAY_OPTIONS,
-}: any) {
-  return (
-    <div>
-      <div className="section">
-        <div className="section-title"><Play size={16} /> Session</div>
-        <div className="card">
-          <div className="row">
-            <div className="status-pill {status.state.toLowerCase() === 'idle' ? 'status-idle' : status.state.toLowerCase() === 'recording' ? 'status-recording' : 'status-buffering'}">
-              <div className="dot" />
-              {status.state}
-            </div>
-            <span className="metric">Source {settings.capture_source} &bull; {settings.resolution_width}x{settings.resolution_height} @ {settings.frame_rate}fps</span>
-            <span className="metric">Encoder {settings.encoder}</span>
-          </div>
-          <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
-            {status.state === "Idle" ? (
-              <button className="btn btn-primary" onClick={handleStart}><Play size={16} /> Start Capture</button>
-            ) : status.state === "Recording" ? (
-              <button className="btn btn-danger" onClick={handleStop}><StopCircle size={16} /> Stop Capture</button>
-            ) : (
-              <>
-                <button className="btn btn-primary" onClick={handleSaveReplay} disabled={saving}>
-                  <Save size={16} /> Save Last {settings.replay_duration_seconds}s
-                </button>
-                <button className="btn btn-ghost" onClick={handleToggleManual}>
-                  {manual ? <StopCircle size={16} /> : <Record size={16} />} Start Manual
-                </button>
-                <button className="btn btn-danger" onClick={handleStop}>Stop Capture</button>
-              </>
-            )}
-          </div>
-          {saving && <div className="metric" style={{ marginTop: 8 }}>Saving clip&#8230;</div>}
-        </div>
-      </div>
-      <div className="section">
-        <div className="section-title"><Clock size={16} /> Replay Buffer</div>
-        <div className="card grid-2">
-          <div className="field">
-            <label>Duration</label>
-            <div style={{ display: "flex", gap: 6 }}>
-              {REPLAY_OPTIONS.map((d: number) => (
-                <button key={d} className={`btn btn-ghost ${settings.replay_duration_seconds === d ? "btn-primary" : ""} btn-sm`} onClick={() => setSettings({ ...settings, replay_duration_seconds: d })}>
-                  {d}s
-                </button>
-              ))}
-            </div>
-            <p className="metric">Rolling buffer holds the last {settings.replay_duration_seconds} seconds.</p>
-          </div>
-          <div className="field">
-            <label>Buffer Readiness</label>
-            <div className="metric">{Math.min(100, Math.round((status.buffered_seconds / settings.replay_duration_seconds) * 100))}%</div>
-            <p className="metric">{status.segment_count} segments buffered</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Record({ size }: { size?: number }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" width={size ?? 16} height={size ?? 16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /></svg>
-  );
-}
-
-function ClipsView({
-  handleDelete, handleOpenLocation, fmtTime, fmtSize, fmtDate, setError, refreshKey,
-}: any) {
-  const [clips, setClips] = useState<ClipListItem[]>([]);
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("date");
-  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [newName, setNewName] = useState("");
-  const [previewClip, setPreviewClip] = useState<ClipListItem | null>(null);
-
-  const handlePreview = (c: ClipListItem) => {
-    setPreviewClip(c);
-  };
-
-  const handleClosePreview = () => {
-    setPreviewClip(null);
-  };
-
-  const getThumbnail = async (clipPath: string) => {
-    if (thumbnails[clipPath]) return thumbnails[clipPath];
-    try {
-      const thumb = await generateThumbnail(clipPath);
-      setThumbnails(prev => ({ ...prev, [clipPath]: thumb }));
-      return thumb;
-    } catch { return null; }
-  };
-
-  const loadClips = async () => {
-    try {
-      const loaded = await listClips(search || null, sort || null);
-      setClips(loaded);
-      loaded.forEach(c => {
-        getThumbnail(c.path);
-      });
-    } catch (e: any) { setError(String(e)); }
-  };
-
-  useEffect(() => { loadClips(); }, [search, sort, refreshKey]);
-
-  const handleRename = async (id: string, currentName: string) => {
-    setRenaming(id);
-    setNewName(currentName);
-  };
-  const handleConfirmRename = async (id: string) => {
-    if (!newName.trim()) return;
-    setError(null);
-    try {
-      await renameClip(id, newName.trim());
-      setRenaming(null);
-      setNewName("");
-      await loadClips();
-    } catch (e: any) { setError(String(e)); }
-  };
-
-  return (
-    <div>
-      <div className="section">
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-          <div className="section-title"><Video size={16} /> Library</div>
-          <input
-            className="input"
-            placeholder="Search clips…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            style={{ minWidth: 180 }}
-          />
-          <select className="select" value={sort} onChange={e => setSort(e.target.value)}>
-            <option value="date">Date (newest)</option>
-            <option value="name">Name</option>
-            <option value="size">Size</option>
-            <option value="duration">Duration</option>
-          </select>
-          <button className="btn btn-ghost btn-sm" onClick={loadClips}><RefreshCw size={16} /></button>
-          <button className="btn btn-primary" onClick={() => handleOpenLocation("")}>Open Folder</button>
-        </div>
-        {clips.length === 0 && (
-          <div className="empty-state">
-            <Video size={48} style={{ opacity: 0.3 }} />
-            <div>{search ? "No clips match your search" : "No clips yet"}</div>
-            <div className="metric">Save a replay or record to create clips</div>
-          </div>
-        )}
-        {clips.length > 0 && (
-          <table className="table">
-            <thead><tr>
-              <th>Name</th><th>Duration</th><th>Size</th><th>Created</th><th>Audio</th><th>Actions</th>
-            </tr></thead>
-            <tbody>
-              {clips.map((c: ClipListItem) => (
-                <tr key={c.id}>
-                  <td>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      {thumbnails[c.path] ? (
-                        <img src={thumbnails[c.path]} alt="" style={{ width: 36, height: 24, borderRadius: 4, objectFit: "cover" }} />
-                      ) : (
-                        <div style={{ width: 36, height: 24, borderRadius: 4, background: "#1a1a1d", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#666" }}>{"-"}</div>
-                      )}
-                      {renaming === c.id ? (
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <input className="input" value={newName} onChange={e => setNewName(e.target.value)} autoFocus />
-                          <button className="btn btn-ghost btn-sm" onClick={() => handleConfirmRename(c.id)}>Save</button>
-                          <button className="btn btn-ghost btn-sm" onClick={() => setRenaming(null)}>Cancel</button>
-                        </div>
-                      ) : (
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <span title={c.name} style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => handleRename(c.id, c.name)}>{c.name}</span>
-                          <button className="btn btn-ghost btn-sm" title="Rename" onClick={() => handleRename(c.id, c.name)}><span style={{ fontSize: 12 }}>✎</span></button>
-                        </div>
-                      )}
-                    </div>
-                  </td>
-                  <td>{fmtTime(c.duration_seconds)}</td>
-                  <td>{fmtSize(c.file_size_bytes)}</td>
-                  <td>{fmtDate(c.created_at)}</td>
-                  <td>{c.has_audio ? "Yes" : "No"}</td>
-                  <td className="actions">
-                    <button className="btn btn-ghost btn-sm" title="Preview" onClick={() => handlePreview(c)}><Play size={14} /></button>
-                    <button className="btn btn-ghost btn-sm" title="Open location" onClick={() => handleOpenLocation(c.path)}><ExternalLink size={14} /></button>
-                    <button className="btn btn-ghost btn-sm" title="Delete" onClick={() => handleDelete(c.id, c.path)}><Trash2 size={14} /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-      {previewClip && (
-        <div className="modal-overlay" onClick={handleClosePreview}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-              <button className="btn btn-ghost btn-sm" onClick={handleClosePreview}>×</button>
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>{previewClip.name}</div>
-            <video
-              src={previewClip.path}
-              controls
-              autoPlay
-              style={{ width: "100%", maxWidth: 720, maxHeight: 480, background: "#000" }}
-            >
-              Your browser does not support the video tag.
-            </video>
-            <div style={{ marginTop: 10, fontSize: 12, color: "#94949a" }}>
-              {previewClip.path}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ShortcutCapture({
-  value,
-  onChange,
-}: any) {
-  const [capturing, setCapturing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const keyName = (key: string) => {
-    const map: Record<string, string> = {
-      " ": "Space", Esc: "Esc", Escape: "Esc", Enter: "Enter", Tab: "Tab",
-      CapsLock: "CapsLock", Control: "Ctrl", Shift: "Shift", Alt: "Alt",
-      Meta: "Win", Windows: "Win", ArrowUp: "Up", ArrowDown: "Down",
-      ArrowLeft: "Left", ArrowRight: "Right",
-    };
-    if (map[key]) return map[key];
-    return key.charAt(0).toUpperCase() + key.slice(1);
-  };
-
-  useEffect(() => {
-    if (!capturing) return;
-    const onKey = (e: KeyboardEvent) => {
-      e.preventDefault();
-      if (e.key === "Escape") { setCapturing(false); setError(null); return; }
-      if (e.key === "Backspace" || e.key === "Delete") { onChange(""); setCapturing(false); setError(null); return; }
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push("Ctrl");
-      if (e.shiftKey) mods.push("Shift");
-      if (e.altKey) mods.push("Alt");
-      if (e.metaKey) mods.push("Win");
-      const ignore = ["Control","Shift","Alt","Meta","Windows","Escape","CapsLock","Tab"];
-      if (ignore.includes(e.key)) return;
-      const combo = mods.length ? mods.join("+") + "+" + keyName(e.key) : keyName(e.key);
-      setError(null);
-      onChange(combo);
-      setCapturing(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [capturing, onChange]);
-
-  const parts = value ? value.split("+") : [];
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        {parts.map((p: string) => (
-          <span key={p} className="keycap">{p}</span>
-        ))}
-        {!value && <span style={{ color: "#94949a", fontSize: 12 }}>Not set</span>}
-        <button
-          className={`btn ${capturing ? "btn-primary" : "btn-ghost"}`}
-          onClick={() => { setCapturing(true); setError(null); }}
-          disabled={capturing}
-        >
-          {capturing ? "Press keys…" : "Set"}
-        </button>
-        {capturing && (
-          <button className="btn btn-ghost btn-sm" onClick={() => { setCapturing(false); setError(null); }}>Cancel</button>
-        )}
-        {!capturing && value && (
-          <button className="btn btn-ghost btn-sm" onClick={() => { onChange(""); setError(null); }} title="Clear">×</button>
-        )}
-      </div>
-      {capturing && <div style={{ fontSize: 11, color: "#94949a" }}>Press a key combination. Esc to cancel.</div>}
-      {error && <div style={{ fontSize: 11, color: "#e45858" }}>{error}</div>}
-    </div>
-  );
-}
-
-function SettingsView({ settings, setSettings, handleSaveSettings, handleSelectOutputDir, bitrateError, setBitrateError }: any) {
-  const [audioDevices, setAudioDevices] = useState<{ kind: string; name: string; alt_name: string | null }[]>([]);
-  const [devicesLoading, setDevicesLoading] = useState(false);
-  const [videoEncoders, setVideoEncoders] = useState<{ name: string; available: boolean }[]>([]);
-  const [encodersLoading, setEncodersLoading] = useState(false);
-
-  useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      setDevicesLoading(true);
-      try {
-        const devs = await enumerateAudioDevices();
-        if (mounted) setAudioDevices(devs);
-      } catch { /* ignore */ }
-      finally { if (mounted) setDevicesLoading(false); }
-    };
-    load();
-    return () => { mounted = false; };
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      setEncodersLoading(true);
-      try {
-        const encs = await enumerateVideoEncoders();
-        if (mounted) setVideoEncoders(encs);
-      } catch { /* ignore */ }
-      finally { if (mounted) setEncodersLoading(false); }
-    };
-    load();
-    return () => { mounted = false; };
-  }, []);
-
-  const audioOptions = audioDevices.filter(d => d.kind === "audio");
-  const encoderOptions = videoEncoders.filter(e => e.available);
-  const activeEncoder = settings.encoder;
-
-  return (
-    <div>
-      <div className="section">
-        <div className="section-title"><SettingsIcon size={16} /> Output</div>
-        <div className="card">
-          <div className="field">
-            <label>Output directory</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span className="metric" style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {settings.output_dir ?? "Default: Downloads/ClipVault"}
-              </span>
-              <button className="btn btn-ghost" onClick={handleSelectOutputDir}>Browse</button>
-              <button className="btn btn-ghost" onClick={() => openOutputDir()}>Open</button>
-            </div>
-            <p className="metric">Clips are saved here. Browse chooses a different folder.</p>
-          </div>
-        </div>
-      </div>
-      <div className="section">
-        <div className="section-title"><Video size={16} /> Capture</div>
-        <div className="card grid-3">
-          <div className="field">
-            <label>Source</label>
-            <select className="select" value={settings.capture_source} onChange={e => setSettings({ ...settings, capture_source: e.target.value })}>
-              <option>desktop</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>Monitor Offset X</label>
-            <input className="input" type="number" value={settings.monitor_offset_x ?? 0} onChange={e => setSettings({ ...settings, monitor_offset_x: Number(e.target.value) || undefined })} />
-          </div>
-          <div className="field">
-            <label>Monitor Offset Y</label>
-            <input className="input" type="number" value={settings.monitor_offset_y ?? 0} onChange={e => setSettings({ ...settings, monitor_offset_y: Number(e.target.value) || undefined })} />
-          </div>
-          <p className="metric">Set offset_x/offset_y for gdigrab multi-monitor capture. Leave at 0 for primary display.</p>
-          <div className="field">
-            <label>Resolution</label>
-            <div style={{ display: "flex", gap: 6 }}>
-              <select className="select" value={String(settings.resolution_width)} onChange={e => setSettings({ ...settings, resolution_width: Number(e.target.value) })}>
-                <option>1280</option>
-                <option>1920</option>
-                <option>2560</option>
-              </select>
-              <span style={{ color: "#94949a", alignSelf: "center" }}>{"\u00D7"}</span>
-              <select className="select" value={String(settings.resolution_height)} onChange={e => setSettings({ ...settings, resolution_height: Number(e.target.value) })}>
-                <option>720</option>
-                <option>1080</option>
-                <option>1440</option>
-              </select>
-            </div>
-          </div>
-          <div className="field">
-            <label>Frame rate (fps)</label>
-            <select className="select" value={String(settings.frame_rate)} onChange={e => setSettings({ ...settings, frame_rate: Number(e.target.value) })}>
-              <option>30</option>
-              <option>60</option>
-              <option>120</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      <div className="section">
-        <div className="section-title"><Mic size={16} /> Audio</div>
-        <div className="card grid-2">
-          <div className="field">
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Mic size={14} /> Microphone</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, mic_enabled: !settings.mic_enabled })}>
-                <span style={{ color: settings.mic_enabled ? "#4ade80" : "#94949a" }}>{settings.mic_enabled ? "ON" : "OFF"}</span>
-              </button>
-              <select className="select" disabled={!settings.mic_enabled || devicesLoading} value={settings.mic_device ?? ""} onChange={e => setSettings({ ...settings, mic_device: e.target.value || null })}>
-                <option value="">Default</option>
-                {audioOptions.map((d: { kind: string; name: string; alt_name: string | null }) => (
-                  <option key={d.alt_name ?? d.name} value={d.alt_name ?? d.name}>{d.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="field">
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Headphones size={14} /> Desktop Audio</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button className="btn btn-ghost" style={{ padding: 6 }} title="Toggle" onClick={() => setSettings({ ...settings, desktop_audio_enabled: !settings.desktop_audio_enabled })}>
-                <span style={{ color: settings.desktop_audio_enabled ? "#4ade80" : "#94949a" }}>{settings.desktop_audio_enabled ? "ON" : "OFF"}</span>
-              </button>
-              <select className="select" disabled={!settings.desktop_audio_enabled || devicesLoading} value={settings.desktop_audio_device ?? ""} onChange={e => setSettings({ ...settings, desktop_audio_device: e.target.value || null })}>
-                <option value="">Default</option>
-                {audioOptions.map((d: { kind: string; name: string; alt_name: string | null }) => (
-                  <option key={d.alt_name ?? d.name} value={d.alt_name ?? d.name}>{d.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="field">
-            <label>Encoder</label>
-            <select className="select" disabled={encodersLoading} value={settings.encoder} onChange={e => setSettings({ ...settings, encoder: e.target.value })}>
-              {encoderOptions.map((e: { name: string; available: boolean }) => (
-                <option key={e.name} value={e.name}>{e.name}{e.available ? "" : " (unavailable)"}</option>
-              ))}
-              {encoderOptions.length === 0 && <option value="" disabled>No encoders detected</option>}
-            </select>
-            <p className="metric">Active: {activeEncoder}{videoEncoders.find(e => e.name === activeEncoder)?.available ? "" : " (may not be supported)"}</p>
-          </div>
-          <div className="field">
-            <label>Bitrate (kbps)</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input className="input" type="number" value={settings.bitrate_kbps} onChange={e => {
-                const v = Number(e.target.value);
-                if (!Number.isFinite(v) || v < 1 || v > 100000) {
-                  setBitrateError("Enter 1–100000 kbps");
-                  return;
-                }
-                setBitrateError(null);
-                setSettings({ ...settings, bitrate_kbps: v });
-              }} />
-              <span style={{ color: "#94949a", fontSize: 11 }}>1–100000 kbps</span>
-            </div>
-            {bitrateError && <div style={{ fontSize: 11, color: "#e45858" }}>{bitrateError}</div>}
-          </div>
-        </div>
-      </div>
-      <div className="section">
-        <div className="section-title"><Save size={16} /> Hotkeys</div>
-        <div className="card grid-2">
-          <div className="field">
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Save size={14} /> Save replay</label>
-            <ShortcutCapture
-              value={settings.hotkey_save_replay}
-              onChange={(v: string) => setSettings({ ...settings, hotkey_save_replay: v })}
+        <div className="content">
+          {view === "capture" ? (
+            <CaptureView
+              settings={saved}
+              status={status}
+              busy={captureBusy}
+              savingReplay={savingReplay}
+              togglingRecording={togglingRecording}
+              onStart={() => void handleStart()}
+              onStop={() => void handleStop()}
+              onSaveReplay={() => void handleSaveReplay()}
+              onToggleRecording={() => void handleToggleRecording()}
+              onOpenFolder={() =>
+                openOutputDir().catch((reason) =>
+                  addToast("error", "Could not open the clips folder", String(reason)),
+                )
+              }
+              onOpenSettings={openSettings}
             />
-            <p className="metric">Global hotkey, works without focus</p>
-          </div>
-          <div className="field">
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}><Play size={14} /> Start/stop manual</label>
-            <ShortcutCapture
-              value={settings.hotkey_start_stop}
-              onChange={(v: string) => setSettings({ ...settings, hotkey_start_stop: v })}
+          ) : null}
+
+          {view === "clips" ? (
+            <ClipsView refreshToken={refreshToken} onNotify={addToast} />
+          ) : null}
+
+          {view === "settings" ? (
+            <SettingsView
+              saved={saved}
+              draft={draft}
+              dirty={dirty}
+              saving={savingSettings}
+              ffmpeg={payload.ffmpeg}
+              defaultOutputDir={payload.default_output_dir}
+              settingsPath={payload.settings_path}
+              warnings={settingsWarnings}
+              onChange={setDraft}
+              onSave={() => void handleSaveSettings()}
+              onReset={handleReset}
+              onNotify={addToast}
             />
-          </div>
+          ) : null}
         </div>
-      </div>
-      <div className="section">
-        <div className="card">
-          <div className="field">
-            <label>Startup &amp; Tray</label>
-            <button className="btn btn-ghost" style={{ padding: "8px 12px" }} title="Start at startup">
-              <span style={{ color: settings.start_at_startup ? "#4ade80" : "#94949a" }}>{settings.start_at_startup ? "Launch at startup: ON" : "Launch at startup: OFF"}</span>
-            </button>
-            <button className="btn btn-ghost" style={{ padding: "8px 12px", marginLeft: 8 }} title="Minimize to tray">
-              <span style={{ color: settings.minimize_to_tray ? "#4ade80" : "#94949a" }}>{settings.minimize_to_tray ? "Minimize to tray: ON" : "Minimize to tray: OFF"}</span>
-            </button>
-          </div>
-          <div style={{ marginTop: 16 }}>
-            <button className="btn btn-primary" onClick={handleSaveSettings}>Save Settings</button>
-          </div>
-        </div>
-      </div>
+      </main>
+
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
