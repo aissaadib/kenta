@@ -255,7 +255,8 @@ a {
   height: 100%;
   border-radius: inherit;
   background: var(--tone, var(--accent));
-  transition: width 0.5s ease;
+  transform-origin: left center;
+  transition: transform 0.25s ease;
 }
 
 .sidebar-status-foot {

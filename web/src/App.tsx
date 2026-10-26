@@ -339,10 +339,10 @@ export default function App() {
           <div className="sidebar-track">
             <span
               style={{
-                width: `${Math.min(
-                  100,
-                  (status.buffered_seconds / Math.max(1, status.replay_duration_seconds)) * 100,
-                )}%`,
+                transform: `scaleX(${Math.min(
+                  1,
+                  status.buffered_seconds / Math.max(1, status.replay_duration_seconds),
+                )})`,
               }}
             />
           </div>
