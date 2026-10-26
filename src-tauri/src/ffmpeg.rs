@@ -261,7 +261,9 @@ fn quoted(text: &str) -> Option<String> {
 }
 
 pub fn audio_devices() -> AppResult<Vec<AudioDevice>> {
-  let output = Command::new(ffmpeg())
+  let mut command = Command::new(ffmpeg());
+  crate::process::hide_console(&mut command);
+  let output = command
     .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
     .stdin(Stdio::null())
     .stdout(Stdio::null())
