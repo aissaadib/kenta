@@ -330,7 +330,7 @@ a {
   width: 100%;
   max-width: 1120px;
   margin: 0 auto;
-  animation: view-in 0.28s ease both;
+  animation: view-in 0.12s ease both;
 }
 
 @keyframes view-in {
