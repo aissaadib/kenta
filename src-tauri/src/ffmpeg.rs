@@ -64,7 +64,9 @@ pub fn run_ffmpeg(args: &[String]) -> AppResult<Output> {
 }
 
 pub fn ffprobe_available() -> bool {
-  Command::new(ffprobe())
+  let mut command = Command::new(ffprobe());
+  crate::process::hide_console(&mut command);
+  command
     .arg("-version")
     .stdin(Stdio::null())
     .stdout(Stdio::null())
