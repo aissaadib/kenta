@@ -1,13 +1,17 @@
-use crate::errors::AppResult;
+use crate::errors::{AppError, AppResult};
 use dirs::config_dir;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+
+pub const DEFAULT_SAVE_HOTKEY: &str = "Ctrl+Shift+S";
+pub const DEFAULT_RECORD_HOTKEY: &str = "Ctrl+Shift+R";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
   pub schema_version: u32,
   pub output_dir: Option<PathBuf>,
@@ -28,12 +32,12 @@ pub struct Settings {
   pub hotkey_start_stop: String,
   pub start_at_startup: bool,
   pub minimize_to_tray: bool,
-  pub monitor_offset_x: Option<u32>,
-  pub monitor_offset_y: Option<u32>,
+  pub monitor_offset_x: Option<i32>,
+  pub monitor_offset_y: Option<i32>,
 }
 
-impl Settings {
-  pub fn default() -> Self {
+impl Default for Settings {
+  fn default() -> Self {
     Self {
       schema_version: SCHEMA_VERSION,
       output_dir: None,
@@ -43,15 +47,17 @@ impl Settings {
       resolution_height: 1080,
       frame_rate: 60,
       bitrate_kbps: 8000,
-      encoder: "h264_nvenc".to_string(),
+      encoder: "libx264".to_string(),
       quality_preset: "balanced".to_string(),
       mic_enabled: false,
       mic_device: None,
-      desktop_audio_enabled: true,
+      // Loopback capture is not available on every Windows PC. Starting with
+      // it off is safer and more honest than silently failing to record audio.
+      desktop_audio_enabled: false,
       desktop_audio_device: None,
       audio_sample_rate: 48000,
-      hotkey_save_replay: "Ctrl+Shift+S".to_string(),
-      hotkey_start_stop: "Ctrl+Shift+R".to_string(),
+      hotkey_save_replay: DEFAULT_SAVE_HOTKEY.to_string(),
+      hotkey_start_stop: DEFAULT_RECORD_HOTKEY.to_string(),
       start_at_startup: false,
       minimize_to_tray: true,
       monitor_offset_x: None,
@@ -60,46 +66,83 @@ impl Settings {
   }
 }
 
+impl Settings {
+  pub fn output_dir_or_default(&self) -> PathBuf {
+    self
+      .output_dir
+      .clone()
+      .unwrap_or_else(|| default_output_dir().unwrap_or_else(|_| std::env::temp_dir()))
+  }
+}
+
 pub struct SettingsStore {
   path: PathBuf,
 }
 
 impl SettingsStore {
-  pub fn load() -> AppResult<Settings> {
-    let path = Self::settings_path()?;
-    if !path.exists() {
-      let s = Settings::default();
-      Self { path: path.clone() }.save(&s)?;
-      return Ok(s);
+  /// Load settings without destroying recoverable user data. Missing keys use
+  /// defaults; malformed JSON is moved aside and defaults are recreated.
+  pub fn load_with_warnings() -> AppResult<(Settings, Vec<String>)> {
+    let store = Self::default();
+    let mut warnings = Vec::new();
+    if !store.path.exists() {
+      let settings = Settings::default();
+      store.save(&settings)?;
+      return Ok((settings, warnings));
     }
-    let data = fs::read_to_string(&path)?;
-    let mut s: Settings = serde_json::from_str(&data)?;
-    Self::migrate(&mut s)?;
-    Ok(s)
+    let data = fs::read_to_string(&store.path)?;
+    let mut settings: Settings = match serde_json::from_str(&data) {
+      Ok(settings) => settings,
+      Err(error) => {
+        let backup = store.path.with_extension(format!(
+          "corrupt-{}.json",
+          chrono::Local::now().format("%Y%m%d_%H%M%S")
+        ));
+        let _ = fs::rename(&store.path, &backup);
+        let settings = Settings::default();
+        store.save(&settings)?;
+        warnings.push(format!(
+          "Your settings file could not be read ({error}). Default settings were restored; the old file was kept as {}.",
+          backup.display()
+        ));
+        return Ok((settings, warnings));
+      }
+    };
+
+    if settings.schema_version < SCHEMA_VERSION {
+      settings.schema_version = SCHEMA_VERSION;
+    }
+    reconcile(&mut settings, &mut warnings);
+    if !warnings.is_empty() {
+      let _ = store.save(&settings);
+    }
+    Ok((settings, warnings))
   }
 
   pub fn save(&self, settings: &Settings) -> AppResult<()> {
-    let mut s = settings.clone();
-    s.schema_version = SCHEMA_VERSION;
-    let data = serde_json::to_string_pretty(&s)?;
+    validate(settings)?;
+    let mut stored = settings.clone();
+    stored.schema_version = SCHEMA_VERSION;
+    let data = serde_json::to_string_pretty(&stored)?;
     if let Some(parent) = self.path.parent() {
       fs::create_dir_all(parent)?;
     }
-    fs::write(&self.path, data)?;
+    let temporary = self.path.with_extension("json.tmp");
+    fs::write(&temporary, data)?;
+    if self.path.exists() {
+      fs::remove_file(&self.path)?;
+    }
+    fs::rename(&temporary, &self.path)?;
     Ok(())
   }
 
   fn settings_path() -> AppResult<PathBuf> {
     let base = config_dir().ok_or_else(|| AppError::Settings("no config dir".into()))?;
-    let app_dir = base.join("ClipVault");
-    Ok(app_dir.join(SETTINGS_FILE_NAME))
+    Ok(base.join("ClipVault").join(SETTINGS_FILE_NAME))
   }
 
-  fn migrate(settings: &mut Settings) -> AppResult<()> {
-    if settings.schema_version < SCHEMA_VERSION {
-      settings.schema_version = SCHEMA_VERSION;
-    }
-    Ok(())
+  pub fn path(&self) -> &Path {
+    &self.path
   }
 }
 
@@ -111,65 +154,228 @@ impl Default for SettingsStore {
   }
 }
 
+pub fn default_output_dir() -> AppResult<PathBuf> {
+  let base = dirs::download_dir()
+    .or_else(|| dirs::video_dir())
+    .ok_or_else(|| AppError::Settings("no download/video dir".into()))?;
+  Ok(base.join("ClipVault"))
+}
+
+fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
+  let replay = settings.replay_duration_seconds;
+  settings.replay_duration_seconds = replay.clamp(5, 3600);
+  if settings.replay_duration_seconds != replay {
+    warnings.push(format!(
+      "Replay duration {replay}s was outside the supported range and was reset to {}s.",
+      settings.replay_duration_seconds
+    ));
+  }
+  let fps = settings.frame_rate;
+  settings.frame_rate = fps.clamp(1, 240);
+  if settings.frame_rate != fps {
+    warnings.push("Frame rate was reset to a supported value.".into());
+  }
+  let bitrate = settings.bitrate_kbps;
+  settings.bitrate_kbps = bitrate.clamp(500, 100_000);
+  if settings.bitrate_kbps != bitrate {
+    warnings.push("Bitrate was reset to a supported value.".into());
+  }
+  let width = settings.resolution_width;
+  let height = settings.resolution_height;
+  settings.resolution_width = width.clamp(16, 7680);
+  settings.resolution_height = height.clamp(16, 4320);
+  if settings.resolution_width != width || settings.resolution_height != height {
+    warnings.push("Capture resolution was reset to a supported value.".into());
+  }
+  let sample_rate = settings.audio_sample_rate;
+  settings.audio_sample_rate = sample_rate.clamp(8000, 192_000);
+  if settings.audio_sample_rate != sample_rate {
+    warnings.push("Audio sample rate was reset to a supported value.".into());
+  }
+  if settings.capture_source != "desktop" {
+    settings.capture_source = "desktop".into();
+  }
+  if !matches!(
+    settings.quality_preset.as_str(),
+    "performance" | "balanced" | "quality"
+  ) {
+    settings.quality_preset = "balanced".into();
+  }
+  if settings.encoder.trim().is_empty() {
+    settings.encoder = "libx264".into();
+  }
+  if settings.monitor_offset_x.is_some() != settings.monitor_offset_y.is_some() {
+    settings.monitor_offset_x = None;
+    settings.monitor_offset_y = None;
+    warnings.push("Monitor offset was incomplete and was reset to the primary display.".into());
+  }
+  if let Some(dir) = settings.output_dir.clone() {
+    // A folder that does not exist yet is valid: it is created when the first
+    // clip is saved. Only a missing drive, relative path, or a file is invalid.
+    if !dir.is_absolute() || (dir.exists() && !dir.is_dir()) {
+      settings.output_dir = None;
+      warnings.push(format!(
+        "The saved clip folder {} is unavailable. Clips will use the default folder.",
+        dir.display()
+      ));
+    }
+  }
+  for (label, value, default) in [
+    (
+      "Save replay",
+      &mut settings.hotkey_save_replay,
+      DEFAULT_SAVE_HOTKEY,
+    ),
+    (
+      "Start/stop recording",
+      &mut settings.hotkey_start_stop,
+      DEFAULT_RECORD_HOTKEY,
+    ),
+  ] {
+    if !value.trim().is_empty() && crate::hotkey::parse_binding(value).is_err() {
+      warnings.push(format!(
+        "The {label} shortcut \"{value}\" is not supported and was reset to {default}."
+      ));
+      *value = default.to_string();
+    }
+  }
+}
+
+pub fn validate(settings: &Settings) -> AppResult<()> {
+  if !(5..=3600).contains(&settings.replay_duration_seconds) {
+    return Err(AppError::Validation(
+      "Replay duration must be between 5 and 3600 seconds.".into(),
+    ));
+  }
+  if !(1..=240).contains(&settings.frame_rate) {
+    return Err(AppError::Validation(
+      "Frame rate must be between 1 and 240 fps.".into(),
+    ));
+  }
+  if !(500..=100_000).contains(&settings.bitrate_kbps) {
+    return Err(AppError::Validation(
+      "Bitrate must be between 500 and 100000 kbps.".into(),
+    ));
+  }
+  if !(16..=7680).contains(&settings.resolution_width)
+    || !(16..=4320).contains(&settings.resolution_height)
+  {
+    return Err(AppError::Validation(
+      "Resolution is outside the supported range.".into(),
+    ));
+  }
+  if !(8000..=192_000).contains(&settings.audio_sample_rate) {
+    return Err(AppError::Validation(
+      "Audio sample rate must be between 8000 and 192000 Hz.".into(),
+    ));
+  }
+  if settings.capture_source != "desktop" {
+    return Err(AppError::Validation(
+      "Only desktop capture is supported.".into(),
+    ));
+  }
+  if !matches!(
+    settings.quality_preset.as_str(),
+    "performance" | "balanced" | "quality"
+  ) {
+    return Err(AppError::Validation("Unknown quality preset.".into()));
+  }
+  if settings.encoder.trim().is_empty() {
+    return Err(AppError::Validation("Choose an encoder.".into()));
+  }
+  if settings.monitor_offset_x.is_some() != settings.monitor_offset_y.is_some() {
+    return Err(AppError::Validation(
+      "Both monitor offsets must be set together.".into(),
+    ));
+  }
+  if let Some(dir) = &settings.output_dir {
+    if !dir.is_absolute() {
+      return Err(AppError::Validation(
+        "The clip folder must be an absolute path.".into(),
+      ));
+    }
+    if dir.exists() && !dir.is_dir() {
+      return Err(AppError::Validation(
+        "The clip folder points to a file, not a folder.".into(),
+      ));
+    }
+  }
+  if !settings.hotkey_save_replay.trim().is_empty() {
+    crate::hotkey::parse_binding(&settings.hotkey_save_replay)
+      .map_err(|e| AppError::Validation(format!("Save replay shortcut: {e}")))?;
+  }
+  if !settings.hotkey_start_stop.trim().is_empty() {
+    crate::hotkey::parse_binding(&settings.hotkey_start_stop)
+      .map_err(|e| AppError::Validation(format!("Start/stop shortcut: {e}")))?;
+  }
+  if !settings.hotkey_save_replay.trim().is_empty()
+    && settings.hotkey_save_replay.eq_ignore_ascii_case(&settings.hotkey_start_stop)
+  {
+    return Err(AppError::Validation(
+      "The two shortcuts must be different.".into(),
+    ));
+  }
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
   #[test]
-  fn validate_accepts_valid_settings() {
-    let s = Settings::default();
-    assert!(validate(&s).is_ok());
+  fn validate_accepts_defaults() {
+    assert!(validate(&Settings::default()).is_ok());
   }
 
   #[test]
-  fn validate_rejects_zero_duration() {
-    let mut s = Settings::default();
-    s.replay_duration_seconds = 0;
-    assert!(validate(&s).is_err());
+  fn validate_rejects_out_of_range_values() {
+    let mut settings = Settings::default();
+    settings.replay_duration_seconds = 0;
+    assert!(validate(&settings).is_err());
+    settings = Settings::default();
+    settings.frame_rate = 500;
+    assert!(validate(&settings).is_err());
+    settings = Settings::default();
+    settings.bitrate_kbps = 1;
+    assert!(validate(&settings).is_err());
+    settings = Settings::default();
+    settings.resolution_width = 0;
+    assert!(validate(&settings).is_err());
   }
 
   #[test]
-  fn validate_rejects_zero_fps() {
-    let mut s = Settings::default();
-    s.frame_rate = 0;
-    assert!(validate(&s).is_err());
+  fn validate_rejects_duplicate_shortcuts() {
+    let mut settings = Settings::default();
+    settings.hotkey_start_stop = settings.hotkey_save_replay.clone();
+    assert!(validate(&settings).is_err());
   }
 
   #[test]
-  fn validate_rejects_zero_bitrate() {
-    let mut s = Settings::default();
-    s.bitrate_kbps = 0;
-    assert!(validate(&s).is_err());
+  fn validate_rejects_invalid_shortcut() {
+    let mut settings = Settings::default();
+    settings.hotkey_save_replay = "Ctrl+Banana".into();
+    assert!(validate(&settings).is_err());
   }
 
   #[test]
-  fn validate_rejects_zero_resolution() {
-    let mut s = Settings::default();
-    s.resolution_width = 0;
-    assert!(validate(&s).is_err());
+  fn missing_keys_use_defaults() {
+    let settings: Settings = serde_json::from_str(r#"{"replay_duration_seconds": 90}"#).unwrap();
+    assert_eq!(settings.replay_duration_seconds, 90);
+    assert_eq!(settings.frame_rate, 60);
+    assert_eq!(settings.encoder, "libx264");
+  }
+
+  #[test]
+  fn reconcile_clamps_and_warns() {
+    let mut settings = Settings::default();
+    settings.replay_duration_seconds = 1;
+    settings.frame_rate = 999;
+    settings.hotkey_save_replay = "Ctrl+Nope".into();
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.replay_duration_seconds, 5);
+    assert_eq!(settings.frame_rate, 240);
+    assert_eq!(settings.hotkey_save_replay, DEFAULT_SAVE_HOTKEY);
+    assert!(!warnings.is_empty());
   }
 }
-
-pub fn default_output_dir() -> AppResult<PathBuf> {
-  let base = dirs::download_dir().or_else(|| dirs::video_dir())
-    .ok_or_else(|| AppError::Settings("no download/video dir".into()))?;
-  Ok(base.join("ClipVault"))
-}
-
-pub fn validate(settings: &Settings) -> AppResult<()> {
-  if settings.replay_duration_seconds == 0 {
-    return Err(AppError::Settings("replay duration must be > 0".into()));
-  }
-  if settings.frame_rate == 0 {
-    return Err(AppError::Settings("frame rate must be > 0".into()));
-  }
-  if settings.bitrate_kbps == 0 {
-    return Err(AppError::Settings("bitrate must be > 0".into()));
-  }
-  if settings.resolution_width == 0 || settings.resolution_height == 0 {
-    return Err(AppError::Settings("resolution must be > 0".into()));
-  }
-  Ok(())
-}
-
-use crate::errors::AppError;
