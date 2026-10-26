@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   AudioLines,
@@ -41,7 +41,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "duration", label: "Longest first" },
 ];
 
-export function ClipsView({ refreshToken, onNotify }: Props) {
+function ClipsViewImpl({ refreshToken, onNotify }: Props) {
   const [clips, setClips] = useState<ClipListItem[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date");
@@ -501,3 +501,7 @@ export function ClipsView({ refreshToken, onNotify }: Props) {
     </div>
   );
 }
+
+// The status event fires twice a second. Without this boundary, every tick
+// re-rendered the whole clip grid and all of its thumbnails.
+export const ClipsView = memo(ClipsViewImpl);
