@@ -8,6 +8,7 @@ use crate::errors::{AppError, AppResult};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 
 /// Resolve an FFmpeg-family executable. Priority:
 /// 1. `CLIPVAULT_FFMPEG` / `CLIPVAULT_FFPROBE` override.
@@ -95,6 +96,9 @@ pub struct EncoderInfo {
   pub hardware: bool,
 }
 
+/// Cached result of `ffmpeg -encoders`, populated on first use.
+static ENCODER_CACHE: Mutex<Option<Vec<EncoderInfo>>> = Mutex::new(None);
+
 fn encoder_label(name: &str) -> (String, bool) {
   let (label, hardware) = match name {
     "h264_nvenc" => ("NVIDIA NVENC (H.264)", true),
@@ -144,6 +148,14 @@ pub fn parse_encoders(stdout: &str) -> Vec<EncoderInfo> {
 }
 
 pub fn video_encoders() -> AppResult<Vec<EncoderInfo>> {
+  // The encoder list only changes when FFmpeg or the GPU driver changes.
+  // Cache it for the process lifetime so starting capture, saving settings,
+  // and opening the Settings view do not each spawn `ffmpeg -encoders`.
+  if let Ok(cache) = ENCODER_CACHE.lock() {
+    if let Some(list) = cache.as_ref() {
+      return Ok(list.clone());
+    }
+  }
   let output = Command::new(ffmpeg())
     .args(["-hide_banner", "-encoders"])
     .stdin(Stdio::null())
@@ -154,7 +166,19 @@ pub fn video_encoders() -> AppResult<Vec<EncoderInfo>> {
   if !output.status.success() {
     return Err(AppError::Ffmpeg("FFmpeg could not list encoders".into()));
   }
-  Ok(parse_encoders(&String::from_utf8_lossy(&output.stdout)))
+  let list = parse_encoders(&String::from_utf8_lossy(&output.stdout));
+  if let Ok(mut cache) = ENCODER_CACHE.lock() {
+    *cache = Some(list.clone());
+  }
+  Ok(list)
+}
+
+/// Drop the cached encoder list so the next call re-queries FFmpeg. Used by
+/// the explicit "recheck FFmpeg" action in Settings.
+pub fn invalidate_encoder_cache() {
+  if let Ok(mut cache) = ENCODER_CACHE.lock() {
+    *cache = None;
+  }
 }
 
 pub fn encoder_available(name: &str) -> bool {
