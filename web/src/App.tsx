@@ -62,6 +62,15 @@ export default function App() {
   const [refreshToken, setRefreshToken] = useState(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  // A view is mounted the first time it is opened and then kept alive. Remounting
+  // Clips and Settings meant re-listing clips and re-enumerating devices and
+  // encoders on every switch, which is where the delay came from.
+  const [mountedViews, setMountedViews] = useState<Record<View, boolean>>({
+    capture: true,
+    clips: false,
+    settings: false,
+  });
 
   const addToast = useCallback((kind: ToastKind, title: string, message?: string) => {
     const id = ++toastId.current;
@@ -248,11 +257,16 @@ export default function App() {
     setDraft(saved);
   };
 
-  const handleNavigate = (next: View) => {
+  const showView = useCallback((next: View) => {
+    // The scroll container is shared, so reset it before swapping content in.
+    contentRef.current?.scrollTo({ top: 0 });
     setView(next);
-  };
+    setMountedViews((previous) =>
+      previous[next] ? previous : { ...previous, [next]: true },
+    );
+  }, []);
 
-  const openSettings = () => setView("settings");
+  const openSettings = useCallback(() => showView("settings"), [showView]);
 
   if (loading) {
     return (
@@ -294,7 +308,7 @@ export default function App() {
               key={item.key}
               type="button"
               className={`nav-item ${view === item.key ? "is-active" : ""}`}
-              onClick={() => handleNavigate(item.key)}
+              onClick={() => showView(item.key)}
               aria-current={view === item.key ? "page" : undefined}
             >
               <span className="nav-icon">{item.icon}</span>
@@ -394,46 +408,52 @@ export default function App() {
           </div>
         </header>
 
-        <div className="content">
-          {view === "capture" ? (
-            <CaptureView
-              settings={saved}
-              status={status}
-              busy={captureBusy}
-              savingReplay={savingReplay}
-              togglingRecording={togglingRecording}
-              onStart={() => void handleStart()}
-              onStop={() => void handleStop()}
-              onSaveReplay={() => void handleSaveReplay()}
-              onToggleRecording={() => void handleToggleRecording()}
-              onOpenFolder={() =>
-                openOutputDir().catch((reason) =>
-                  addToast("error", "Could not open the clips folder", String(reason)),
-                )
-              }
-              onOpenSettings={openSettings}
-            />
+        <div className="content" ref={contentRef}>
+          {mountedViews.capture ? (
+            <div className="view-slot" hidden={view !== "capture"}>
+              <CaptureView
+                settings={saved}
+                status={status}
+                busy={captureBusy}
+                savingReplay={savingReplay}
+                togglingRecording={togglingRecording}
+                onStart={() => void handleStart()}
+                onStop={() => void handleStop()}
+                onSaveReplay={() => void handleSaveReplay()}
+                onToggleRecording={() => void handleToggleRecording()}
+                onOpenFolder={() =>
+                  openOutputDir().catch((reason) =>
+                    addToast("error", "Could not open the clips folder", String(reason)),
+                  )
+                }
+                onOpenSettings={openSettings}
+              />
+            </div>
           ) : null}
 
-          {view === "clips" ? (
-            <ClipsView refreshToken={refreshToken} onNotify={addToast} />
+          {mountedViews.clips ? (
+            <div className="view-slot" hidden={view !== "clips"}>
+              <ClipsView refreshToken={refreshToken} onNotify={addToast} />
+            </div>
           ) : null}
 
-          {view === "settings" ? (
-            <SettingsView
-              saved={saved}
-              draft={draft}
-              dirty={dirty}
-              saving={savingSettings}
-              ffmpeg={payload.ffmpeg}
-              defaultOutputDir={payload.default_output_dir}
-              settingsPath={payload.settings_path}
-              warnings={settingsWarnings}
-              onChange={setDraft}
-              onSave={() => void handleSaveSettings()}
-              onReset={handleReset}
-              onNotify={addToast}
-            />
+          {mountedViews.settings ? (
+            <div className="view-slot" hidden={view !== "settings"}>
+              <SettingsView
+                saved={saved}
+                draft={draft}
+                dirty={dirty}
+                saving={savingSettings}
+                ffmpeg={payload.ffmpeg}
+                defaultOutputDir={payload.default_output_dir}
+                settingsPath={payload.settings_path}
+                warnings={settingsWarnings}
+                onChange={setDraft}
+                onSave={() => void handleSaveSettings()}
+                onReset={handleReset}
+                onNotify={addToast}
+              />
+            </div>
           ) : null}
         </div>
       </main>
