@@ -220,7 +220,7 @@ export default function App() {
     }
   };
 
-  const handleSaveSettings = async () => {
+  const handleSaveSettings = useCallback(async () => {
     if (!draft || savingSettings) return;
     setSavingSettings(true);
     try {
@@ -250,12 +250,12 @@ export default function App() {
     } finally {
       setSavingSettings(false);
     }
-  };
+  }, [draft, savingSettings, addToast]);
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     if (!saved) return;
     setDraft(saved);
-  };
+  }, [saved]);
 
   const showView = useCallback((next: View) => {
     // The scroll container is shared, so reset it before swapping content in.
@@ -449,7 +449,7 @@ export default function App() {
                 settingsPath={payload.settings_path}
                 warnings={settingsWarnings}
                 onChange={setDraft}
-                onSave={() => void handleSaveSettings()}
+                onSave={handleSaveSettings}
                 onReset={handleReset}
                 onNotify={addToast}
               />

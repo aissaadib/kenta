@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   AudioLines,
@@ -161,7 +161,7 @@ function NumericField({
   );
 }
 
-export function SettingsView({
+function SettingsViewImpl({
   saved,
   draft,
   dirty,
@@ -908,3 +908,7 @@ export function SettingsView({
     </div>
   );
 }
+
+// Same reason as ClipsView: App re-renders twice a second for the status pill,
+// and the settings form has no reason to follow that.
+export const SettingsView = memo(SettingsViewImpl);
