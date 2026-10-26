@@ -43,6 +43,7 @@ pub fn ffprobe() -> PathBuf {
 
 pub fn run_ffmpeg(args: &[String]) -> AppResult<Output> {
   let mut command = Command::new(ffmpeg());
+  crate::process::hide_console(&mut command);
   command
     .args(args)
     .stdin(Stdio::null())
