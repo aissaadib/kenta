@@ -41,13 +41,24 @@ pub fn ffprobe() -> PathBuf {
 }
 
 pub fn run_ffmpeg(args: &[String]) -> AppResult<Output> {
-  Command::new(ffmpeg())
+  let mut command = Command::new(ffmpeg());
+  command
     .args(args)
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .output()
-    .map_err(|e| AppError::Ffmpeg(format!("FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe.")))
+    .stderr(Stdio::piped());
+  let child = command.spawn().map_err(|e| {
+    AppError::Ffmpeg(format!(
+      "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe."
+    ))
+  })?;
+  // Exports are short, but a crash mid-export must not leave a muxer running.
+  crate::process::contain(&child);
+  child.wait_with_output().map_err(|e| {
+    AppError::Ffmpeg(format!(
+      "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe."
+    ))
+  })
 }
 
 pub fn ffprobe_available() -> bool {
