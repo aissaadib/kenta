@@ -969,7 +969,9 @@ pub fn generate_thumbnail(state: State<'_, AppState>, id: String) -> Result<Stri
 }
 
 fn run_thumbnail(source: &Path, target: &Path, seek: &str) -> Result<(), String> {
-  let output = std::process::Command::new(ffmpeg::ffmpeg())
+  let mut command = std::process::Command::new(ffmpeg::ffmpeg());
+  crate::process::hide_console(&mut command);
+  let output = command
     .args([
       "-hide_banner",
       "-loglevel",
