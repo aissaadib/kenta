@@ -130,7 +130,7 @@ export function CaptureView({
         </div>
 
         <div className="buffer-track" aria-hidden="true">
-          <div className="buffer-fill" style={{ width: `${progress}%` }} />
+          <div className="buffer-fill" style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
 
         <div className="hero-actions">

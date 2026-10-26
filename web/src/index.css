@@ -682,7 +682,8 @@ a {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--tone, var(--accent)), rgba(255, 255, 255, 0.55));
-  transition: width 0.5s ease;
+  transform-origin: left center;
+  transition: transform 0.25s ease;
 }
 
 .hero-actions {
