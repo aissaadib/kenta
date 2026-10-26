@@ -1,19 +1,39 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 export interface CaptureStatus {
   state: string;
+  message: string | null;
   buffered_seconds: number;
   segment_count: number;
+  replay_duration_seconds: number;
+  recording_seconds: number;
+  encoder_in_use: string;
+  encoder_requested: string;
+  encoder_fallback: boolean;
+  fallback_reason: string | null;
+  mic_active: boolean;
+  desktop_audio_active: boolean;
+  has_audio: boolean;
+  warnings: string[];
+  output_dir: string;
+  exporting: boolean;
 }
 
 export interface ClipListItem {
   id: string;
   name: string;
+  display_name: string;
   path: string;
   duration_seconds: number;
   file_size_bytes: number;
   created_at: string;
   has_audio: boolean;
+  source: string;
+  width: number;
+  height: number;
+  frame_rate: number;
+  thumbnail: string | null;
+  exists: boolean;
 }
 
 export interface Settings {
@@ -40,66 +60,158 @@ export interface Settings {
   monitor_offset_y: number | null;
 }
 
-export async function getSettings(): Promise<Settings> {
+export interface FfmpegInfo {
+  available: boolean;
+  version: string | null;
+  path: string;
+  ffprobe_available: boolean;
+}
+
+export interface SettingsPayload {
+  settings: Settings;
+  warnings: string[];
+  ffmpeg: FfmpegInfo;
+  default_output_dir: string;
+  settings_path: string;
+}
+
+export interface SaveResult {
+  path: string;
+  duration_seconds: number;
+  file_size_bytes: number;
+  source: string;
+  has_audio: boolean;
+  width: number;
+  height: number;
+  frame_rate: number;
+}
+
+export interface SaveSettingsResult {
+  status: CaptureStatus;
+  capture_restarted: boolean;
+  warnings: string[];
+}
+
+export interface HotkeyStatus {
+  save_key: string;
+  record_key: string;
+  registered: boolean;
+}
+
+export interface AudioDevice {
+  kind: string;
+  name: string;
+  alt_name: string | null;
+  is_loopback: boolean;
+}
+
+export interface EncoderInfo {
+  name: string;
+  label: string;
+  available: boolean;
+  hardware: boolean;
+}
+
+export interface MonitorInfo {
+  index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
+}
+
+export function fileSrc(path: string): string {
+  return convertFileSrc(path);
+}
+
+export function getSettings(): Promise<SettingsPayload> {
   return invoke("get_settings");
 }
-export async function saveSettings(settings: Settings): Promise<void> {
+
+export function saveSettings(settings: Settings): Promise<SaveSettingsResult> {
   return invoke("save_settings", { settings });
 }
-export async function captureStart(): Promise<CaptureStatus> {
+
+export function captureStart(): Promise<CaptureStatus> {
   return invoke("capture_start");
 }
-export async function captureStop(): Promise<CaptureStatus> {
+
+export function captureStop(): Promise<CaptureStatus> {
   return invoke("capture_stop");
 }
-export async function captureStatus(): Promise<CaptureStatus> {
+
+export function captureStatus(): Promise<CaptureStatus> {
   return invoke("capture_status");
 }
-export async function captureSaveReplay(seconds: number): Promise<{ path: string; duration_seconds: number; file_size_bytes: number }> {
+
+export function captureSaveReplay(seconds: number): Promise<SaveResult> {
   return invoke("capture_save_replay", { seconds });
 }
-export async function captureStartManual(): Promise<CaptureStatus> {
+
+export function captureStartManual(): Promise<CaptureStatus> {
   return invoke("capture_start_manual");
 }
-export async function captureStopManual(): Promise<{ path: string; duration_seconds: number; file_size_bytes: number }> {
+
+export function captureStopManual(): Promise<SaveResult> {
   return invoke("capture_stop_manual");
 }
-export async function listClips(search?: string | null, sort?: string | null): Promise<ClipListItem[]> {
+
+export function listClips(
+  search?: string | null,
+  sort?: string | null,
+): Promise<ClipListItem[]> {
   return invoke("list_clips", { search, sort });
 }
-export async function deleteClip(id: string): Promise<void> {
+
+export function deleteClip(id: string): Promise<void> {
   return invoke("delete_clip", { id });
 }
-export async function renameClip(id: string, newName: string): Promise<void> {
-  return invoke("rename_clip", { id, new_name: newName });
+
+export function renameClip(id: string, newName: string): Promise<ClipListItem> {
+  return invoke("rename_clip", { id, newName });
 }
-export async function openFileLocation(path: string): Promise<void> {
+
+export function openFileLocation(path: string): Promise<void> {
   return invoke("open_file_location", { path });
 }
-export async function registerHotkeys(saveKey: string, recordKey: string): Promise<void> {
-  return invoke("register_hotkeys", { saveKey, recordKey });
-}
-export async function unregisterHotkeys(): Promise<void> {
-  return invoke("unregister_hotkeys");
-}
-export async function pollHotkeyEvent(): Promise<string | null> {
-  return invoke("poll_hotkey_event");
-}
-export async function openOutputDir(): Promise<void> {
+
+export function openOutputDir(): Promise<void> {
   return invoke("open_output_dir");
 }
-export async function selectOutputDir(currentDir?: string | null): Promise<string> {
-  return invoke("select_output_dir", { current_dir: currentDir ?? null });
+
+export function selectOutputDir(currentDir?: string | null): Promise<string | null> {
+  return invoke("select_output_dir", { currentDir: currentDir ?? null });
 }
-export async function enumerateAudioDevices(): Promise<{ kind: string; name: string; alt_name: string | null }[]> {
+
+export function openInPlayer(id?: string, path?: string): Promise<void> {
+  return invoke("open_in_player", { id: id ?? null, path: path ?? null });
+}
+
+export function enumerateAudioDevices(): Promise<AudioDevice[]> {
   return invoke("enumerate_audio_devices");
 }
-export async function enumerateVideoEncoders(): Promise<{ name: string; available: boolean }[]> {
+
+export function enumerateVideoEncoders(): Promise<EncoderInfo[]> {
   return invoke("enumerate_video_encoders");
 }
-export async function generateThumbnail(clipPath: string): Promise<string> {
-  return invoke("generate_thumbnail", { clip_path: clipPath });
+
+export function enumerateMonitors(): Promise<MonitorInfo[]> {
+  return invoke("enumerate_monitors");
 }
-export async function openInPlayer(path: string): Promise<void> {
-  return invoke("open_in_player", { path });
+
+export function checkFfmpeg(): Promise<FfmpegInfo> {
+  return invoke("check_ffmpeg");
+}
+
+export function generateThumbnail(id: string): Promise<string> {
+  return invoke("generate_thumbnail", { id });
+}
+
+export function getHotkeyStatus(): Promise<HotkeyStatus> {
+  return invoke("get_hotkey_status");
+}
+
+export function normalizeShortcut(binding: string): Promise<string> {
+  return invoke("normalize_shortcut", { binding });
 }
