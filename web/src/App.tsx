@@ -250,7 +250,6 @@ export default function App() {
 
   const handleNavigate = (next: View) => {
     setView(next);
-    if (next === "clips") setRefreshToken((value) => value + 1);
   };
 
   const openSettings = () => setView("settings");
