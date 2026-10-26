@@ -1,149 +1,198 @@
-CLIPVAULT — FINAL ENGINEERING REPORT
+CLIPVAULT - FINAL ENGINEERING REPORT
 Repository: C:\Users\aissa\Desktop\kenta
-Branch: main
-HEAD: 4f1cdc3 (pushed to origin/main)
-Working tree: clean
-Toolchain: Rust 1.99.1 (x86_64-pc-windows-gnu), Node v22.21.0, FFmpeg BtbN n9.0.2
+Branch: main (local only; not pushed)
+Date: 2026-10-26
 
 ============================================================
 1. SUMMARY
 ============================================================
-Continued the existing ClipVault codebase (Tauri 2 + React 19 + Rust +
-SQLite + FFmpeg) without rewriting it. Fixed the highest-impact functional
-defects and completed critical workflows so the app behaves as its interface
-promises.
+ClipVault now runs on a Rust-owned capture engine with a real FFmpeg
+segment buffer, working replay saves, manual recordings that finalize into
+validated MP4 files, a persistent SQLite library, and a React interface
+that reports actual backend state.
 
-Commits on main (all pushed):
-  eade1dc  Baseline: manual recording finalization, Rust capture lifecycle, hotkey args
-  965ab95  UX: native folder picker for output directory
-  8419c85  Features: clip library search, sort, and rename
-  2eb5381  Feature: audio device enumeration and selection
-  f08db47  Feature: encoder availability detection
-  bad1013  Feature: clip thumbnails and in-app player open
-  03ea17f  Feature: multi-monitor capture offset
-  3b86214  Feature: in-app video preview
-  4f1cdc3  Feature: interactive shortcut capture, bitrate validation, capture error surfacing
+The previous implementation mixed polling, placeholder status, and
+frontend-owned capture lifecycle. This pass replaced that layer rather
+than rebuilding the product: existing Tauri/React/SQLite/FFmpeg
+architecture, settings, and clip data were preserved.
 
-What the user can now do:
-- Configure where clips are saved via a native folder picker (Browse) +
-  Open Folder, instead of typing a Windows path.
-- Search, sort (date/name/size/duration), and rename clips in the library,
-  with real FFmpeg-generated thumbnails and an in-app video preview.
-- Start manual recording and have it finalize into a validated MP4 clip
-  registered in the library (previously returned "NotAvailable").
-- Have the replay buffer start automatically from Rust application setup,
-  independent of the React mount cycle.
-- Choose real microphone/desktop-audio devices via dropdowns (enumerated
-  from FFmpeg dshow), with toggles that actually persist.
-- Use global hotkeys without the "invalid args saveKey" banner (invoke arg
-  casing fixed to camelCase). Configure shortcuts via an interactive
-  key-capture control (Esc cancels, Backspace/Delete clears, modifier-only
-  combos rejected, captured combo shown immediately).
-- See only encoders FFmpeg actually supports, with the active encoder
-  displayed and unavailable ones marked.
-- Capture a specific monitor via manual offset_x/offset_y inputs.
-- Enter a bitrate with inline range validation (1–100000 kbps); invalid
-  values are rejected and Save is blocked.
-- See a real "Error" capture status if buffer startup fails (previously
-  swallowed silently).
+Commits in this pass (local main):
+  52bf2bc  Rewrite capture backend for reliable replay, recording, and settings
+  5e94fcc  Rebuild the ClipVault interface around real backend state
+  (docs)   Document setup, data locations, and verified behavior
 
 ============================================================
 2. UX IMPROVEMENTS
 ============================================================
-- Output directory: free-text input replaced with current-path display +
-  native Browse button + Open Folder button (rfd folder dialog).
-- Clip library: search input, sort dropdown, inline rename (Save/Cancel),
-  real FFmpeg thumbnails, Play/Preview button (HTML5 video modal), Open
-  Folder, honest empty states ("no clips" vs "no matches").
-- Settings: dropdowns for encoder/resolution/FPS, audio device dropdowns,
-  toggles for mic/desktop audio, interactive key-capture shortcut buttons,
-  monitor offset X/Y inputs, bitrate number input with units and range.
-- Encoder dropdown shows only available encoders; unavailable ones marked;
-  active encoder shown read-only.
-- Removed stray Apply button on output dir; every changed setting persists
-  to settings.json and is applied to the backend.
-- `.keycap` design token added for consistent shortcut key rendering.
+- Dedicated Capture, Clips, and Settings views with a consistent dark
+  mint/teal design system, readable hierarchy, and responsive layout.
+- Capture dashboard shows live buffering/recording time, buffer readiness,
+  encoder in use, audio state, and real warnings.
+- Save replay and Record are explicit primary actions; Stop buffer and
+  shortcut hints are visible without hunting through settings.
+- Clip library: thumbnails, in-app video preview, search, five sort modes,
+  rename, delete confirmation, open in player, reveal in File Explorer,
+  and a clear "File missing" state for stale records.
+- Settings: explicit Save/Revert with dirty-state text, numeric fields that
+  block saving invalid values, preset buttons that immediately update the
+  field, and a real keyboard-capture control for shortcuts.
+- Native folder picker for the output directory, plus Use default and Open.
+- Real switches for microphone, desktop audio, launch at sign-in, and
+  close-to-tray; dependent controls disable when their parent is off.
+- Toasts report the result of saves, exports, renames, deletions, and
+  FFmpeg checks. Errors are surfaced instead of silently swallowed.
+- Close button hides to the tray when enabled; tray menu exposes Show,
+  Save replay, Start/stop recording, Open clips folder, and Quit.
 
 ============================================================
 3. FUNCTIONAL FIXES
 ============================================================
-- Manual recording finalization (capture.rs): stop_manual_recording now
-  concatenates session segments into a validated MP4; start_manual records
-  session start time. Real diagnostics, no fake success.
-- Capture lifecycle ownership (lib.rs): Rust setup loads settings, builds
-  CaptureEngine, starts buffering automatically. Frontend no longer owns
-  engine startup; no duplicate FFmpeg on frontend rerenders.
-- Hotkey invoke args (tauri.ts): camelCase saveKey/recordKey, eliminating
-  the "invalid args saveKey" banner.
-- Audio toggles (App.tsx): mic/desktop-audio switches call setSettings and
-  reach the backend.
-- tauri.conf.json: `&&` -> `;` for Windows PowerShell compatibility.
-- Commands added: select_output_dir, rename_clip, list_clips (search/sort),
-  enumerate_audio_devices, enumerate_video_encoders, generate_thumbnail,
-  open_in_player.
-- Capture engine uses selected mic/desktop-audio device and monitor offset.
-- Capture startup errors now surfaced via capture_error + "Error" status
-  instead of being swallowed.
+Capture engine (src-tauri/src/capture.rs)
+- Per-session temp directories, CSV segment tracking, replay-window
+  pruning, export validation, and encoder fallback.
+- Replay saves select the requested window and concatenate segments.
+- Manual recordings record a session start time, stop FFmpeg with `q`,
+  export the full session, then restart the buffer cleanly.
+- Failed exports preserve their session directory for 24 hours.
+- Output folder and replay-window changes apply without dropping buffered
+  footage; capture-affecting changes restart the engine.
+- Audio mixing supports microphone and loopback devices; missing devices
+  produce warnings instead of broken commands.
+
+FFmpeg helpers (src-tauri/src/ffmpeg.rs)
+- Discovery via CLIPVAULT_FFMPEG/CLIPVAULT_FFPROBE, next to the exe, then
+  PATH. No shell is used; all child processes receive argument arrays.
+- Encoder availability parsing, dshow device parsing, duration probing,
+  and concat-path escaping with unit tests.
+
+Settings (src-tauri/src/settings.rs)
+- Schema v2 with defaults for missing keys, corrupt-file recovery,
+  reconciliation of out-of-range values, validation, and atomic-ish save.
+- Monitor offsets stored as signed i32. Duplicate or reserved shortcuts
+  are rejected.
+
+Shortcuts (src-tauri/src/hotkey.rs)
+- Dedicated Windows RegisterHotKey thread instead of polling.
+- Parsing/normalization, conflict detection, and rollback when a new
+  binding cannot be registered.
+
+Storage (src-tauri/src/storage.rs)
+- Correct SQL column mapping, get/update/delete APIs, escaped LIKE search,
+  and tests for search, sort, rename path updates, and wildcard escaping.
+
+Commands and lifecycle (commands.rs, lib.rs, worker.rs)
+- Status payloads, settings apply/restart logic, clip operations,
+  thumbnails, monitor enumeration, autostart, and hotkey commands.
+- Rust starts capture at app startup and stops it on shutdown.
+- Background worker handles hotkey actions and emits status snapshots;
+  the frontend no longer polls.
+- Tauri asset protocol is enabled with runtime allow_directory scoping for
+  the clip folder and thumbnail cache only.
+
+Interface (web/src)
+- Typed IPC layer; fixed camelCase arguments for rename_clip and
+  select_output_dir.
+- Real shortcut capture (Esc cancels, Backspace clears, modifier-only
+  combinations rejected).
+- Numeric validation now tracks parent invalid state, blocks Save, shows
+  field errors and a summary notice, remounts on preset/reset changes,
+  and syncs render-time text with preset updates.
+- "Show in folder" now uses Explorer's raw `/select,"path"` argument form;
+  previously Rust quoted the whole switch and Explorer ignored it.
+- Desktop-audio loopback warning is shown only when desktop audio is
+  enabled. All selects have accessible labels.
 
 ============================================================
 4. VERIFICATION
 ============================================================
-Frontend:
-- `cd web && npm run build` (tsc -b + vite build): PASSES (~249 kB JS)
-- `npm run lint` (oxlint): PASSES (only pre-existing style warnings)
+Static checks (all run on 2026-10-26):
+- cargo test --release --lib: PASS (32 passed, 0 failed)
+- cargo check: PASS
+- cargo build --release: PASS (one non-fatal linker warning about duplicate
+  resource manifests from the MinGW toolchain)
+- npm run lint: PASS (oxlint, no warnings)
+- npm run build: PASS (tsc -b + vite build)
 
-Rust:
-- `cargo build` (debug): PASSES
-- `cargo build --release`: PASSES (~24 MB binary)
-- `cargo test`: BLOCKED by environment — GNU MinGW test binary exits
-  0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND) on load; a trivial cargo test
-  project runs fine, so this is a toolchain/DLL load issue, not a code
-  regression. Recorded honestly; not claimed as passing.
+Runtime checks against the release binary:
+- Replay buffer starts automatically and reports live buffered seconds.
+- Replay saved through the real global shortcut Ctrl+Shift+S
+  (ClipVault_2026-10-26_17-26-03_replay.mp4, 11.5 MB).
+- Manual recording produced a 29.68 s, 1920x1080, 60 fps MP4 and restarted
+  the buffer afterward.
+- Global shortcuts Ctrl+Shift+F9 and Ctrl+Shift+R were also verified with
+  Windows SendKeys before the final binding change.
+- Clip rename changed both the library entry and the file on disk; the
+  original name was restored.
+- Clip delete removed the file and the library record, with a success toast.
+- Search and Name A-Z sort returned the expected subsets/order.
+- Missing-file handling: after renaming a clip on disk and refreshing, the
+  card showed "File missing", preview/play/rename disabled, and the record
+  recovered after restoring the file.
+- In-app preview loaded through the asset protocol (readyState 4, 42 s).
+- Native folder picker opened a real "Select Folder" dialog; selecting a
+  folder updated the path and dirty state, and saving persisted it.
+- Launch at sign-in set and removed the HKCU Run value; settings persisted.
+- Close-to-tray hid the window while the process, capture, and CDP
+  endpoint stayed alive; the window was restored afterward.
+- Invalid bitrate (100 kbps) blocked Save and showed the field error and
+  summary notice; Revert restored saved values and text.
+- Replay preset click updated the numeric field (5m -> 300) immediately.
+- Encoder list showed NVIDIA NVENC (H.264) as active; FFmpeg re-check
+  reported the real FFmpeg version.
+- Desktop-audio warning appeared when enabled with no loopback device and
+  disappeared when disabled; settings saved with both audio toggles off.
+- "Show in folder" selected the exact clip file in File Explorer after the
+  raw-argument fix.
 
-Runtime:
-- Debug and release builds launched without the "invalid args" banner.
-- FFmpeg capture pipeline verified end-to-end earlier: 3s 1280x720
-  h264_nvenc test.mp4 encoded and confirmed decodable via ffprobe/ffmpeg.
-- Buffering auto-starts from Rust setup (status reflects Buffering).
-
-Not tested (environment/hardware limits):
-- Live clip recording/save with a display source
-- NVENC fallback on a system without NVENC
-- Global hotkeys firing while unfocused
-- Native folder-picker dialog rendering at runtime
-- In-app preview against a real h264_nvenc clip at runtime
-- `cargo test` execution
+Not verified (environment or hardware limits):
+- Hardware-encoder failure fallback on a machine without NVENC.
+- Real desktop-audio loopback capture (this PC exposes no loopback device).
+- Tray menu item clicks (tray icon creation and close-to-tray were verified;
+  menu automation was not reliable in this environment).
+- Installer/MSI bundling and a clean-machine install.
+- Multi-monitor capture on a second physical display.
+- Debug Rust test binaries still fail with STATUS_ENTRYPOINT_NOT_FOUND;
+  tests are run with --release.
 
 ============================================================
 5. REMAINING LIMITATIONS
 ============================================================
-- Manual recording reuses the shared segment buffer; concurrent manual +
-  replay saves serialized by engine lock.
-- Multi-monitor uses manual offset X/Y inputs (no automatic display
-  enumeration — the Windows crate API was fragile in this toolchain and
-  was removed rather than ship broken code).
-- `cargo test` cannot run in this toolchain environment.
-- No audio-device hot-plug handling.
-- Encoder auto-fallback on failure not implemented (detection present;
-  unavailable encoders are not selectable). Documented as next priority.
+- Desktop audio needs a loopback device (Stereo Mix or a virtual cable).
+  Without one, video and microphone still record, and the UI explains why.
+- Hardware encoder fallback is implemented but not physically exercised on
+  a machine where NVENC fails.
+- The tray menu is implemented through Tauri, but menu clicks were not
+  automated; treat tray interaction as a manual QA item.
+- The app exited unexpectedly twice during early UI automation in this
+  session. It has been stable through repeated launches, capture, settings
+  saves, and close-to-tray tests after the rewrite, but no crash dump or
+  Windows Error Reporting event was produced, so the original cause is
+  still unconfirmed.
+- The MinGW release build emits a duplicate-manifest linker warning. The
+  binary runs, but packaging should be validated on a clean machine.
+- Capturing protected content, exclusive-fullscreen games, and DRM video
+  depends on Windows/FFmpeg behavior and is outside this pass.
 
 ============================================================
 6. GIT STATUS
 ============================================================
-Branch: main
-HEAD commit: 4f1cdc3 "Feature: interactive shortcut capture, bitrate validation, capture error surfacing"
-Working tree: clean
-Commits created & pushed this session:
-  eade1dc, 965ab95, 8419c85, 2eb5381, f08db47, bad1013, 03ea17f, 3b86214, 4f1cdc3
-Pushed: yes — all commits pushed to origin/main
-No history rewritten; no unrelated user changes discarded.
+- Branch: main
+- Origin/main: not updated; nothing was pushed or merged.
+- Working tree: clean after this documentation commit.
+- Commits: 52bf2bc (backend), 5e94fcc (frontend), plus the documentation
+  commit that contains this report.
 
 ============================================================
 7. NEXT PRIORITIES
 ============================================================
-1. Get `cargo test` running (MinGW toolchain/DLL load issue) and add unit
-   tests for capture state machine, segment selection, concat safety.
-2. Add automatic display enumeration (fix Windows crate API or use wmic/PowerShell).
-3. Exercise thumbnail generation + in-app preview against real clips.
-4. Add encoder fallback UI (auto-switch to libx264 when the selected
-   hardware encoder fails, reflecting the actual encoder in use).
+1. Manual QA on a clean Windows machine: installer, first run, tray menu,
+   and autostart after reboot.
+2. Test hardware fallback by forcing an unavailable encoder, and test
+   desktop audio with Stereo Mix or a virtual cable.
+3. Add an integration test that runs a short FFmpeg capture, saves a
+   replay, and probes the exported file.
+4. Validate multi-monitor offsets and mixed-DPI setups.
+5. Investigate the two early unexpected exits with a crash handler or
+   Windows Error Reporting dump, if they recur.
+6. Add a packaging step that bundles ffmpeg.exe/ffprobe.exe or documents
+   the PATH requirement in the installer.
