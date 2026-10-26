@@ -59,6 +59,9 @@ function ClipsViewImpl({ refreshToken, onNotify }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // Only typing in the search box needs debouncing. Opening the view, a newly
+    // saved clip, and the manual refresh button should fetch immediately.
+    const delay = search.trim() ? 180 : 0;
     const timer = window.setTimeout(() => {
       listClips(search.trim() || null, sort)
         .then((loaded) => {
@@ -77,7 +80,7 @@ function ClipsViewImpl({ refreshToken, onNotify }: Props) {
         .finally(() => {
           if (!cancelled) setLoading(false);
         });
-    }, 180);
+    }, delay);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
