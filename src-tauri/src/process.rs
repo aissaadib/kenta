@@ -12,7 +12,8 @@
 //! soon as this process exits, however it exits.
 
 use std::os::windows::io::AsRawHandle;
-use std::process::Child;
+use std::os::windows::process::CommandExt;
+use std::process::{Child, Command};
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
@@ -61,4 +62,22 @@ pub fn contain(child: &Child) {
   unsafe {
     let _ = AssignProcessToJobObject(job as HANDLE, child.as_raw_handle() as HANDLE);
   }
+}
+
+/// `CREATE_NO_WINDOW`: run a console program without allocating a console.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Stop a child process from opening a console window.
+///
+/// ClipVault is built as a GUI subsystem executable, so it has no console of
+/// its own. When it launches a console program such as `ffmpeg.exe`, Windows
+/// creates a console host for that child and shows it as a separate window on
+/// the desktop. Passing `CREATE_NO_WINDOW` gives the child the same hidden
+/// console semantics it would get from a GUI parent on a modern Windows build,
+/// so capture, probing, and thumbnail jobs stay invisible.
+///
+/// This only affects console programs. `explorer.exe` is a GUI process and is
+/// left alone.
+pub fn hide_console(command: &mut Command) {
+  command.creation_flags(CREATE_NO_WINDOW);
 }
