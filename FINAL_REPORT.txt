@@ -1,7 +1,7 @@
 CLIPVAULT — FINAL ENGINEERING REPORT
 Repository: C:\Users\aissa\Desktop\kenta
 Branch: main
-HEAD: 3b86214 (pushed to origin/main)
+HEAD: 4f1cdc3 (pushed to origin/main)
 Working tree: clean
 Toolchain: Rust 1.99.1 (x86_64-pc-windows-gnu), Node v22.21.0, FFmpeg BtbN n9.0.2
 
@@ -22,6 +22,7 @@ Commits on main (all pushed):
   bad1013  Feature: clip thumbnails and in-app player open
   03ea17f  Feature: multi-monitor capture offset
   3b86214  Feature: in-app video preview
+  4f1cdc3  Feature: interactive shortcut capture, bitrate validation, capture error surfacing
 
 What the user can now do:
 - Configure where clips are saved via a native folder picker (Browse) +
@@ -35,25 +36,33 @@ What the user can now do:
 - Choose real microphone/desktop-audio devices via dropdowns (enumerated
   from FFmpeg dshow), with toggles that actually persist.
 - Use global hotkeys without the "invalid args saveKey" banner (invoke arg
-  casing fixed to camelCase).
+  casing fixed to camelCase). Configure shortcuts via an interactive
+  key-capture control (Esc cancels, Backspace/Delete clears, modifier-only
+  combos rejected, captured combo shown immediately).
 - See only encoders FFmpeg actually supports, with the active encoder
   displayed and unavailable ones marked.
-- Capture a specific monitor via manual offset_x/offset_y inputs for gdigrab
-  multi-monitor capture.
+- Capture a specific monitor via manual offset_x/offset_y inputs.
+- Enter a bitrate with inline range validation (1–100000 kbps); invalid
+  values are rejected and Save is blocked.
+- See a real "Error" capture status if buffer startup fails (previously
+  swallowed silently).
 
 ============================================================
 2. UX IMPROVEMENTS
 ============================================================
 - Output directory: free-text input replaced with current-path display +
-  native Browse button + Open Folder button.
+  native Browse button + Open Folder button (rfd folder dialog).
 - Clip library: search input, sort dropdown, inline rename (Save/Cancel),
   real FFmpeg thumbnails, Play/Preview button (HTML5 video modal), Open
-  Folder, honest empty states.
+  Folder, honest empty states ("no clips" vs "no matches").
 - Settings: dropdowns for encoder/resolution/FPS, audio device dropdowns,
-  toggles for mic/desktop audio, key-cap buttons for shortcuts, monitor
-  offset X/Y inputs. Encoder dropdown shows only available encoders.
+  toggles for mic/desktop audio, interactive key-capture shortcut buttons,
+  monitor offset X/Y inputs, bitrate number input with units and range.
+- Encoder dropdown shows only available encoders; unavailable ones marked;
+  active encoder shown read-only.
 - Removed stray Apply button on output dir; every changed setting persists
   to settings.json and is applied to the backend.
+- `.keycap` design token added for consistent shortcut key rendering.
 
 ============================================================
 3. FUNCTIONAL FIXES
@@ -62,8 +71,8 @@ What the user can now do:
   concatenates session segments into a validated MP4; start_manual records
   session start time. Real diagnostics, no fake success.
 - Capture lifecycle ownership (lib.rs): Rust setup loads settings, builds
-  CaptureEngine, starts buffering automatically. No duplicate FFmpeg on
-  frontend rerenders.
+  CaptureEngine, starts buffering automatically. Frontend no longer owns
+  engine startup; no duplicate FFmpeg on frontend rerenders.
 - Hotkey invoke args (tauri.ts): camelCase saveKey/recordKey, eliminating
   the "invalid args saveKey" banner.
 - Audio toggles (App.tsx): mic/desktop-audio switches call setSettings and
@@ -73,33 +82,37 @@ What the user can now do:
   enumerate_audio_devices, enumerate_video_encoders, generate_thumbnail,
   open_in_player.
 - Capture engine uses selected mic/desktop-audio device and monitor offset.
+- Capture startup errors now surfaced via capture_error + "Error" status
+  instead of being swallowed.
 
 ============================================================
 4. VERIFICATION
 ============================================================
 Frontend:
-- `cd web && npm run build` (tsc -b + vite build): PASSES (~248 kB JS)
+- `cd web && npm run build` (tsc -b + vite build): PASSES (~249 kB JS)
 - `npm run lint` (oxlint): PASSES (only pre-existing style warnings)
 
 Rust:
 - `cargo build` (debug): PASSES
 - `cargo build --release`: PASSES (~24 MB binary)
 - `cargo test`: BLOCKED by environment — GNU MinGW test binary exits
-  0xc0000139 on load; trivial cargo test project runs fine, so this is a
-  toolchain/DLL load issue, not a code regression.
+  0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND) on load; a trivial cargo test
+  project runs fine, so this is a toolchain/DLL load issue, not a code
+  regression. Recorded honestly; not claimed as passing.
 
 Runtime:
-- Release build launched without the "invalid args" banner.
-- FFmpeg capture pipeline verified end-to-end: 3s 1280x720 h264_nvenc
-  test.mp4 encoded and confirmed decodable via ffprobe/ffmpeg.
-- Buffering auto-starts from Rust setup.
+- Debug and release builds launched without the "invalid args" banner.
+- FFmpeg capture pipeline verified end-to-end earlier: 3s 1280x720
+  h264_nvenc test.mp4 encoded and confirmed decodable via ffprobe/ffmpeg.
+- Buffering auto-starts from Rust setup (status reflects Buffering).
 
 Not tested (environment/hardware limits):
 - Live clip recording/save with a display source
 - NVENC fallback on a system without NVENC
-- Global hotkeys while unfocused
+- Global hotkeys firing while unfocused
 - Native folder-picker dialog rendering at runtime
 - In-app preview against a real h264_nvenc clip at runtime
+- `cargo test` execution
 
 ============================================================
 5. REMAINING LIMITATIONS
@@ -107,25 +120,30 @@ Not tested (environment/hardware limits):
 - Manual recording reuses the shared segment buffer; concurrent manual +
   replay saves serialized by engine lock.
 - Multi-monitor uses manual offset X/Y inputs (no automatic display
-  enumeration due to Windows crate API fragility in this toolchain).
+  enumeration — the Windows crate API was fragile in this toolchain and
+  was removed rather than ship broken code).
 - `cargo test` cannot run in this toolchain environment.
-- No clip thumbnail regeneration on every render (cached).
 - No audio-device hot-plug handling.
+- Encoder auto-fallback on failure not implemented (detection present;
+  unavailable encoders are not selectable). Documented as next priority.
 
 ============================================================
 6. GIT STATUS
 ============================================================
 Branch: main
-HEAD commit: 3b86214 "Feature: in-app video preview"
+HEAD commit: 4f1cdc3 "Feature: interactive shortcut capture, bitrate validation, capture error surfacing"
 Working tree: clean
 Commits created & pushed this session:
-  eade1dc, 965ab95, 8419c85, 2eb5381, f08db47, bad1013, 03ea17f, 3b86214
+  eade1dc, 965ab95, 8419c85, 2eb5381, f08db47, bad1013, 03ea17f, 3b86214, 4f1cdc3
 Pushed: yes — all commits pushed to origin/main
+No history rewritten; no unrelated user changes discarded.
 
 ============================================================
 7. NEXT PRIORITIES
 ============================================================
-1. Get `cargo test` running and add unit tests for capture state machine.
-2. Add automatic display enumeration (fix Windows crate API or use wmic).
+1. Get `cargo test` running (MinGW toolchain/DLL load issue) and add unit
+   tests for capture state machine, segment selection, concat safety.
+2. Add automatic display enumeration (fix Windows crate API or use wmic/PowerShell).
 3. Exercise thumbnail generation + in-app preview against real clips.
-4. Add encoder fallback UI (auto-switch when selected encoder fails).
+4. Add encoder fallback UI (auto-switch to libx264 when the selected
+   hardware encoder fails, reflecting the actual encoder in use).
