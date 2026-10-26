@@ -277,7 +277,9 @@ pub fn audio_devices() -> AppResult<Vec<AudioDevice>> {
 /// Read the real duration of a finished media file. Used to validate exports
 /// before reporting success to the user.
 pub fn probe_duration(path: &Path) -> AppResult<f64> {
-  let output = Command::new(ffprobe())
+  let mut command = Command::new(ffprobe());
+  crate::process::hide_console(&mut command);
+  let output = command
     .args([
       "-v",
       "error",
