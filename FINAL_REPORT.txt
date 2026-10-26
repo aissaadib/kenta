@@ -197,3 +197,239 @@ Not verified (environment or hardware limits):
    Windows Error Reporting dump, if they recur.
 6. Add a packaging step that bundles ffmpeg.exe/ffprobe.exe or documents
    the PATH requirement in the installer.
+
+============================================================
+8. PERFORMANCE & RELIABILITY PASS (2026-10-26)
+============================================================
+This pass followed the requested order: public research, source inspection,
+baseline measurement, architecture comparison, implementation, re-measurement,
+and verification. The neon-yellow UI was left unchanged. Section 6 above is
+superseded by 8.8 for the current working-tree state.
+
+8.1 PUBLIC RESEARCH (documented facts, not Medal internals)
+------------------------------------------------------------
+- Medal's own instant-replay page states that Medal is "always buffering in
+  the background", saves "the last 15 seconds to 10 minutes", and uses F8 as
+  the default save key. It also describes Auto-Clip and voice-triggered clips.
+  https://medal.tv/learn/instant-replay-pc
+- Medal's "How To Record and Make Clips" support article documents the clip
+  length range and the buffer/clip workflow.
+  https://support.medal.tv/support/solutions/articles/48001157618
+- Medal's "Low Framerate (FPS), lag, or Choppy Clips" article recommends
+  lowering resolution/FPS and using hardware encoding when capture hurts game
+  performance.
+  https://support.medal.tv/support/solutions/articles/48000922094
+- Medal's "How To Choose Your Recording Method" and "Recommended Clip Quality
+  Settings" articles document capture-method and bitrate/resolution trade-offs.
+  https://support.medal.tv/support/solutions/articles/48001157616
+  https://support.medal.tv/support/solutions/articles/48001159800
+- Microsoft's WebView2 performance guidance documents the multi-process
+  WebView2 model and recommends reducing renderer work rather than expecting a
+  single-process memory footprint.
+  https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/performance
+- FFmpeg documents gdigrab as a GDI-based desktop capture device and ddagrab as
+  a Desktop Duplication API filter.
+  https://ffmpeg.org/ffmpeg-devices.html#gdigrab
+  https://ffmpeg.org/ffmpeg-filters.html#ddagrab
+- Microsoft documents Job Objects and JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, which
+  terminates every process in the job when the last job handle closes.
+  https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
+  https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_extended_limit_information
+- Tauri bundler 2.10.4 source (src/bundle/windows/msi/mod.rs) globs every *.dll
+  in the release output directory into the MSI; a TODO in that source
+  acknowledges this is broader than intended.
+
+What this does NOT establish: Medal's internal capture API, encoder settings,
+buffer format, or memory strategy. No claim about Medal internals is made here.
+
+8.2 DIAGNOSIS (measurements on this machine)
+------------------------------------------------------------
+Contaminated baseline (before any fix):
+- 7 orphaned ClipVault FFmpeg processes whose parent ClipVault processes were
+  already gone. They held 1,412 MB working set / 4,338 MB private and were
+  still writing into the replay buffer.
+- 11 stale session directories / 2,334 MB in %TEMP%\clipvault_buffer.
+- Root cause: FFmpeg was spawned as a plain child with no Windows Job Object.
+  When ClipVault crashed or was force-terminated, Windows left the encoder
+  running indefinitely. Duplicate launches created additional encoders and
+  hotkey conflicts.
+- Folder size: the workspace was 8,476 MB, but only 0.3 MB was web/dist and
+  7.77 MB the recorded installer. target/debug alone was 6,252 MB and
+  target/release 2,095 MB. The 8 GB was development build cache, not the app.
+- Memory attribution: ClipVault + WebView2 = about 397 MB working set at
+  steady state; FFmpeg adds about 331 MB working set / 516-522 MB private.
+  The user's "~400 MB" observation therefore matches the app+UI group exactly;
+  the encoder is the additional cost.
+- CPU attribution: FFmpeg consumed 12.4-13.6 s of CPU per 15-20 s wall time
+  (roughly 0.6-0.9 of one core); WebView2 consumed the rest. Total idle CPU was
+  3.7-5.0% of 20 logical CPUs, i.e. about one core. gdigrab is the hotspot.
+- Capture backend comparison (10 s each, 1080p, h264_nvenc):
+    gdigrab 60 fps: 7.75 s CPU, 338.9 MB peak WS, 525.9 MB private
+    gdigrab 30 fps: 5.02 s CPU, 337.2 MB peak WS, 527.2 MB private
+    gdigrab 720p60: 4.19 s CPU, 234.8 MB peak WS, 366.9 MB private
+    ddagrab (all variants): failed immediately with
+      "Selected output not supported" / "Generic error in an external library"
+  ddagrab also failed with output_fmt=8bit/bgra, output_idx=1, draw_mouse=0,
+  allow_fallback=1, and an explicit d3d11va device. This hybrid NVIDIA/Intel
+  display environment does not expose a usable Desktop Duplication output to
+  FFmpeg. Switching backends would break capture on this machine, so gdigrab
+  was kept. (Inference: the failure is environment/driver-specific, not a
+  ClipVault defect.)
+- `-zerolatency` made NVENC initialization fail; `-surfaces 4` produced no
+  measurable change.
+- `ffmpeg -encoders` costs 34 ms per spawn; dshow device enumeration costs
+  314 ms. Encoder enumeration was repeated on settings/capture paths.
+
+8.3 CHANGES IMPLEMENTED
+------------------------------------------------------------
+Reliability
+- src-tauri/src/process.rs: creates a Windows Job Object with
+  JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and assigns every capture/export FFmpeg
+  child to it. Force-killing ClipVault now kills FFmpeg with it.
+- src-tauri/src/instance.rs: named-mutex single-instance guard. A second launch
+  focuses the existing window and exits instead of starting a second encoder.
+- capture::cleanup_stale_sessions: removes every pre-existing session directory
+  at startup. The single-instance guard makes all such sessions stale.
+- run_ffmpeg now spawns, contains, and waits instead of using .output(), so
+  exports and thumbnails are contained too.
+
+Performance
+- Segment-list caching: status polling runs twice per second and previously
+  re-read segments.csv and re-stat'd every segment each time. It now skips the
+  parse when (mtime, length) is unchanged.
+- Encoder-list caching with explicit invalidation from "recheck FFmpeg".
+- Release profile: codegen-units=1, lto=true, strip=true.
+
+Packaging / correctness
+- Removed unused Rust dependencies tokio, ctrlc, and the windows crate
+  (windows-sys is the crate actually used); added Win32_Security and
+  Win32_System_JobObjects features.
+- Removed unused npm dependencies clsx and cmdk (27 packages).
+- Removed "cdylib" from the lib crate type. On Windows it produced a 14.4 MB
+  app_lib.dll that the desktop exe never loads, yet Tauri's MSI bundler shipped
+  it. Desktop builds still link the same code through the rlib.
+- tauri.conf.json: beforeDevCommand/beforeBuildCommand used ";" which cmd.exe
+  does not treat as a separator; changed to "&&". The MSI build previously
+  failed at this step.
+- web/index.html: favicon pointed at the nonexistent /vite.svg, causing a
+  404 fallback on every launch; now /favicon.svg.
+
+8.4 PROPOSED BUT NOT IMPLEMENTED
+------------------------------------------------------------
+- Switching to ddagrab: rejected because it fails on this machine.
+- Native WGC/DXGI capture: would likely cut CPU further, but it is a new
+  capture pipeline, not a tuning change. Deferred.
+- 720p60 or 1080p30 "performance mode": measured to reduce FFmpeg CPU by
+  32-46% and working set by 31%, but changing the user's default quality is a
+  product decision. The existing settings already expose these choices.
+- Caching dshow audio enumeration (314 ms): device lists can change, and the
+  Settings view enumerates once per mount. Low value; left alone.
+- UI redesign: out of scope for this pass.
+
+8.5 BEFORE / AFTER
+------------------------------------------------------------
+Metric                          Before            After
+Orphaned FFmpeg after kill      7 (1,412 MB WS)   0
+Stale buffer at startup         11 dirs/2,334 MB  reclaimed automatically
+Second launch                   2 encoders        1; exits in 16-18 ms
+Release exe                     26,914,028 B      8,433,152 B (-68.7%)
+MSI installer                   ~7.8 MB (old)     4,165,632 B (3.97 MiB)
+MSI before DLL fix              -                 10,031,104 B (9.57 MiB)
+Startup, warm                   122 ms            45 ms
+Startup, cold                   -                 669-714 ms
+Total WS, idle                  619 -> 737 MB     722 -> 728 MB
+Total private, idle             615 -> 780 MB     765 -> 773 MB
+Total WS after workflows        765 MB            751 MB
+Idle CPU (% of 20 logical CPUs) 3.68-4.21%        4.24-4.95%
+60 s replay export              930 ms            1,111 ms (53.5 MB)
+Recording stop                  3,992 ms          4,116 ms
+Navigation                      4-28 ms           3-37 ms
+Workspace folder                8,476 MB          4,329 MB
+web/dist                        0.3 MB            0.31 MB
+node_modules                    127.8 MB          126.8 MB
+
+Reading the numbers honestly:
+- Steady-state memory is essentially unchanged. The fix prevents unbounded
+  growth from leaked encoders; it does not shrink the live pipeline. The
+  remaining ~730 MB is ~400 MB WebView2/UI + ~330 MB FFmpeg.
+- CPU is dominated by gdigrab at 1080p60 and varies with screen content, so
+  the before/after percentages are not a controlled benchmark. The capture
+  backend benchmarks above are the controlled comparison.
+- Export time varies with clip length and content; 930 ms vs 1,111 ms is not a
+  regression (different 60 s clips, 4.5 MB vs 53.5 MB output).
+- Cold startup includes first-run disk reads; warm startup is 45 ms.
+
+8.6 VERIFICATION (final release build)
+------------------------------------------------------------
+- cargo test --release --lib: 32 passed, 0 failed.
+- cargo check: pass. npm run lint: pass. npm run build: pass.
+- cargo tauri build: pass; MSI produced (one non-fatal MinGW duplicate-manifest
+  linker warning remains).
+- Force-kill test: killed ClipVault with Stop-Process -Force; FFmpeg count went
+  from 1 to 0 within 4 s. Repeated on the MSI-extracted payload: same result.
+- Stale-session test: created a fake session directory; startup removed it and
+  left only the new session.
+- Single-instance test: second launch exited in 18 ms; exactly 1 ClipVault and
+  1 FFmpeg remained.
+- Replay export: 60 s buffer, saved 53.5 MB MP4 in 1,111 ms.
+- Recording: started via UI, stopped after ~7 s, 6.8 MB MP4, stop took 4,116 ms,
+  buffer restarted.
+- Hotkeys: F8 saved a replay (8 -> 9 clips); Ctrl+Shift+R started and stopped a
+  recording. get_hotkey_status reports F8 / Ctrl+Shift+R registered.
+- Navigation: Settings/Clips/Capture rendered in 3-37 ms across six switches.
+- Settings persistence: bitrate 8000 -> 8100 saved, capture restarted in
+  ~3.1 s, persisted across restart, then reverted to 8000 (~3.5 s restart).
+- Buffer stop/start: stopped in 631 ms with 0 FFmpeg and 0 sessions; restarted
+  in 2.7 s with 1 FFmpeg and 1 session.
+- Clip library: 10 clips and 10 thumbnails loaded, 0 broken images; in-app
+  preview reached readyState 4 and played.
+- MSI payload: administrative extract (msiexec /a) contains only clipvault.exe
+  and WebView2Loader.dll; the extracted exe launched, captured, and was
+  force-kill-contained.
+
+8.7 LIMITATIONS
+------------------------------------------------------------
+- No loopback audio device exists on this machine, so desktop-audio capture
+  and the loopback warning path remain manually unverified.
+- ddagrab cannot be evaluated as an alternative here because it fails on this
+  display configuration. The gdigrab result is therefore the only usable
+  backend measurement.
+- The MinGW toolchain is used because MSVC link.exe is unavailable. The release
+  build works but emits a duplicate-manifest warning; an MSVC build and a
+  clean-machine install/uninstall were not tested.
+- The MSI was validated by administrative extraction, not by a full install,
+  upgrade, and uninstall cycle.
+- Tray-menu clicks were not automated.
+- Debug Rust test binaries still fail with STATUS_ENTRYPOINT_NOT_FOUND; tests
+  run with --release.
+- Memory and CPU are point-in-time measurements on one laptop (RTX 3050 Ti +
+  Iris Xe, 20 logical CPUs, 1920x1080 at 125% scaling). They will differ on
+  other hardware and with different screen content.
+- Longer replay windows (up to 10 minutes, matching Medal's documented range)
+  increase buffer disk usage proportionally; only 60 s was exercised here.
+- The 4.3 GB remaining workspace is mostly release build cache
+  (target/release = 4.2 GB). It is regenerable; `cargo clean` would remove it
+  but forces a full rebuild. target/debug (6.3 GB) was removed in this pass.
+
+8.8 GIT AND PUSH STATUS
+------------------------------------------------------------
+- Branch: main, based on 704c6c4.
+- This pass is split into focused commits:
+    fix(web): use the existing favicon asset
+    chore(web): remove unused clsx and cmdk dependencies
+    build(tauri): make beforeBuildCommand work in cmd.exe
+    chore(deps): remove unused tokio, ctrlc, and windows crates
+    build: enable Windows Job Object APIs
+    perf(build): strip symbols and enable LTO
+    build: stop bundling the mobile-only app_lib.dll
+    feat(process): contain FFmpeg in a kill-on-close Job Object
+    feat(capture): assign the replay encoder to the containment job
+    feat(export): contain export and thumbnail FFmpeg children
+    feat(instance): enforce a single ClipVault instance
+    fix(buffer): reclaim stale replay sessions at startup
+    perf(capture): skip unchanged segment-list reads
+    perf(ffmpeg): cache encoder enumeration
+    docs: record the performance and reliability audit
+- Pushed to origin/main after the commits were created.
+- Built artifacts are not tracked: target/release/clipvault.exe (8.0 MiB) and
+  target/release/bundle/msi/ClipVault_0.1.0_x64_en-US.msi (3.97 MiB).
