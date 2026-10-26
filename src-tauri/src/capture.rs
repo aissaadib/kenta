@@ -462,6 +462,7 @@ impl CaptureEngine {
           "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe."
         ))
       })?;
+    crate::process::contain(&child);
     if let Some(stderr) = child.stderr.take() {
       let tail = self.stderr_tail.clone();
       thread::spawn(move || {
