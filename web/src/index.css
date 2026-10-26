@@ -301,7 +301,6 @@ a {
   padding: 17px 28px;
   border-bottom: 1px solid var(--border);
   background: rgba(10, 13, 17, 0.72);
-  backdrop-filter: blur(10px);
 }
 
 .topbar-heading h1 {
