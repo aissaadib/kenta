@@ -161,7 +161,9 @@ pub fn video_encoders() -> AppResult<Vec<EncoderInfo>> {
       return Ok(list.clone());
     }
   }
-  let output = Command::new(ffmpeg())
+  let mut command = Command::new(ffmpeg());
+  crate::process::hide_console(&mut command);
+  let output = command
     .args(["-hide_banner", "-encoders"])
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
