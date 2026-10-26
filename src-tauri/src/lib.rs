@@ -5,7 +5,9 @@ mod commands;
 mod errors;
 mod ffmpeg;
 mod hotkey;
+mod instance;
 mod monitors;
+mod process;
 mod settings;
 mod storage;
 mod worker;
@@ -27,6 +29,15 @@ const TRAY_QUIT: &str = "tray-quit";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  // One capture pipeline per machine. A second launch focuses the running
+  // window instead of starting another encoder.
+  if !instance::acquire() {
+    return;
+  }
+  // Any FFmpeg child is tied to this process. If ClipVault crashes or is
+  // force-terminated, Windows closes the job and the encoder exits with it.
+  process::init();
+
   tauri::Builder::default()
     .plugin(tauri_plugin_log::Builder::default().build())
     .manage(AppState::new())
@@ -172,6 +183,17 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
       .startup_warnings
       .lock()
       .map_err(|_| AppError::Settings("warning lock poisoned".into()))? = warnings;
+  }
+
+  // A previous run that crashed or was force-terminated can leave whole
+  // replay sessions behind. With the single-instance guard in place, every
+  // session directory present before this process starts is stale.
+  let reclaimed = capture::cleanup_stale_sessions(&config.temp_dir);
+  if reclaimed > 0 {
+    log::info!(
+      "Removed {reclaimed} stale replay session(s) from {}",
+      config.temp_dir.display()
+    );
   }
 
   let state = handle.state::<AppState>();

@@ -10,7 +10,10 @@ rust-version = "1.90"
 
 [lib]
 name = "app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# `cdylib` is only needed for mobile targets. On Windows it produces a 14 MB
+# app_lib.dll that the desktop executable never loads, but Tauri's MSI bundler
+# globs every *.dll in the output directory and ships it anyway.
+crate-type = ["staticlib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }
@@ -26,24 +29,23 @@ uuid = { version = "1.17", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 thiserror = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-ctrlc = "3.4"
-windows = { version = "0.59", features = [
-  "Win32_Foundation",
-  "Win32_Graphics_Gdi",
-  "Win32_System_LibraryLoader",
-  "Win32_System_Threading",
-  "Win32_System_SystemServices",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_WindowsAndMessaging",
-] }
 windows-sys = { version = "0.59", features = [
   "Win32",
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_System_JobObjects",
   "Win32_System_LibraryLoader",
   "Win32_System_Registry",
+  "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
 rfd = "0.12"
+
+[profile.release]
+# Ship one optimised, symbol-free executable instead of a 27 MB binary full of
+# linker metadata. LTO is worth the extra build time for an end-user app.
+codegen-units = 1
+lto = true
+strip = true

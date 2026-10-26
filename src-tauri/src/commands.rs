@@ -924,6 +924,7 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
 
 #[tauri::command]
 pub fn check_ffmpeg() -> FfmpegInfo {
+  ffmpeg::invalidate_encoder_cache();
   ffmpeg_info()
 }
 

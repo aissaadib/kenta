@@ -97,6 +97,24 @@ pub struct SegmentInfo {
   pub start_seconds: f64,
   pub end_seconds: f64,
   pub duration_seconds: f64,
+  pub file_size_bytes: u64,
+  pub source: String,
+  pub has_audio: bool,
+  pub width: u32,
+  pub height: u32,
+  pub frame_rate: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportPlan {
+  pub segments: Vec<SegmentInfo>,
+  pub output_path: PathBuf,
+  pub list_path: PathBuf,
+  pub source: String,
+  pub has_audio: bool,
+  pub width: u32,
+  pub height: u32,
+  pub frame_rate: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +149,9 @@ pub struct CaptureEngine {
   segments: VecDeque<SegmentInfo>,
   session_dir: PathBuf,
   segment_list_path: PathBuf,
+  /// Last observed (modified, length) of `segments.csv`. Status polling runs
+  /// twice a second; skipping unchanged lists avoids re-statting every segment.
+  segment_list_stamp: Option<(std::time::SystemTime, u64)>,
   recording_started_at: Option<DateTime<Utc>>,
   recording_start_elapsed: f64,
   encoder_in_use: String,
@@ -148,6 +169,7 @@ impl CaptureEngine {
       segments: VecDeque::new(),
       session_dir: PathBuf::new(),
       segment_list_path: PathBuf::new(),
+      segment_list_stamp: None,
       recording_started_at: None,
       recording_start_elapsed: 0.0,
       encoder_in_use: String::new(),
@@ -424,6 +446,7 @@ impl CaptureEngine {
       .map_err(|e| AppError::Capture(format!("Could not create a buffer session: {e}")))?;
     self.session_dir = session;
     self.segment_list_path = self.session_dir.join("segments.csv");
+    self.segment_list_stamp = None;
     self.segments.clear();
     self.recording_started_at = None;
     self.recording_start_elapsed = 0.0;
@@ -462,6 +485,7 @@ impl CaptureEngine {
           "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe."
         ))
       })?;
+    crate::process::contain(&child);
     if let Some(stderr) = child.stderr.take() {
       let tail = self.stderr_tail.clone();
       thread::spawn(move || {
@@ -558,6 +582,27 @@ impl CaptureEngine {
   }
 
   fn reload_segments(&mut self) {
+    let Ok(meta) = std::fs::metadata(&self.segment_list_path) else {
+      return;
+    };
+    let stamp = meta.modified().ok().map(|modified| (modified, meta.len()));
+    if stamp.is_some() && stamp == self.segment_list_stamp {
+      return;
+    };
+    match child.try_wait() {
+      Ok(Some(_)) => {
+        self.child = None;
+        let details = self.stderr_summary();
+        let message = friendly_ffmpeg_error(&details, &self.encoder_in_use);
+        self.state = CaptureState::Error(message);
+      }
+      Ok(None) => {}
+      Err(e) => {
+        self.child = None;
+        self.state = CaptureState::Error(format!("Could not monitor FFmpeg: {e}"));
+      }
+    }
+    self.segment_list_stamp = stamp;
     let Ok(content) = std::fs::read_to_string(&self.segment_list_path) else {
       return;
     };
@@ -1022,11 +1067,7 @@ fn cleanup_old_sessions(base: &Path, max_age_seconds: u64) {
     if !path.is_dir() {
       continue;
     }
-    let is_session = path
-      .file_name()
-      .map(|name| name.to_string_lossy().starts_with("session_"))
-      .unwrap_or(false);
-    if !is_session {
+    if !is_session_dir(&path) {
       continue;
     }
     let old = entry
@@ -1040,6 +1081,31 @@ fn cleanup_old_sessions(base: &Path, max_age_seconds: u64) {
       let _ = std::fs::remove_dir_all(path);
     }
   }
+}
+
+/// Remove every replay session directory. Called once at startup, before this
+/// process creates its own session. With the single-instance guard in place,
+/// any session on disk at that moment belongs to a previous run that did not
+/// shut down cleanly. Returns the number of directories removed.
+pub fn cleanup_stale_sessions(base: &Path) -> usize {
+  let Ok(entries) = std::fs::read_dir(base) else {
+    return 0;
+  };
+  let mut removed = 0;
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.is_dir() && is_session_dir(&path) && std::fs::remove_dir_all(&path).is_ok() {
+      removed += 1;
+    }
+  }
+  removed
+}
+
+fn is_session_dir(path: &Path) -> bool {
+  path
+    .file_name()
+    .map(|name| name.to_string_lossy().starts_with("session_"))
+    .unwrap_or(false)
 }
 
 impl Drop for CaptureEngine {
