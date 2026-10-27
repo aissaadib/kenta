@@ -49,6 +49,8 @@ pub fn run() {
       commands::get_settings,
       commands::save_settings,
       commands::preview_confirmation_sound,
+      commands::voice_status,
+      commands::voice_test,
       commands::capture_start,
       commands::capture_stop,
       commands::capture_status,
@@ -230,6 +232,7 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
   }
 
   let _ = handle.emit("capture-status", commands::current_status(&state));
+  commands::apply_voice_settings(handle, &settings);
   Ok(())
 }
 
@@ -304,6 +307,7 @@ fn show_window(app: &AppHandle) {
 pub fn shutdown(app: &AppHandle) {
   let state = app.state::<AppState>();
   state.exporting.store(false, Ordering::SeqCst);
+  commands::stop_voice(&state);
   if let Ok(mut capture) = state.capture.lock() {
     if let Some(engine) = capture.take() {
       drop(engine);

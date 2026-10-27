@@ -11,6 +11,7 @@ use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
 use crate::sound;
 use crate::storage::{Clip, Storage};
 use crate::timeline::{Timeline, TimelineView, TrimEdge};
+use crate::voice::{self, VoiceConfig, VoiceSink, VoiceStatus};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -32,6 +33,9 @@ pub struct AppState {
   pub editor: Mutex<Option<EditorSession>>,
   /// Kept outside the session lock so cancelling never waits for an export.
   pub editor_cancel: Arc<AtomicBool>,
+  /// The voice recogniser, when hands-free clipping is on. `None` means off,
+  /// which is also how the UI tells "disabled" apart from "failed".
+  pub voice: Mutex<Option<Arc<voice::VoiceHandle>>>,
 }
 
 pub struct EditorSession {
@@ -53,6 +57,7 @@ impl AppState {
       last_error: Mutex::new(None),
       editor: Mutex::new(None),
       editor_cancel: Arc::new(AtomicBool::new(false)),
+      voice: Mutex::new(None),
     }
   }
 }
@@ -252,6 +257,9 @@ pub fn save_settings(
 
   let status = current_status(&state);
   let _ = app.emit("capture-status", &status);
+  if voice_affecting_changed(&previous, &settings) {
+    apply_voice_settings(&app, &settings);
+  }
   Ok(SaveSettingsResult {
     status,
     capture_restarted,
@@ -383,6 +391,132 @@ pub fn preview_confirmation_sound(volume: u8) -> bool {
   let volume = volume.min(100);
   sound::play(volume);
   sound::is_audible(volume)
+}
+
+/// The voice engine's view of the app: it can save a replay and report status,
+/// nothing else. Keeping it a trait lets the engine be tested without Tauri.
+struct VoiceBridge {
+  app: AppHandle,
+}
+
+impl VoiceSink for VoiceBridge {
+  fn save(&self, seconds: u32) -> voice::SaveOutcome {
+    let state = self.app.state::<AppState>();
+    let capture_state = state
+      .capture
+      .lock()
+      .unwrap()
+      .as_ref()
+      .map(|engine| engine.state().clone());
+    match capture_state {
+      Some(CaptureState::Buffering) => {}
+      Some(CaptureState::Recording) => {
+        return voice::SaveOutcome::NotReady(
+          "A recording is in progress. Stop it to save replays by voice.".into(),
+        );
+      }
+      _ => {
+        return voice::SaveOutcome::NotReady("Start capture to save a clip by voice.".into());
+      }
+    }
+    match perform_save_replay(&self.app, Some(seconds)) {
+      Ok(_) => voice::SaveOutcome::Saved,
+      // The buffer can stop between the check above and the save.
+      Err(message) if message.contains("replay buffer is not running") => {
+        voice::SaveOutcome::NotReady(message)
+      }
+      Err(message) => voice::SaveOutcome::Failed(message),
+    }
+  }
+
+  fn buffer_ready(&self) -> bool {
+    let state = self.app.state::<AppState>();
+    let capture = state.capture.lock().unwrap();
+    capture
+      .as_ref()
+      .map(|engine| matches!(engine.state(), CaptureState::Buffering))
+      .unwrap_or(false)
+  }
+
+  fn status_changed(&self, status: &VoiceStatus) {
+    let _ = self.app.emit("voice-status", status);
+  }
+}
+
+fn voice_config(settings: &Settings) -> VoiceConfig {
+  VoiceConfig {
+    wake_phrase: settings.voice_wake_phrase.clone(),
+    clip_command: settings.voice_clip_command.clone(),
+    clip_seconds: settings.voice_clip_seconds,
+    min_confidence: settings.voice_min_confidence,
+    cooldown: std::time::Duration::from_secs(settings.voice_cooldown_seconds as u64),
+  }
+}
+
+/// Start, restart or stop the recogniser so it matches `settings`.
+pub fn apply_voice_settings(app: &AppHandle, settings: &Settings) {
+  let state = app.state::<AppState>();
+  // Stop the old engine before the new one opens the microphone.
+  let previous = state.voice.lock().unwrap().take();
+  drop(previous);
+
+  if !settings.voice_enabled {
+    let _ = app.emit("voice-status", VoiceStatus::disabled());
+    return;
+  }
+
+  let handle = Arc::new(voice::VoiceHandle::start(
+    voice_config(settings),
+    Arc::new(VoiceBridge { app: app.clone() }),
+  ));
+  // The engine announces its own progress; this makes "initializing" visible
+  // immediately instead of leaving the old status on screen.
+  let _ = app.emit("voice-status", handle.status());
+  *state.voice.lock().unwrap() = Some(handle);
+}
+
+pub fn stop_voice(state: &AppState) {
+  // Drop outside the lock so a shutdown never waits with the state held.
+  let handle = state.voice.lock().unwrap().take();
+  drop(handle);
+}
+
+fn voice_affecting_changed(previous: &Settings, settings: &Settings) -> bool {
+  previous.voice_enabled != settings.voice_enabled
+    || previous.voice_wake_phrase != settings.voice_wake_phrase
+    || previous.voice_clip_command != settings.voice_clip_command
+    || previous.voice_clip_seconds != settings.voice_clip_seconds
+    || previous.voice_min_confidence != settings.voice_min_confidence
+    || previous.voice_cooldown_seconds != settings.voice_cooldown_seconds
+}
+
+#[tauri::command]
+pub fn voice_status(state: State<'_, AppState>) -> VoiceStatus {
+  state
+    .voice
+    .lock()
+    .unwrap()
+    .as_ref()
+    .map(|handle| handle.status())
+    .unwrap_or_else(VoiceStatus::disabled)
+}
+
+/// Listen for one utterance and report what was heard. Async because it waits
+/// for the user to speak; blocking the window for eight seconds would look
+/// like a hang.
+#[tauri::command]
+pub async fn voice_test(
+  state: State<'_, AppState>,
+  timeout_seconds: u64,
+) -> Result<voice::TestOutcome, String> {
+  let handle = state.voice.lock().unwrap().clone();
+  let Some(handle) = handle else {
+    return Err("Voice clipping is turned off.".into());
+  };
+  let timeout = std::time::Duration::from_secs(timeout_seconds.clamp(2, 15));
+  tauri::async_runtime::spawn_blocking(move || handle.test(timeout))
+    .await
+    .map_err(|error| error.to_string())
 }
 
 pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<SaveResult, String> {
