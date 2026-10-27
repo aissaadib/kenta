@@ -2,17 +2,21 @@ use crate::autostart;
 use crate::capture::{
   self, export_plan, CaptureConfig, CaptureEngine, CaptureState, SaveResult, SEGMENT_SECONDS,
 };
+use crate::editor::{self, ExportRequest, MediaInfo};
 use crate::errors::AppResult;
 use crate::ffmpeg::{self, AudioDevice, EncoderInfo};
 use crate::hotkey::{self, HotkeyManager};
 use crate::monitors::{self, MonitorInfo};
 use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
+use crate::sound;
 use crate::storage::{Clip, Storage};
+use crate::timeline::{Timeline, TimelineView, TrimEdge};
+use crate::voice::{self, VoiceConfig, VoiceSink, VoiceStatus};
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
@@ -24,6 +28,20 @@ pub struct AppState {
   pub startup_warnings: Mutex<Vec<String>>,
   pub capture_warnings: Mutex<Vec<String>>,
   pub last_error: Mutex<Option<String>>,
+  /// One clip at a time. The session is dropped when the editor closes, which
+  /// releases the media and stops any export the user abandoned.
+  pub editor: Mutex<Option<EditorSession>>,
+  /// Kept outside the session lock so cancelling never waits for an export.
+  pub editor_cancel: Arc<AtomicBool>,
+  /// The voice recogniser, when hands-free clipping is on. `None` means off,
+  /// which is also how the UI tells "disabled" apart from "failed".
+  pub voice: Mutex<Option<Arc<voice::VoiceHandle>>>,
+}
+
+pub struct EditorSession {
+  pub path: PathBuf,
+  pub media: MediaInfo,
+  pub timeline: Timeline,
 }
 
 impl AppState {
@@ -37,6 +55,9 @@ impl AppState {
       startup_warnings: Mutex::new(Vec::new()),
       capture_warnings: Mutex::new(Vec::new()),
       last_error: Mutex::new(None),
+      editor: Mutex::new(None),
+      editor_cancel: Arc::new(AtomicBool::new(false)),
+      voice: Mutex::new(None),
     }
   }
 }
@@ -236,6 +257,9 @@ pub fn save_settings(
 
   let status = current_status(&state);
   let _ = app.emit("capture-status", &status);
+  if voice_affecting_changed(&previous, &settings) {
+    apply_voice_settings(&app, &settings);
+  }
   Ok(SaveSettingsResult {
     status,
     capture_restarted,
@@ -343,6 +367,165 @@ pub fn capture_stop_manual(app: AppHandle) -> Result<SaveResult, String> {
   perform_stop_manual(&app)
 }
 
+/// Play the confirmation chime for a clip that has just been written and
+/// registered in the library. Called only from success paths, so the sound is a
+/// dependable "the file is on disk" signal rather than a hint that a save
+/// started. It never blocks: the sound module plays on its own thread.
+pub fn confirm_saved(state: &AppState) {
+  let (enabled, volume) = {
+    let settings = state.settings.lock().unwrap();
+    (
+      settings.confirmation_sound_enabled,
+      settings.confirmation_sound_volume,
+    )
+  };
+  if enabled {
+    sound::play(volume);
+  }
+}
+
+/// Audition the chime. The settings screen passes its draft volume so the
+/// slider can be heard before the change is saved.
+#[tauri::command]
+pub fn preview_confirmation_sound(volume: u8) -> bool {
+  let volume = volume.min(100);
+  sound::play(volume);
+  sound::is_audible(volume)
+}
+
+/// Whether a voice-triggered save may run in this capture state. Pure so the
+/// rule can be tested without an app handle: only a buffering replay can be
+/// clipped, and a live recording is never cut short by a stray phrase.
+fn voice_save_gate(state: Option<&CaptureState>) -> Result<(), voice::SaveOutcome> {
+  match state {
+    Some(CaptureState::Buffering) => Ok(()),
+    Some(CaptureState::Recording) => Err(voice::SaveOutcome::NotReady(
+      "A recording is in progress. Stop it to save replays by voice.".into(),
+    )),
+    _ => Err(voice::SaveOutcome::NotReady(
+      "Start capture to save a clip by voice.".into(),
+    )),
+  }
+}
+
+/// The voice engine's view of the app: it can save a replay and report status,
+/// nothing else. Keeping it a trait lets the engine be tested without Tauri.
+struct VoiceBridge {
+  app: AppHandle,
+}
+
+impl VoiceSink for VoiceBridge {
+  fn save(&self, seconds: u32) -> voice::SaveOutcome {
+    let state = self.app.state::<AppState>();
+    let capture_state = state
+      .capture
+      .lock()
+      .unwrap()
+      .as_ref()
+      .map(|engine| engine.state().clone());
+    if let Err(outcome) = voice_save_gate(capture_state.as_ref()) {
+      return outcome;
+    }
+    match perform_save_replay(&self.app, Some(seconds)) {
+      Ok(_) => voice::SaveOutcome::Saved,
+      // The buffer can stop between the check above and the save.
+      Err(message) if message.contains("replay buffer is not running") => {
+        voice::SaveOutcome::NotReady(message)
+      }
+      Err(message) => voice::SaveOutcome::Failed(message),
+    }
+  }
+
+  fn buffer_ready(&self) -> bool {
+    let state = self.app.state::<AppState>();
+    let capture = state.capture.lock().unwrap();
+    capture
+      .as_ref()
+      .map(|engine| matches!(engine.state(), CaptureState::Buffering))
+      .unwrap_or(false)
+  }
+
+  fn status_changed(&self, status: &VoiceStatus) {
+    let _ = self.app.emit("voice-status", status);
+  }
+}
+
+fn voice_config(settings: &Settings) -> VoiceConfig {
+  VoiceConfig {
+    wake_phrase: settings.voice_wake_phrase.clone(),
+    clip_command: settings.voice_clip_command.clone(),
+    clip_seconds: settings.voice_clip_seconds,
+    min_confidence: settings.voice_min_confidence,
+    cooldown: std::time::Duration::from_secs(settings.voice_cooldown_seconds as u64),
+  }
+}
+
+/// Start, restart or stop the recogniser so it matches `settings`.
+pub fn apply_voice_settings(app: &AppHandle, settings: &Settings) {
+  let state = app.state::<AppState>();
+  // Stop the old engine before the new one opens the microphone.
+  let previous = state.voice.lock().unwrap().take();
+  drop(previous);
+
+  if !settings.voice_enabled {
+    let _ = app.emit("voice-status", VoiceStatus::disabled());
+    return;
+  }
+
+  let handle = Arc::new(voice::VoiceHandle::start(
+    voice_config(settings),
+    Arc::new(VoiceBridge { app: app.clone() }),
+  ));
+  // The engine announces its own progress; this makes "initializing" visible
+  // immediately instead of leaving the old status on screen.
+  let _ = app.emit("voice-status", handle.status());
+  *state.voice.lock().unwrap() = Some(handle);
+}
+
+pub fn stop_voice(state: &AppState) {
+  // Drop outside the lock so a shutdown never waits with the state held.
+  let handle = state.voice.lock().unwrap().take();
+  drop(handle);
+}
+
+fn voice_affecting_changed(previous: &Settings, settings: &Settings) -> bool {
+  previous.voice_enabled != settings.voice_enabled
+    || previous.voice_wake_phrase != settings.voice_wake_phrase
+    || previous.voice_clip_command != settings.voice_clip_command
+    || previous.voice_clip_seconds != settings.voice_clip_seconds
+    || previous.voice_min_confidence != settings.voice_min_confidence
+    || previous.voice_cooldown_seconds != settings.voice_cooldown_seconds
+}
+
+#[tauri::command]
+pub fn voice_status(state: State<'_, AppState>) -> VoiceStatus {
+  state
+    .voice
+    .lock()
+    .unwrap()
+    .as_ref()
+    .map(|handle| handle.status())
+    .unwrap_or_else(VoiceStatus::disabled)
+}
+
+/// Listen for one utterance and report what was heard. Async because it waits
+/// for the user to speak; blocking the window for eight seconds would look
+/// like a hang.
+#[tauri::command]
+pub async fn voice_test(
+  state: State<'_, AppState>,
+  timeout_seconds: u64,
+) -> Result<voice::TestOutcome, String> {
+  let handle = state.voice.lock().unwrap().clone();
+  let Some(handle) = handle else {
+    return Err("Voice clipping is turned off.".into());
+  };
+  let timeout = std::time::Duration::from_secs(timeout_seconds.clamp(2, 15));
+  tauri::async_runtime::spawn_blocking(move || handle.test(timeout))
+    .await
+    .map_err(|error| error.to_string())
+}
+
 pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<SaveResult, String> {
   let state = app.state::<AppState>();
   let state: &AppState = &state;
@@ -378,6 +561,8 @@ pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<Save
       if let Ok(clip) = clip_from_result(state, saved) {
         let _ = app.emit("clip-saved", &clip);
       }
+      // Only after the file and its library row exist.
+      confirm_saved(state);
     }
     Err(error) => {
       let _ = app.emit("app-error", error.clone());
@@ -444,6 +629,8 @@ pub fn perform_stop_manual(app: &AppHandle) -> Result<SaveResult, String> {
       if let Ok(clip) = clip_from_result(state, saved) {
         let _ = app.emit("clip-saved", &clip);
       }
+      // Only after the file and its library row exist.
+      confirm_saved(state);
     }
     Err(error) => {
       let _ = app.emit("app-error", error.clone());
@@ -481,6 +668,264 @@ pub fn emit_status(app: &AppHandle) {
   let state = app.state::<AppState>();
   let status = current_status(&state);
   let _ = app.emit("capture-status", &status);
+}
+
+// ---------------------------------------------------------------------------
+// Editor
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub struct EditorPayload {
+  pub clip: ClipListItem,
+  pub media: MediaInfo,
+  pub timeline: TimelineView,
+}
+
+#[derive(Clone, Serialize)]
+pub struct EditorProgress {
+  pub percent: f64,
+}
+
+/// One timeline operation from the UI. Keeping the operations coarse means the
+/// rules live in one place instead of being re-implemented in TypeScript.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EditorOp {
+  Split { id: u64, at: f64 },
+  Delete { id: u64 },
+  TrimIn { id: u64, to: f64 },
+  TrimOut { id: u64, to: f64 },
+  Move { id: u64, start: f64 },
+}
+
+fn apply_op(timeline: &mut Timeline, op: EditorOp) -> Result<(), String> {
+  let result = match op {
+    EditorOp::Split { id, at } => timeline.split(id, at),
+    EditorOp::Delete { id } => timeline.delete(id),
+    EditorOp::TrimIn { id, to } => timeline.trim(id, TrimEdge::In, to),
+    EditorOp::TrimOut { id, to } => timeline.trim(id, TrimEdge::Out, to),
+    EditorOp::Move { id, start } => timeline.move_to(id, start),
+  };
+  result.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn editor_open(
+  state: State<'_, AppState>,
+  clip_id: String,
+) -> Result<EditorPayload, String> {
+  let clip = {
+    let storage = state.storage.lock().unwrap();
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The clip library is not available.".to_string())?;
+    storage
+      .get_clip(&clip_id)
+      .map_err(|e| e.to_string())?
+      .ok_or_else(|| "That clip is no longer in the library.".to_string())?
+  };
+  if !clip.path.is_file() {
+    return Err("The clip file is missing from disk.".into());
+  }
+  let media = editor::probe_media(&clip.path).map_err(|e| e.message())?;
+  let timeline = media.timeline();
+  timeline.validate().map_err(|e| e.to_string())?;
+  let payload = EditorPayload {
+    clip: clip_to_item(&clip),
+    media: media.clone(),
+    timeline: timeline.view(),
+  };
+  state.editor_cancel.store(false, Ordering::SeqCst);
+  *state.editor.lock().unwrap() = Some(EditorSession {
+    path: clip.path,
+    media,
+    timeline,
+  });
+  Ok(payload)
+}
+
+#[tauri::command]
+pub fn editor_apply(
+  state: State<'_, AppState>,
+  op: EditorOp,
+) -> Result<TimelineView, String> {
+  let mut guard = state.editor.lock().unwrap();
+  let session = guard
+    .as_mut()
+    .ok_or_else(|| "The editor is not open.".to_string())?;
+  apply_op(&mut session.timeline, op)?;
+  if let Err(error) = session.timeline.validate() {
+    // The operation should already have been rejected; if it somehow produced
+    // an invalid timeline, drop it rather than render something broken.
+    session.timeline.undo();
+    return Err(error.to_string());
+  }
+  Ok(session.timeline.view())
+}
+
+#[tauri::command]
+pub fn editor_undo(state: State<'_, AppState>) -> Result<TimelineView, String> {
+  let mut guard = state.editor.lock().unwrap();
+  let session = guard
+    .as_mut()
+    .ok_or_else(|| "The editor is not open.".to_string())?;
+  session.timeline.undo();
+  Ok(session.timeline.view())
+}
+
+#[tauri::command]
+pub fn editor_redo(state: State<'_, AppState>) -> Result<TimelineView, String> {
+  let mut guard = state.editor.lock().unwrap();
+  let session = guard
+    .as_mut()
+    .ok_or_else(|| "The editor is not open.".to_string())?;
+  session.timeline.redo();
+  Ok(session.timeline.view())
+}
+
+/// Stop a running export. Safe to call while the export holds no locks.
+#[tauri::command]
+pub fn editor_cancel(state: State<'_, AppState>) -> bool {
+  let running = state.exporting.load(Ordering::SeqCst)
+    && state.editor.lock().map(|guard| guard.is_some()).unwrap_or(false);
+  if running {
+    state.editor_cancel.store(true, Ordering::SeqCst);
+  }
+  running
+}
+
+/// Release the editor. An export still running is cancelled rather than left
+/// writing into a folder the user has already left.
+#[tauri::command]
+pub fn editor_close(state: State<'_, AppState>) -> bool {
+  state.editor_cancel.store(true, Ordering::SeqCst);
+  let had_session = state.editor.lock().unwrap().take().is_some();
+  had_session
+}
+
+/// Exports the edited timeline. Marked `async` so the encode runs on Tauri's
+/// worker runtime: a synchronous command runs on the main thread, which would
+/// queue `editor_cancel` behind the export and make cancellation impossible.
+#[tauri::command(async)]
+pub fn editor_export(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<ClipListItem, String> {
+  if state.exporting.swap(true, Ordering::SeqCst) {
+    return Err("A clip is already being saved. Try again in a moment.".into());
+  }
+  emit_status(&app);
+  state.editor_cancel.store(false, Ordering::SeqCst);
+
+  // Clone the session's media and timeline so the export never holds the editor
+  // lock: closing the editor or cancelling stays responsive while FFmpeg runs.
+  let prepared = {
+    let guard = state.editor.lock().unwrap();
+    match guard.as_ref() {
+      Some(session) => Ok((
+        session.path.clone(),
+        session.media.clone(),
+        session.timeline.clone(),
+      )),
+      None => Err("The editor is not open.".to_string()),
+    }
+  };
+
+  let result = (|| -> Result<SaveResult, String> {
+    let (input, media, timeline) = prepared?;
+    let settings = state.settings.lock().unwrap().clone();
+    let encoder = if ffmpeg::encoder_available(&settings.encoder) {
+      settings.encoder.clone()
+    } else {
+      "libx264".to_string()
+    };
+    let output = editor::edited_output_path(&input, "edited");
+    let temporary = output.with_file_name(format!(
+      ".{}.part.mp4",
+      output
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "export".into())
+    ));
+
+    let progress_app = app.clone();
+    let last_percent = Arc::new(Mutex::new(-1.0_f64));
+    let progress: Arc<dyn Fn(f64) + Send + Sync> = Arc::new(move |fraction| {
+      let percent = (fraction * 100.0).floor();
+      let should_emit = last_percent
+        .lock()
+        .map(|mut last| {
+          if percent > *last {
+            *last = percent;
+            true
+          } else {
+            false
+          }
+        })
+        .unwrap_or(false);
+      if should_emit {
+        let _ = progress_app.emit("editor-progress", EditorProgress { percent });
+      }
+    });
+
+    let request = ExportRequest {
+      input: &input,
+      output: &temporary,
+      media: &media,
+      timeline: &timeline,
+      encoder: &encoder,
+      quality_preset: &settings.quality_preset,
+      bitrate_kbps: settings.bitrate_kbps,
+    };
+    let outcome = match editor::run_export(
+      &request,
+      Arc::clone(&progress),
+      &state.editor_cancel,
+    ) {
+      Ok(outcome) => outcome,
+      Err(error) => {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.message());
+      }
+    };
+    let size = std::fs::metadata(&temporary)
+      .map(|meta| meta.len())
+      .map_err(|e| format!("The edited clip is missing: {e}"))?;
+    if let Err(error) = std::fs::rename(&temporary, &output) {
+      let _ = std::fs::remove_file(&temporary);
+      return Err(format!("The edited clip could not be moved into place: {error}"));
+    }
+    Ok(SaveResult {
+      path: output,
+      duration_seconds: outcome.duration_seconds,
+      file_size_bytes: size,
+      source: "edited".into(),
+      has_audio: media.layout.has_audio(),
+      width: media.width,
+      height: media.height,
+      frame_rate: media.frame_rate,
+    })
+  })();
+
+  state.exporting.store(false, Ordering::SeqCst);
+  emit_status(&app);
+  match result {
+    Ok(saved) => {
+      add_save_result(state.inner(), &saved)?;
+      let clip = clip_from_result(state.inner(), &saved)?;
+      let _ = app.emit("clip-saved", &clip);
+      // The edited file is registered at this point, so the cue is honest.
+      confirm_saved(state.inner());
+      Ok(clip)
+    }
+    Err(error) => {
+      // A cancellation is a user decision, not a failure to report.
+      if error != editor::EXPORT_CANCELLED {
+        let _ = app.emit("app-error", error.clone());
+      }
+      Err(error)
+    }
+  }
 }
 
 pub fn current_status(state: &AppState) -> CaptureStatus {
@@ -1209,6 +1654,38 @@ pub fn initial_settings() -> (Settings, Vec<String>) {
         settings,
         vec![format!("Your settings could not be loaded: {error}")],
       )
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn voice_can_only_clip_a_buffering_replay() {
+    assert!(voice_save_gate(Some(&CaptureState::Buffering)).is_ok());
+  }
+
+  #[test]
+  fn voice_never_interrupts_a_recording() {
+    match voice_save_gate(Some(&CaptureState::Recording)) {
+      Err(voice::SaveOutcome::NotReady(message)) => {
+        assert!(message.contains("recording is in progress"), "{message}");
+      }
+      other => panic!("expected NotReady, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn voice_explains_that_capture_is_not_running() {
+    for state in [None, Some(&CaptureState::Idle), Some(&CaptureState::Starting)] {
+      match voice_save_gate(state) {
+        Err(voice::SaveOutcome::NotReady(message)) => {
+          assert!(message.contains("Start capture"), "{message}");
+        }
+        other => panic!("expected NotReady, got {other:?}"),
+      }
     }
   }
 }

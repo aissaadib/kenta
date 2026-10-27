@@ -70,6 +70,7 @@ export function formatRelative(iso: string): string {
 export function sourceLabel(source: string): string {
   if (source === "replay") return "Replay";
   if (source === "recording") return "Recording";
+  if (source === "edited") return "Edited";
   return source || "Clip";
 }
 

@@ -28,6 +28,7 @@ import {
 } from "./tauri";
 import { CaptureView } from "./views/CaptureView";
 import { ClipsView } from "./views/ClipsView";
+import { EditorView } from "./views/EditorView";
 import { SettingsView } from "./views/SettingsView";
 import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
 import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
@@ -60,6 +61,10 @@ export default function App() {
   const [savingReplay, setSavingReplay] = useState(false);
   const [togglingRecording, setTogglingRecording] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  // The editor is a full-screen mode of the Clips section, not a fourth tab.
+  // Holding the id here means exactly one clip is open, and clearing it returns
+  // to the library the user came from.
+  const [editingClipId, setEditingClipId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -119,6 +124,9 @@ export default function App() {
         listen<ClipListItem>("clip-saved", (event) => {
           const clip = event.payload;
           setRefreshToken((value) => value + 1);
+          // The editor confirms its own export, so do not add a second toast
+          // for the same save.
+          if (clip.source === "edited") return;
           addToast(
             "success",
             clip.source === "recording" ? "Recording saved" : "Replay saved",
@@ -151,6 +159,10 @@ export default function App() {
 
   const tone = statusTone(status?.state ?? "Idle");
   const running = tone === "buffering" || tone === "recording" || tone === "saving";
+  const inEditor = editingClipId !== null;
+  const heading = inEditor
+    ? { title: "Editor", subtitle: "Cut this clip without touching the original." }
+    : VIEW_TITLES[view];
 
   const refreshStatus = async () => {
     try {
@@ -265,6 +277,8 @@ export default function App() {
   }, []);
 
   const showView = useCallback((next: View) => {
+    // Navigating away closes the editor, which releases its session and player.
+    setEditingClipId(null);
     // The scroll container is shared, so reset it before swapping content in.
     contentRef.current?.scrollTo({ top: 0 });
     setView(next);
@@ -272,6 +286,21 @@ export default function App() {
   }, [mountView]);
 
   const openSettings = useCallback(() => showView("settings"), [showView]);
+
+  const openEditor = useCallback((clip: ClipListItem) => {
+    if (!clip.exists) {
+      addToast("error", "This clip cannot be edited", "Its file is missing from disk.");
+      return;
+    }
+    contentRef.current?.scrollTo({ top: 0 });
+    setView("clips");
+    setEditingClipId(clip.id);
+  }, [addToast]);
+
+  const closeEditor = useCallback(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+    setEditingClipId(null);
+  }, []);
 
   if (loading) {
     return (
@@ -391,8 +420,8 @@ export default function App() {
       <main className="main">
         <header className="topbar">
           <div className="topbar-heading">
-            <h1>{VIEW_TITLES[view].title}</h1>
-            <p>{VIEW_TITLES[view].subtitle}</p>
+            <h1>{heading.title}</h1>
+            <p>{heading.subtitle}</p>
           </div>
           <div className="topbar-actions">
             {status.warnings.length > 0 ? (
@@ -421,7 +450,7 @@ export default function App() {
 
         <div className="content" ref={contentRef}>
           {mountedViews.capture ? (
-            <div className="view-slot" hidden={view !== "capture"}>
+            <div className="view-slot" hidden={inEditor || view !== "capture"}>
               <CaptureView
                 settings={saved}
                 status={status}
@@ -443,17 +472,30 @@ export default function App() {
           ) : null}
 
           {mountedViews.clips ? (
-            <div className="view-slot" hidden={view !== "clips"}>
+            <div className="view-slot" hidden={inEditor || view !== "clips"}>
               <ClipsView
                 refreshToken={refreshToken}
-                active={view === "clips"}
+                active={view === "clips" && !inEditor}
+                onNotify={addToast}
+                onEdit={openEditor}
+              />
+            </div>
+          ) : null}
+
+          {editingClipId ? (
+            <div className="view-slot">
+              <EditorView
+                key={editingClipId}
+                clipId={editingClipId}
+                onClose={closeEditor}
+                onSaved={() => setRefreshToken((value) => value + 1)}
                 onNotify={addToast}
               />
             </div>
           ) : null}
 
           {mountedViews.settings ? (
-            <div className="view-slot" hidden={view !== "settings"}>
+            <div className="view-slot" hidden={inEditor || view !== "settings"}>
               <SettingsView
                 saved={saved}
                 draft={draft}

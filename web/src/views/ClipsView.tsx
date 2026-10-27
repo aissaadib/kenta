@@ -10,6 +10,7 @@ import {
   Pencil,
   Play,
   RefreshCw,
+  Scissors,
   Search,
   Trash2,
   X,
@@ -31,6 +32,8 @@ interface Props {
   /** False while another section is on screen. */
   active: boolean;
   onNotify: (kind: "success" | "error" | "info", title: string, message?: string) => void;
+  /** Open the editor for one saved clip. Only saved clips can be edited. */
+  onEdit: (clip: ClipListItem) => void;
 }
 
 type SortKey = "date" | "oldest" | "name" | "size" | "duration";
@@ -43,7 +46,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "duration", label: "Longest first" },
 ];
 
-function ClipsViewImpl({ refreshToken, active, onNotify }: Props) {
+function ClipsViewImpl({ refreshToken, active, onNotify, onEdit }: Props) {
   const [clips, setClips] = useState<ClipListItem[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date");
@@ -333,6 +336,15 @@ function ClipsViewImpl({ refreshToken, active, onNotify }: Props) {
                   <button
                     type="button"
                     className="icon-btn"
+                    title="Edit clip"
+                    disabled={!clip.exists}
+                    onClick={() => onEdit(clip)}
+                  >
+                    <Scissors size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn"
                     title="Play in default player"
                     disabled={!clip.exists}
                     onClick={() =>
@@ -411,6 +423,18 @@ function ClipsViewImpl({ refreshToken, active, onNotify }: Props) {
               </div>
             )}
             <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!preview.exists}
+                onClick={() => {
+                  const clip = preview;
+                  setPreview(null);
+                  onEdit(clip);
+                }}
+              >
+                <Scissors size={15} /> Edit clip
+              </button>
               <button
                 type="button"
                 className="btn btn-ghost"

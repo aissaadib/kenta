@@ -1,7 +1,9 @@
 import { memo, useEffect, useMemo, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
   AudioLines,
+  Bell,
   Check,
   ChevronDown,
   Cpu,
@@ -11,6 +13,7 @@ import {
   Loader2,
   Mic,
   Monitor,
+  Play,
   RefreshCw,
   RotateCcw,
   Save,
@@ -24,12 +27,17 @@ import {
   enumerateVideoEncoders,
   openFileLocation,
   openOutputDir,
+  previewConfirmationSound,
   selectOutputDir,
+  voiceStatus,
+  voiceTest,
   type AudioDevice,
   type EncoderInfo,
   type FfmpegInfo,
   type MonitorInfo,
   type Settings,
+  type VoiceStatus,
+  type VoiceTestOutcome,
 } from "../tauri";
 import { ShortcutCapture } from "../components/ShortcutCapture";
 import { Switch } from "../components/Switch";
@@ -63,6 +71,49 @@ const PRESETS = [
   { label: "2560 × 1440", width: 2560, height: 1440 },
   { label: "3840 × 2160", width: 3840, height: 2160 },
 ];
+
+/** How long a test waits for speech before giving up. */
+const VOICE_TEST_SECONDS = 8;
+
+const VOICE_STATE_LABELS: Record<VoiceStatus["state"], string> = {
+  disabled: "Off",
+  initializing: "Starting…",
+  ready: "Ready",
+  unavailable: "Unavailable",
+  "buffer-not-ready": "Waiting for capture",
+};
+
+/**
+ * The recogniser's live status. It is pushed by the backend whenever it
+ * changes, so the badge follows the engine without polling.
+ */
+function useVoiceStatus(): VoiceStatus | null {
+  const [status, setStatus] = useState<VoiceStatus | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    voiceStatus()
+      .then((next) => {
+        if (!disposed) setStatus(next);
+      })
+      .catch(() => {
+        // The backend reports its own failures; a missing status is not fatal.
+      });
+    void listen<VoiceStatus>("voice-status", (event) => setStatus(event.payload)).then(
+      (off) => {
+        if (disposed) off();
+        else unlisten = off;
+      },
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  return status;
+}
 
 function numericOptions(values: number[], current: number): number[] {
   return values.includes(current)
@@ -186,6 +237,9 @@ function SettingsViewImpl({
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>({});
   const [resetToken, setResetToken] = useState(0);
+  const voice = useVoiceStatus();
+  const [testingVoice, setTestingVoice] = useState(false);
+  const [voiceTestResult, setVoiceTestResult] = useState<VoiceTestOutcome | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -770,6 +824,218 @@ function SettingsViewImpl({
               <ChevronDown size={14} className="select-chevron" />
             </span>
           </label>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <header>
+          <span className="settings-icon"><Bell size={18} /></span>
+          <div>
+            <h3>Save confirmation</h3>
+            <p>A short chime the moment a clip is on disk.</p>
+          </div>
+        </header>
+        <div className="settings-body">
+          <div className="switch-stack">
+            <Switch
+              checked={draft.confirmation_sound_enabled}
+              onChange={(checked) => update("confirmation_sound_enabled", checked)}
+              label="Play a sound when a clip is saved"
+              description="Plays once, after the file is written and added to the library. Failed and cancelled saves stay silent."
+            />
+          </div>
+          <div className="field">
+            <span className="field-label" id="confirmation-volume-label">
+              Volume
+            </span>
+            <div className="volume-row">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={draft.confirmation_sound_volume}
+                disabled={!draft.confirmation_sound_enabled}
+                aria-labelledby="confirmation-volume-label"
+                aria-valuetext={`${draft.confirmation_sound_volume}%`}
+                onChange={(event) =>
+                  update("confirmation_sound_volume", Number(event.target.value))
+                }
+              />
+              <span className="mono volume-value">{draft.confirmation_sound_volume}%</span>
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={draft.confirmation_sound_volume === 0}
+                onClick={() => {
+                  previewConfirmationSound(draft.confirmation_sound_volume).catch((reason) =>
+                    onNotify("error", "Could not play the sound", String(reason)),
+                  );
+                }}
+              >
+                <Play size={14} /> Preview
+              </button>
+            </div>
+            <p className="field-hint">
+              Preview plays at the volume above, even before you save. The chime is generated on
+              this PC; nothing is downloaded.
+            </p>
+          </div>
+          <div className="inline-note">
+            <Info size={14} />
+            <span>
+              Desktop audio is captured from the system&apos;s own output, so a clip recorded right
+              after a save can contain the chime. The clip that triggered it has already been
+              written and is never affected.
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <header>
+          <span className="settings-icon"><AudioLines size={18} /></span>
+          <div>
+            <h3>Voice clipping</h3>
+            <p>Say the wake phrase, then the command, to save a clip hands-free.</p>
+          </div>
+          <span
+            className={`voice-pill is-${voice?.state ?? "disabled"}${voice?.armed ? " is-armed" : ""}`}
+            title={voice?.detail ?? undefined}
+          >
+            {voice?.armed
+              ? "Listening for the command"
+              : VOICE_STATE_LABELS[voice?.state ?? "disabled"]}
+            {voice?.state === "ready" && voice.language ? ` · ${voice.language}` : ""}
+          </span>
+        </header>
+        <div className="settings-body">
+          <div className="switch-stack">
+            <Switch
+              checked={draft.voice_enabled}
+              onChange={(checked) => update("voice_enabled", checked)}
+              label="Listen for voice commands"
+              description="Uses the speech engine built into Windows. Audio is decoded on this PC and thrown away: nothing is recorded, uploaded or written to disk."
+            />
+          </div>
+          <div className="field-grid">
+            <label className="field">
+              <span className="field-label">Wake phrase</span>
+              <input
+                className="input"
+                value={draft.voice_wake_phrase}
+                maxLength={60}
+                placeholder="ClipVault"
+                onChange={(event) => update("voice_wake_phrase", event.target.value)}
+              />
+              <p className="field-hint">
+                Said on its own, it waits a few seconds for the command.
+              </p>
+            </label>
+            <label className="field">
+              <span className="field-label">Clip command</span>
+              <input
+                className="input"
+                value={draft.voice_clip_command}
+                maxLength={60}
+                placeholder="clip that"
+                onChange={(event) => update("voice_clip_command", event.target.value)}
+              />
+              <p className="field-hint">
+                Spoken right after the wake phrase: &ldquo;{draft.voice_wake_phrase.trim() ||
+                  "ClipVault"}&rdquo;, {draft.voice_clip_command.trim() || "clip that"}.
+              </p>
+            </label>
+          </div>
+          <div className="field-grid">
+            <NumericField
+              label="Voice clip length"
+              value={draft.voice_clip_seconds}
+              min={5}
+              max={300}
+              suffix="s"
+              hint="How much of the replay a voice save keeps."
+              onChange={(value) => update("voice_clip_seconds", value)}
+            />
+            <NumericField
+              label="Cooldown"
+              value={draft.voice_cooldown_seconds}
+              min={1}
+              max={60}
+              suffix="s"
+              hint="Repeat triggers are ignored for this long after a save."
+              onChange={(value) => update("voice_cooldown_seconds", value)}
+            />
+          </div>
+          <div className="field">
+            <span className="field-label" id="voice-confidence-label">
+              Confidence threshold
+            </span>
+            <div className="volume-row">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={draft.voice_min_confidence}
+                disabled={!draft.voice_enabled}
+                aria-labelledby="voice-confidence-label"
+                aria-valuetext={`${draft.voice_min_confidence}%`}
+                onChange={(event) =>
+                  update("voice_min_confidence", Number(event.target.value))
+                }
+              />
+              <span className="mono volume-value">{draft.voice_min_confidence}%</span>
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={
+                  testingVoice ||
+                  !voice ||
+                  (voice.state !== "ready" && voice.state !== "buffer-not-ready")
+                }
+                onClick={() => {
+                  setTestingVoice(true);
+                  setVoiceTestResult(null);
+                  voiceTest(VOICE_TEST_SECONDS)
+                    .then(setVoiceTestResult)
+                    .catch((reason) =>
+                      onNotify("error", "The voice test could not run", String(reason)),
+                    )
+                    .finally(() => setTestingVoice(false));
+                }}
+              >
+                {testingVoice ? <Loader2 size={14} className="spin" /> : <Mic size={14} />}
+                {testingVoice ? "Listening…" : "Test"}
+              </button>
+            </div>
+            <p className="field-hint">
+              Recognitions below this are ignored, and the test uses the saved settings.
+            </p>
+            {voiceTestResult && (
+              <div
+                className={`voice-test ${voiceTestResult.matched ? "is-match" : ""}`}
+                role="status"
+              >
+                {voiceTestResult.matched ? <Check size={14} /> : <Info size={14} />}
+                <span>{voiceTestResult.message}</span>
+              </div>
+            )}
+          </div>
+          {voice?.detail && (
+            <div className="inline-note">
+              <Info size={14} />
+              <span>{voice.detail}</span>
+            </div>
+          )}
+          <div className="inline-note">
+            <Info size={14} />
+            <span>
+              Voice commands only save while capture is buffering, and they never take focus. A
+              clip saved by voice is exactly a replay save: same length rules, same confirmation
+              sound. Windows needs a speech language installed for the phrase to be understood.
+            </span>
+          </div>
         </div>
       </section>
 

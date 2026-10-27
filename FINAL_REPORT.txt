@@ -566,4 +566,253 @@ Thirty-one commits on top of ffc18ba, one concern each:
 This section is the final commit. Everything above is pushed to
 origin/main; no history was rewritten.
 
+============================================================
+10. EDITOR, VOICE CLIPPING & SAVE CHIME (2026-10-27)
+============================================================
+Branch: feature/editor-voice-sound
+Base:   a9e356f (last verified main)
+Head:   27b0947 (code) plus this documentation commit
+Commits in this pass: 24 code/docs commits, then this report
+Working tree: clean
+Pushed: origin/feature/editor-voice-sound only; main untouched
 
+10.1 WHAT WAS BUILT
+
+Three features, committed and verified separately:
+
+  1. A saved-clip editor that opens one clip from the library.
+  2. Hands-free voice clipping: "ClipVault, clip that".
+  3. A short confirmation chime after a clip is actually saved.
+
+The existing hidden-console fix, the 500 ms capture-status tick, the
+replay buffer, SQLite library, settings schema, and the dark/yellow
+design are all preserved.
+
+10.2 AUDIO STRUCTURE (WHAT THE EDITOR EDITS)
+
+Recording no longer mixes sources at capture time. Each enabled source is
+written as its own AAC stream inside the MP4 and tagged with a stream
+title:
+
+  PC audio only        one stream, title "PC Audio"
+  Microphone only      one stream, title "Microphone"
+  Both, same device    one stream, title "Mixed Audio" (deduplicated)
+  Both, distinct       two streams, titles "PC Audio" and "Microphone"
+
+The editor probes the file and reads those titles (FFmpeg 9 stores the
+stream title as the MP4 "name" tag, so both keys are accepted). A file
+with two distinct titles gets three lanes: Video, PC Audio, Microphone.
+Anything else - legacy clips, untitled streams, or a partly tagged file -
+gets two lanes: Video and Mixed Audio, where the mixed lane is every audio
+stream combined.
+
+Export re-encodes rather than stream-copies. The filter graph trims each
+track, resets timestamps, concatenates the kept pieces with explicit
+black video and anullsrc silence for gaps, then mixes the audio tracks.
+Re-encoding is deliberate: it makes a gap, a split, and a moved segment
+exactly what the timeline says, at the cost of encode time.
+
+The original file is only ever read. An export writes a new file beside
+it as <stem>_edited.mp4, with _1, _2, ... if that name already exists.
+The result is probed, then registered in the library with source
+"edited"; the library shows an "Edited" badge.
+
+10.3 SAVED-CLIP EDITOR
+
+Entry point
+  Edit is offered on saved clips in the library. It loads only that clip,
+  releases the player and the probe process on exit, and Back or Close
+  returns to the library with the previous section state intact.
+
+Editing
+  One shared ruler and playhead across all lanes. Split at the playhead,
+  delete a selection, trim an edge, move a segment, undo and redo. Invalid
+  ranges and overlaps are rejected instead of silently corrected. A gap
+  is black video plus silence, never a frozen frame or a stretched clip.
+
+Saving
+  Save shows progress and can be cancelled. The export command is
+  declared async, so Cancel is not queued behind the encode: a cancelled
+  export stops in well under a second and leaves no partial file and no
+  success toast. The clip is validated before it is registered.
+
+No capture interaction
+  Opening, editing, exporting, and closing the editor never enumerate
+  devices and never restart capture. Capture stayed "Buffering" through
+  every editor run.
+
+10.4 VOICE CLIPPING
+
+Recognition
+  In process, using the speech engine Windows already ships (SAPI5). The
+  grammar is generated from the two configured phrases, written to a
+  temporary file, loaded as a static command grammar, and the file is
+  deleted immediately. Nothing is uploaded.
+
+State machine
+  The wake phrase arms a six-second window; the clip command inside that
+  window triggers one save. Matching is whole-word at both ends, so
+  "clipping that" does not match "clip that". A recognition below the
+  confidence threshold is ignored, and a trigger inside the cooldown is
+  dropped, so one spoken command cannot save twice.
+
+Saving
+  A trigger calls the same perform_save_replay path as the hotkey, so the
+  clip length clamp, the library registration, the confirmation chime,
+  and the exporting guard are identical. A live recording is never cut
+  short, and voice refuses to save while the buffer is not running.
+
+Status and test
+  States: disabled, initializing, ready, unavailable, buffer-not-ready.
+  Status is pushed to the UI as a "voice-status" event, so the settings
+  badge follows the engine without polling. The Test button listens for
+  one utterance (2-15 s), reports what was heard and whether it matched,
+  and never saves a clip.
+
+Defaults and language
+  Off by default. Wake "ClipVault", command "clip that", 30 s clip, 60%
+  confidence, 5 s cooldown. The recogniser language follows the UI
+  language and falls back to en-US with a visible note; if no recogniser
+  exists the state is "unavailable" with the reason.
+
+No focus steal
+  Verified with Notepad in the foreground: the engine restarted and
+  reached "Ready - en-US" while Notepad kept focus, and capture stayed
+  buffering.
+
+10.5 SAVE CONFIRMATION CHIME
+
+The chime is generated in memory as a short WAV - there is no asset file
+to lose. It is played on a short-lived worker thread with
+PlaySound(SND_MEMORY | SND_NODEFAULT); volume is applied by scaling the
+samples, and 0 is truly silent. It fires only after a save has succeeded
+(replay save, manual recording stop, or editor export), once per save,
+never on failure or cancel, and never blocks the save path.
+
+Preview auditions the draft volume without saving settings. The settings
+section has enable, volume, and preview; the values persist and are
+restored after restart.
+
+The chime is played after the clip is finalised, so it is not part of the
+saved clip. One interaction is unavoidable: if desktop/PC audio capture
+is enabled and the default playback device is also the device being
+loopback-captured, the chime can land in the next replay buffer. It
+cannot land in the clip that was just saved. This is documented in the
+UI rather than hidden.
+
+10.6 PRIVACY AND DATA HANDLING
+
+  - No network calls. Recognition is in process.
+  - No audio is stored: the recogniser consumes the microphone stream and
+    the samples are discarded.
+  - No transcript is stored. The last heard phrase and confidence exist
+    only in memory, for the status badge, and are gone on restart.
+  - The grammar file is deleted immediately after it is loaded.
+  - settings.json stores only the phrases, lengths, thresholds, and the
+    chime preferences.
+
+10.7 VERIFICATION
+
+Automated
+  cargo test --release --lib        121 passed, 0 failed, 5 ignored
+  cargo check --release --lib       0 warnings, 0 errors
+  npx tsc --noEmit                  0
+  npm run build                     ok
+
+  The crate has 126 tests. The 5 ignored ones drive real Windows APIs and
+  all pass when run explicitly:
+    - installed recognisers: MS-1033 (en-US), MS-1031 (de-DE),
+      MS-1036 (fr-FR)
+    - synthesised speech recognised through the real engine:
+      heard "clip vault clip that" at 0.9476
+    - a full trigger asks for exactly one save ([30]) and never a second
+    - a microphone test reports the phrase and saves nothing
+    - the generated chime is accepted by Windows
+
+  Module totals (run + ignored): voice 32 (4 ignored), timeline 21,
+  editor 18, settings 16, capture 13, hotkey 8, sound 7 (1 ignored),
+  storage 4, commands 3, ffmpeg 3, errors 1.
+
+Editor, end to end (WebView2 via CDP)
+  Opened a saved clip, sought, split, deleted, undid, redid, exported.
+  Output: 20 s, 1920x1080 at 60 fps, with black video from 0 to 8 s.
+  The source file's SHA-256 and modification time were unchanged after
+  the export. The new clip appeared with the Edited badge, Back returned
+  to the library, and the video element's source was released. Cancel
+  aborted in under 0.7 s with no file and no toast. Capture stayed
+  Buffering and no console window appeared.
+
+Voice, end to end
+  Saving settings starts the engine: Starting... then Ready - en-US, with
+  'Voice clipping listening in en-US for "ClipVault" + "clip that"' in the
+  log. One live run produced a real 30 second clip at 21:04:27 with the
+  chime at 70%. Test showed Listening... and then the timeout message.
+  Turning voice off saved, showed Off, and stopped listening. No focus
+  steal, as described above.
+
+Chime, end to end
+  One chime per save at 70% and at 40%, silent when disabled, preview at
+  the draft volume, values persisted across a restart.
+
+Library
+  Save -> appears in Clips -> delete -> gone from the list and from disk.
+
+10.8 LIMITATIONS AND HONEST GAPS
+
+  - The microphone on this machine does not reliably hear the speakers, so
+    live speech was only reproducible once. The deterministic proof is the
+    WAV-fed engine test, which uses the same session, grammar, and event
+    loop as the microphone.
+  - No PC-audio loopback device was available here, so the PC Audio lane
+    was verified with synthetic media carrying the same tagged streams,
+    not with a real loopback recording.
+  - SAPI needs an installed speech language. Without one the feature is
+    unavailable, and the UI says so instead of pretending to listen.
+  - The editor re-encodes, so an export takes about as long as encoding
+    the kept range. Progress and Cancel are always available.
+  - Recognition quality depends on the Windows recogniser and microphone;
+    the confidence threshold is the only tuning knob.
+  - The chime/loopback interaction in 10.5 is inherent to capturing the
+    same output device and cannot be removed in software.
+
+Housekeeping
+  The two test clips were deleted through the app, and the library is
+  empty. The original clip used for editor verification now exists only
+  in the user's own .zip archive in the output folder; at verification
+  time the editor had left its SHA-256 and modification time unchanged.
+
+10.9 COMMITS IN THIS PASS
+
+  61dcfe6 docs: audit the audio pipeline and plan the editor, voice and sound work
+  6029f19 feat(capture): record PC audio and microphone as separate streams
+  09cca52 feat(editor): add a pure timeline model for per-track editing
+  a47ec32 feat(editor): probe clip streams and build the export filter graph
+  4513a26 fix(editor): read the MP4 name tag as a stream title
+  10d0516 test(editor): render synthetic media through the real export path
+  2ebc1db feat(editor): expose open, edit, undo, export, cancel and close commands
+  6cf26fe feat(editor): add the editor view and its IPC types
+  a5f91a9 feat(editor): open the editor from a saved clip
+  5b0143d style(editor): add transport, ruler and track-lane styles
+  14eae3e fix(editor): repair mangled characters and keep the timeline above the fold
+  ef7be37 style(editor): tighten the layout so the track lanes stay in view
+  c103d80 fix(editor): run the export off the main thread so cancel actually works
+  59fb135 feat(settings): add confirmation sound preferences
+  a627ec0 feat(sound): play a short chime once a clip is actually saved
+  c8758cb feat(web): expose the confirmation sound settings and preview
+  c62ecbc feat(settings): add the save confirmation section
+  96aa2ef chore(sound): record whether Windows accepted the chime
+  be95f44 feat(voice): recognise the wake phrase and clip command with SAPI
+  ae5068c feat(voice): start and stop the recogniser with the app
+  a2eecad feat(web): expose the voice settings and commands
+  e0d15cb feat(settings): add the voice clipping section
+  56847cc test(voice): cover the save gate and the cooldown
+  27b0947 test(voice): drive the engine from a WAV with a fake sink
+
+Engineering notes worth keeping
+  - The in-process recogniser rejects any event-interest mask that omits
+    its two reserved events; recognition must be requested on top of the
+    engine defaults.
+  - ISpPhrase::GetText treats an element count of 0 as "no elements",
+    not "all elements".
+  - The grammar token's Language value lives under the token's Attributes
+    subkey.

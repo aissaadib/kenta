@@ -23,3 +23,36 @@ pub enum AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+impl AppError {
+  /// The message on its own, without the module prefix that `Display` adds.
+  /// Commands return this to the UI: the prefix is useful in a log line and
+  /// noise in a toast.
+  pub fn message(&self) -> String {
+    match self {
+      AppError::Capture(message)
+      | AppError::Storage(message)
+      | AppError::Settings(message)
+      | AppError::Hotkey(message)
+      | AppError::Ffmpeg(message)
+      | AppError::Validation(message) => message.clone(),
+      AppError::Io(error) => error.to_string(),
+      AppError::Sqlite(error) => error.to_string(),
+      AppError::Json(error) => error.to_string(),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn message_drops_the_module_prefix() {
+    let error = AppError::Capture("The clip is missing.".into());
+    assert_eq!(error.to_string(), "capture error: The clip is missing.");
+    assert_eq!(error.message(), "The clip is missing.");
+    let error = AppError::Ffmpeg("FFmpeg is not available.".into());
+    assert_eq!(error.message(), "FFmpeg is not available.");
+  }
+}

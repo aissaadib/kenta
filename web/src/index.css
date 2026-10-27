@@ -1467,6 +1467,106 @@ a {
   gap: 5px;
 }
 
+/* The save-confirmation volume: a slider that reads as a level, not a number
+   box, with the exact value beside it and an audition button on the end. */
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.volume-row input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.volume-row input[type="range"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.volume-value {
+  min-width: 38px;
+  color: var(--text-soft);
+  font-size: 12px;
+  text-align: right;
+}
+
+/* The recogniser's live state, in the section header. */
+.voice-pill {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.voice-pill.is-ready {
+  border-color: rgba(250, 204, 21, 0.45);
+  background: rgba(250, 204, 21, 0.12);
+  color: var(--accent);
+}
+
+.voice-pill.is-initializing {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.1);
+  color: var(--info);
+}
+
+.voice-pill.is-armed {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #17150a;
+}
+
+.voice-pill.is-unavailable {
+  border-color: rgba(251, 113, 133, 0.4);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--danger);
+}
+
+.voice-pill.is-buffer-not-ready {
+  border-color: rgba(250, 204, 21, 0.3);
+  color: var(--text-soft);
+}
+
+/* What the microphone test heard. */
+.voice-test {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.voice-test svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--info);
+}
+
+.voice-test.is-match {
+  border-color: rgba(250, 204, 21, 0.35);
+  background: rgba(250, 204, 21, 0.07);
+}
+
+.voice-test.is-match svg {
+  color: var(--accent);
+}
+
 .field-label {
   font-size: 10.5px;
   font-weight: 700;
@@ -1900,6 +2000,300 @@ a {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+}
+
+/* ----------------------------------------------------------------- editor */
+
+.editor-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.editor-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.editor-heading-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.editor-heading h2 {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.3px;
+  overflow-wrap: anywhere;
+}
+
+.editor-sub {
+  margin-top: 3px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.editor-note svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--muted);
+}
+
+.editor-note-success {
+  border-color: rgba(245, 255, 46, 0.3);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.editor-note-success svg {
+  color: var(--accent);
+}
+
+.editor-stage {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #05070a;
+}
+
+.editor-video {
+  display: block;
+  width: 100%;
+  max-height: 36vh;
+  background: #000;
+  object-fit: contain;
+}
+
+.editor-transport {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.editor-clock {
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.editor-hint {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 11.5px;
+  text-align: right;
+}
+
+.editor-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.editor-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 0.15s linear;
+}
+
+.editor-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.editor-ruler-row,
+.editor-track {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.editor-track-label {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-ruler {
+  position: relative;
+  height: 26px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+  cursor: pointer;
+  outline: none;
+  touch-action: none;
+}
+
+.editor-ruler:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.editor-tick {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  width: 1px;
+  padding-left: 3px;
+  background: var(--border);
+  color: var(--faint);
+  font-size: 9.5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.editor-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(245, 255, 46, 0.5);
+  pointer-events: none;
+}
+
+.editor-lane {
+  position: relative;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.025) 0 1px,
+    transparent 1px 100%
+  );
+  touch-action: none;
+}
+
+.editor-segment {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2px;
+  overflow: hidden;
+  padding: 0 8px;
+  border: 1px solid rgba(245, 255, 46, 0.4);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(245, 255, 46, 0.22), rgba(245, 255, 46, 0.09));
+  cursor: grab;
+  user-select: none;
+}
+
+.editor-lane[data-track="pc"] .editor-segment,
+.editor-lane[data-track="mixed"] .editor-segment {
+  border-color: rgba(96, 165, 250, 0.42);
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0.22), rgba(96, 165, 250, 0.09));
+}
+
+.editor-lane[data-track="mic"] .editor-segment {
+  border-color: rgba(192, 132, 252, 0.42);
+  background: linear-gradient(180deg, rgba(192, 132, 252, 0.22), rgba(192, 132, 252, 0.09));
+}
+
+.editor-segment.is-selected {
+  z-index: 2;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.editor-segment.is-dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+
+.editor-segment-label {
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.editor-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.editor-handle-in {
+  left: 0;
+}
+
+.editor-handle-out {
+  right: 0;
+}
+
+.editor-handle:hover {
+  background: rgba(245, 255, 46, 0.35);
+}
+
+.editor-footnote {
+  color: var(--faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+@media (max-width: 840px) {
+  .editor-hint {
+    display: none;
+  }
+
+  .editor-ruler-row,
+  .editor-track {
+    grid-template-columns: 66px minmax(0, 1fr);
+  }
 }
 
 /* -------------------------------------------------------------- scrollbars */

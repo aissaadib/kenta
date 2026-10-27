@@ -2,6 +2,7 @@ mod autostart;
 mod buffer;
 mod capture;
 mod commands;
+mod editor;
 mod errors;
 mod ffmpeg;
 mod hotkey;
@@ -9,7 +10,10 @@ mod instance;
 mod monitors;
 mod process;
 mod settings;
+mod sound;
 mod storage;
+mod timeline;
+mod voice;
 mod worker;
 
 use capture::{CaptureConfig, CaptureEngine};
@@ -44,6 +48,9 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       commands::get_settings,
       commands::save_settings,
+      commands::preview_confirmation_sound,
+      commands::voice_status,
+      commands::voice_test,
       commands::capture_start,
       commands::capture_stop,
       commands::capture_status,
@@ -66,6 +73,13 @@ pub fn run() {
       commands::check_ffmpeg,
       commands::generate_thumbnail,
       commands::open_in_player,
+      commands::editor_open,
+      commands::editor_apply,
+      commands::editor_undo,
+      commands::editor_redo,
+      commands::editor_export,
+      commands::editor_cancel,
+      commands::editor_close,
     ])
     .setup(|app| {
       let handle = app.handle().clone();
@@ -218,6 +232,7 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
   }
 
   let _ = handle.emit("capture-status", commands::current_status(&state));
+  commands::apply_voice_settings(handle, &settings);
   Ok(())
 }
 
@@ -292,6 +307,7 @@ fn show_window(app: &AppHandle) {
 pub fn shutdown(app: &AppHandle) {
   let state = app.state::<AppState>();
   state.exporting.store(false, Ordering::SeqCst);
+  commands::stop_voice(&state);
   if let Ok(mut capture) = state.capture.lock() {
     if let Some(engine) = capture.take() {
       drop(engine);
