@@ -314,6 +314,10 @@ export default function App() {
               type="button"
               className={`nav-item ${view === item.key ? "is-active" : ""}`}
               onClick={() => showView(item.key)}
+              // Build the section while the pointer or focus is on its button, so
+              // the click has nothing left to load.
+              onPointerEnter={() => mountView(item.key)}
+              onFocus={() => mountView(item.key)}
               aria-current={view === item.key ? "page" : undefined}
             >
               <span className="nav-icon">{item.icon}</span>
@@ -407,6 +411,8 @@ export default function App() {
               title="Settings"
               aria-label="Open settings"
               onClick={openSettings}
+              onPointerEnter={() => mountView("settings")}
+              onFocus={() => mountView("settings")}
             >
               <Settings2 size={17} />
             </button>
