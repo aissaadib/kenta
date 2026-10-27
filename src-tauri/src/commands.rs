@@ -25,6 +25,9 @@ pub struct AppState {
   pub storage: Mutex<Option<Storage>>,
   pub hotkey: Mutex<Option<HotkeyManager>>,
   pub exporting: AtomicBool,
+  /// True while the startup capture thread is still waiting for its first
+  /// segment. Commands that need the buffer wait for this instead of racing it.
+  pub capture_starting: AtomicBool,
   pub startup_warnings: Mutex<Vec<String>>,
   pub capture_warnings: Mutex<Vec<String>>,
   pub last_error: Mutex<Option<String>>,
@@ -52,6 +55,7 @@ impl AppState {
       storage: Mutex::new(None),
       hotkey: Mutex::new(None),
       exporting: AtomicBool::new(false),
+      capture_starting: AtomicBool::new(false),
       startup_warnings: Mutex::new(Vec::new()),
       capture_warnings: Mutex::new(Vec::new()),
       last_error: Mutex::new(None),
@@ -171,6 +175,7 @@ pub fn save_settings(
   if state.exporting.load(Ordering::SeqCst) {
     return Err("A clip is being saved. Try again in a moment.".into());
   }
+  wait_for_capture_start(&state);
   let previous = state.settings.lock().unwrap().clone();
   let needs_restart = capture_affecting_changed(&previous, &settings);
 
@@ -272,6 +277,7 @@ pub fn capture_start(app: AppHandle, state: State<'_, AppState>) -> Result<Captu
   if state.exporting.load(Ordering::SeqCst) {
     return Err("A clip is being saved. Try again in a moment.".into());
   }
+  wait_for_capture_start(&state);
   let settings = state.settings.lock().unwrap().clone();
   let (config, warnings) = build_capture_config(&settings)?;
   let mut capture = state.capture.lock().unwrap();
@@ -315,6 +321,7 @@ pub fn capture_stop(app: AppHandle, state: State<'_, AppState>) -> Result<Captur
   if state.exporting.load(Ordering::SeqCst) {
     return Err("A clip is being saved. Try again in a moment.".into());
   }
+  wait_for_capture_start(&state);
   let mut capture = state.capture.lock().unwrap();
   if let Some(engine) = capture.as_ref() {
     if matches!(engine.state(), CaptureState::Recording) {
@@ -350,6 +357,7 @@ pub fn capture_start_manual(
   if state.exporting.load(Ordering::SeqCst) {
     return Err("A clip is being saved. Try again in a moment.".into());
   }
+  wait_for_capture_start(&state);
   let mut capture = state.capture.lock().unwrap();
   let engine = capture
     .as_mut()
@@ -529,6 +537,7 @@ pub async fn voice_test(
 pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<SaveResult, String> {
   let state = app.state::<AppState>();
   let state: &AppState = &state;
+  wait_for_capture_start(state);
   if state.exporting.swap(true, Ordering::SeqCst) {
     return Err("A clip is already being saved.".into());
   }
@@ -642,6 +651,7 @@ pub fn perform_stop_manual(app: &AppHandle) -> Result<SaveResult, String> {
 pub fn perform_toggle_manual(app: &AppHandle) -> Result<Option<SaveResult>, String> {
   let state = app.state::<AppState>();
   let state: &AppState = &state;
+  wait_for_capture_start(state);
   let recording = {
     let capture = state.capture.lock().unwrap();
     capture
@@ -928,6 +938,25 @@ pub fn editor_export(
   }
 }
 
+/// Startup starts capture on a worker thread so the window is not gated on the
+/// first two-second segment. Commands that need the buffer wait here briefly
+/// instead of racing the worker and reporting a false "not running" error.
+pub fn wait_for_capture_start(state: &AppState) {
+  wait_for_capture_start_for(state, std::time::Duration::from_secs(6));
+}
+
+/// Like [`wait_for_capture_start`], with an explicit bound. Shutdown waits
+/// longer because the engine it is waiting for still has to be dropped: leaving
+/// the process while the worker is inside `start()` would orphan its FFmpeg.
+pub fn wait_for_capture_start_for(state: &AppState, limit: std::time::Duration) {
+  let deadline = std::time::Instant::now() + limit;
+  while state.capture_starting.load(Ordering::SeqCst)
+    && std::time::Instant::now() < deadline
+  {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+  }
+}
+
 pub fn current_status(state: &AppState) -> CaptureStatus {
   let exporting = state.exporting.load(Ordering::SeqCst);
   let mut capture = state.capture.lock().unwrap();
@@ -982,7 +1011,13 @@ fn status_without_engine(state: &AppState) -> CaptureStatus {
   warnings.extend(state.capture_warnings.lock().unwrap().clone());
   let output_dir = settings.output_dir_or_default().display().to_string();
   CaptureStatus {
-    state: if error.is_some() { "Error".into() } else { "Idle".into() },
+    state: if error.is_some() {
+      "Error".into()
+    } else if state.capture_starting.load(Ordering::SeqCst) {
+      "Starting".into()
+    } else {
+      "Idle".into()
+    },
     message: error,
     buffered_seconds: 0.0,
     segment_count: 0,

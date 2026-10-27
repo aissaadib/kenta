@@ -149,9 +149,14 @@ export function CaptureView({
               type="button"
               className="btn btn-primary btn-lg"
               onClick={onStart}
-              disabled={busy}
+              disabled={busy || tone === "starting"}
             >
-              <Play size={18} /> {tone === "error" ? "Retry buffer" : "Start buffer"}
+              <Play size={18} />{" "}
+              {tone === "error"
+                ? "Retry buffer"
+                : tone === "starting"
+                  ? "Starting…"
+                  : "Start buffer"}
             </button>
           )}
 

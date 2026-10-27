@@ -88,6 +88,10 @@ impl MediaInfo {
 /// One FFprobe stream, reduced to what the editor needs.
 #[derive(Debug, Clone)]
 pub struct ProbeStream {
+  /// The global stream index FFprobe reports. Kept for diagnostics and tests;
+  /// the audio layout stores audio-relative positions because that is what
+  /// FFmpeg's `[0:a:N]` specifier selects.
+  #[allow(dead_code)]
   pub index: usize,
   pub kind: String,
   pub title: Option<String>,
@@ -122,7 +126,11 @@ pub fn classify_audio(streams: &[ProbeStream]) -> AudioLayout {
   let mut pc = None;
   let mut mic = None;
   let mut all_known = true;
-  for stream in &audio {
+  // FFmpeg's `[0:a:N]` specifier counts audio streams, not all streams: the
+  // first audio stream is `a:0` even when the video is stream 0. FFprobe's
+  // `index` is global, so translate it here or every graph points one stream
+  // too far (and a single-audio clip fails to bind at all).
+  for (audio_index, stream) in audio.iter().enumerate() {
     let title = stream
       .title
       .as_deref()
@@ -130,14 +138,14 @@ pub fn classify_audio(streams: &[ProbeStream]) -> AudioLayout {
     match title.as_deref() {
       Some(title) if title == PC_AUDIO_TITLE.to_ascii_lowercase() => {
         if pc.is_none() {
-          pc = Some(stream.index);
+          pc = Some(audio_index);
         } else {
           all_known = false;
         }
       }
       Some(title) if title == MIC_TITLE.to_ascii_lowercase() => {
         if mic.is_none() {
-          mic = Some(stream.index);
+          mic = Some(audio_index);
         } else {
           all_known = false;
         }
@@ -149,7 +157,7 @@ pub fn classify_audio(streams: &[ProbeStream]) -> AudioLayout {
     AudioLayout::Separate { pc, mic }
   } else {
     AudioLayout::Mixed {
-      streams: audio.iter().map(|stream| stream.index).collect(),
+      streams: (0..audio.len()).collect(),
     }
   }
 }
@@ -773,8 +781,8 @@ mod tests {
     assert_eq!(
       classify_audio(&streams),
       AudioLayout::Separate {
-        pc: Some(1),
-        mic: Some(2)
+        pc: Some(0),
+        mic: Some(1)
       }
     );
     assert_eq!(
@@ -793,12 +801,12 @@ mod tests {
     assert_eq!(
       classify_audio(&streams),
       AudioLayout::Separate {
-        pc: Some(2),
-        mic: Some(1)
+        pc: Some(1),
+        mic: Some(0)
       }
     );
-    // PC audio always comes before the microphone, even though its stream index
-    // is higher: the order comes from the title, not from the index.
+    // PC audio always comes before the microphone, even though it is the later
+    // audio stream: the order comes from the title, not from the index.
     assert_eq!(
       classify_audio(&streams).tracks(),
       vec![TrackKind::Video, TrackKind::Pc, TrackKind::Mic]
@@ -810,7 +818,7 @@ mod tests {
     let streams = vec![stream(0, "video", None), stream(1, "audio", None)];
     assert_eq!(
       classify_audio(&streams),
-      AudioLayout::Mixed { streams: vec![1] }
+      AudioLayout::Mixed { streams: vec![0] }
     );
     assert_eq!(
       classify_audio(&streams).tracks(),
@@ -828,7 +836,7 @@ mod tests {
     assert_eq!(
       classify_audio(&streams),
       AudioLayout::Mixed {
-        streams: vec![1, 2]
+        streams: vec![0, 1]
       }
     );
   }
@@ -866,8 +874,8 @@ mod tests {
     assert_eq!(
       media.layout,
       AudioLayout::Separate {
-        pc: Some(1),
-        mic: Some(2)
+        pc: Some(0),
+        mic: Some(1)
       }
     );
   }
@@ -887,8 +895,8 @@ mod tests {
     assert_eq!(
       media.layout,
       AudioLayout::Separate {
-        pc: Some(1),
-        mic: Some(2)
+        pc: Some(0),
+        mic: Some(1)
       }
     );
   }
@@ -904,16 +912,16 @@ mod tests {
   #[test]
   fn builds_one_full_length_segment_when_nothing_was_edited() {
     let media = media(AudioLayout::Separate {
-      pc: Some(1),
-      mic: Some(2),
+      pc: Some(0),
+      mic: Some(1),
     });
     let timeline = media.timeline();
     let args = build_export_args(&request(&media, &timeline, Path::new("C:/out.mp4")));
     let graph = joined(&args);
     assert!(graph.contains("trim=start=0.000000:end=10.000000"));
     assert!(graph.contains("concat=n=1:v=1:a=0[vout]"));
+    assert!(graph.contains("[0:a:0]atrim=start=0.000000:end=10.000000"));
     assert!(graph.contains("[0:a:1]atrim=start=0.000000:end=10.000000"));
-    assert!(graph.contains("[0:a:2]atrim=start=0.000000:end=10.000000"));
     assert!(graph.contains("[aout0][aout1]amix=inputs=2"));
     assert!(graph.contains("-map [vout] -map [aout]"));
     assert!(graph.contains("-t 10.000000"));
@@ -923,8 +931,8 @@ mod tests {
   #[test]
   fn fills_a_gap_with_black_video_and_silence() {
     let media = media(AudioLayout::Separate {
-      pc: Some(1),
-      mic: Some(2),
+      pc: Some(0),
+      mic: Some(1),
     });
     let mut timeline = media.timeline();
     let video = timeline.track(TrackKind::Video).unwrap().segments[0].id;
@@ -936,14 +944,14 @@ mod tests {
     assert!(graph.contains("color=c=black:s=1920x1080:r=60:d=2.000000"));
     assert!(graph.contains("anullsrc=r=48000:cl=stereo,atrim=duration=2.000000"));
     // The microphone track keeps its full segment; only PC audio moved.
-    assert!(graph.contains("[0:a:2]atrim=start=0.000000:end=10.000000"));
+    assert!(graph.contains("[0:a:1]atrim=start=0.000000:end=10.000000"));
   }
 
   #[test]
   fn splits_a_source_used_by_several_parts() {
     let media = media(AudioLayout::Separate {
-      pc: Some(1),
-      mic: Some(2),
+      pc: Some(0),
+      mic: Some(1),
     });
     let mut timeline = media.timeline();
     let video = timeline.track(TrackKind::Video).unwrap().segments[0].id;
@@ -959,13 +967,29 @@ mod tests {
   #[test]
   fn mixes_legacy_streams_before_trimming_them() {
     let media = media(AudioLayout::Mixed {
-      streams: vec![1, 2],
+      streams: vec![0, 1],
     });
     let timeline = media.timeline();
     let args = build_export_args(&request(&media, &timeline, Path::new("C:/out.mp4")));
     let graph = joined(&args);
-    assert!(graph.contains("[0:a:1][0:a:2]amix=inputs=2:duration=longest:normalize=0[mix0]"));
+    assert!(graph.contains("[0:a:0][0:a:1]amix=inputs=2:duration=longest:normalize=0[mix0]"));
     assert!(graph.contains("[mix0]atrim"));
+  }
+
+  #[test]
+  fn a_single_untagged_audio_stream_is_the_first_audio_stream() {
+    // What a real mixed-audio recording looks like: stream 0 is video and the
+    // only audio stream is stream 1. FFmpeg addresses that as `[0:a:0]`; using
+    // the global probe index would ask for a second audio stream that does not
+    // exist and the whole export would fail to bind.
+    let streams = vec![stream(0, "video", None), stream(1, "audio", None)];
+    let media = media_from_probe(&streams, 10.0).unwrap();
+    assert_eq!(media.layout, AudioLayout::Mixed { streams: vec![0] });
+    let timeline = media.timeline();
+    let args = build_export_args(&request(&media, &timeline, Path::new("C:/out.mp4")));
+    let graph = joined(&args);
+    assert!(graph.contains("[0:a:0]atrim"));
+    assert!(!graph.contains("[0:a:1]"));
   }
 
   #[test]
@@ -1003,8 +1027,8 @@ mod tests {
   #[test]
   fn parts_cover_the_timeline_in_order() {
     let media = media(AudioLayout::Separate {
-      pc: Some(1),
-      mic: Some(2),
+      pc: Some(0),
+      mic: Some(1),
     });
     let mut timeline = media.timeline();
     let video = timeline.track(TrackKind::Video).unwrap().segments[0].id;
@@ -1135,8 +1159,8 @@ mod tests {
     assert_eq!(
       media.layout,
       AudioLayout::Separate {
-        pc: Some(1),
-        mic: Some(2)
+        pc: Some(0),
+        mic: Some(1)
       },
       "the tagged streams must be recognised as separate sources"
     );

@@ -213,22 +213,32 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
   let state = handle.state::<AppState>();
   let should_start = state.last_error.lock().map(|e| e.is_none()).unwrap_or(false);
   if should_start {
-    let mut engine = CaptureEngine::new(config);
-    match engine.start() {
-      Ok(()) => {
-        *state
-          .capture
-          .lock()
-          .map_err(|_| AppError::Capture("capture lock poisoned".into()))? = Some(engine);
-      }
-      Err(error) => {
-        *state
-          .last_error
-          .lock()
-          .map_err(|_| AppError::Capture("capture error lock poisoned".into()))? =
-          Some(error.to_string());
-      }
-    }
+    // `engine.start()` waits up to four seconds for the first segment so it can
+    // fall back to another encoder before reporting success. That wait must not
+    // gate the window: the replay buffer can fill behind an already usable
+    // interface, and commands that need it wait for `capture_starting` instead.
+    state.capture_starting.store(true, Ordering::SeqCst);
+    let app = handle.clone();
+    std::thread::Builder::new()
+      .name("clipvault-capture-start".into())
+      .spawn(move || {
+        let state = app.state::<AppState>();
+        let mut engine = CaptureEngine::new(config);
+        match engine.start() {
+          Ok(()) => {
+            *state.capture.lock().unwrap() = Some(engine);
+          }
+          Err(error) => {
+            *state.last_error.lock().unwrap() = Some(error.to_string());
+          }
+        }
+        state.capture_starting.store(false, Ordering::SeqCst);
+        let _ = app.emit("capture-status", commands::current_status(&state));
+      })
+      .map_err(|error| {
+        state.capture_starting.store(false, Ordering::SeqCst);
+        AppError::Capture(format!("Could not start capture: {error}"))
+      })?;
   }
 
   let _ = handle.emit("capture-status", commands::current_status(&state));
@@ -308,6 +318,10 @@ pub fn shutdown(app: &AppHandle) {
   let state = app.state::<AppState>();
   state.exporting.store(false, Ordering::SeqCst);
   commands::stop_voice(&state);
+  // A startup capture that is still waiting for its first segment has no engine
+  // in `capture` yet. Wait for it, otherwise the process would exit with its
+  // FFmpeg child still recording into the temp directory.
+  commands::wait_for_capture_start_for(&state, std::time::Duration::from_secs(12));
   if let Ok(mut capture) = state.capture.lock() {
     if let Some(engine) = capture.take() {
       drop(engine);
