@@ -103,12 +103,19 @@ pub fn play(volume: u8) {
     let wav = chime_wav(volume);
     // SAFETY: `wav` outlives the call because playback is synchronous on this
     // thread, and `SND_MEMORY` reads a well-formed WAV image we just built.
-    unsafe {
+    let played = unsafe {
       PlaySoundW(
         wav.as_ptr() as *const u16,
         std::ptr::null_mut(),
         SND_MEMORY | SND_NODEFAULT,
-      );
+      )
+    };
+    // Without `SND_ASYNC` this returns once the cue has finished, so a success
+    // here means Windows actually played it.
+    if played == 0 {
+      log::warn!("Windows rejected the confirmation chime buffer");
+    } else {
+      log::info!("Confirmation chime played at {volume}%");
     }
   });
 }
