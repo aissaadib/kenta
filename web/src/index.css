@@ -1494,6 +1494,79 @@ a {
   text-align: right;
 }
 
+/* The recogniser's live state, in the section header. */
+.voice-pill {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.voice-pill.is-ready {
+  border-color: rgba(250, 204, 21, 0.45);
+  background: rgba(250, 204, 21, 0.12);
+  color: var(--accent);
+}
+
+.voice-pill.is-initializing {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.1);
+  color: var(--info);
+}
+
+.voice-pill.is-armed {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #17150a;
+}
+
+.voice-pill.is-unavailable {
+  border-color: rgba(251, 113, 133, 0.4);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--danger);
+}
+
+.voice-pill.is-buffer-not-ready {
+  border-color: rgba(250, 204, 21, 0.3);
+  color: var(--text-soft);
+}
+
+/* What the microphone test heard. */
+.voice-test {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.voice-test svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--info);
+}
+
+.voice-test.is-match {
+  border-color: rgba(250, 204, 21, 0.35);
+  background: rgba(250, 204, 21, 0.07);
+}
+
+.voice-test.is-match svg {
+  color: var(--accent);
+}
+
 .field-label {
   font-size: 10.5px;
   font-weight: 700;
