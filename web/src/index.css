@@ -333,6 +333,13 @@ a {
   animation: view-in 0.12s ease both;
 }
 
+/* Sections stay mounted after their first visit and are hidden with the
+   `hidden` attribute. Be explicit so a future display rule on the slot cannot
+   bring a hidden section back into the layout. */
+.view-slot[hidden] {
+  display: none;
+}
+
 @keyframes view-in {
   from {
     opacity: 0;
