@@ -468,6 +468,13 @@ pub struct VoiceHandle {
 
 impl VoiceHandle {
   pub fn start(config: VoiceConfig, sink: Arc<dyn VoiceSink>) -> Self {
+    Self::start_with(config, sink, Input::Microphone)
+  }
+
+  /// Same engine, different audio source. Only the tests use anything but the
+  /// microphone, so a file can stand in for speech on a machine whose
+  /// microphone cannot hear it.
+  fn start_with(config: VoiceConfig, sink: Arc<dyn VoiceSink>, input: Input) -> Self {
     let shared = Arc::new(Shared {
       status: Mutex::new(VoiceStatus::new(STATE_INITIALIZING)),
       test: Mutex::new(None),
@@ -478,7 +485,7 @@ impl VoiceHandle {
     let worker = Arc::clone(&shared);
     let spawned = std::thread::Builder::new()
       .name("clipvault-voice".into())
-      .spawn(move || run(worker, sink, config, exited_tx));
+      .spawn(move || run(worker, sink, config, input, exited_tx));
 
     let handle = Self {
       shared,
@@ -546,8 +553,14 @@ impl Drop for VoiceHandle {
 // Worker
 // ---------------------------------------------------------------------------
 
-fn run(shared: Arc<Shared>, sink: Arc<dyn VoiceSink>, config: VoiceConfig, exited: Sender<()>) {
-  if let Err(error) = unsafe { run_engine(&shared, &sink, &config) } {
+fn run(
+  shared: Arc<Shared>,
+  sink: Arc<dyn VoiceSink>,
+  config: VoiceConfig,
+  input: Input,
+  exited: Sender<()>,
+) {
+  if let Err(error) = unsafe { run_engine(&shared, &sink, &config, input) } {
     log::warn!("Voice clipping is unavailable: {error}");
     if let Some(status) = shared.update(|status| {
       status.state = STATE_UNAVAILABLE.into();
@@ -571,6 +584,7 @@ unsafe fn run_engine(
   shared: &Arc<Shared>,
   sink: &Arc<dyn VoiceSink>,
   config: &VoiceConfig,
+  input: Input,
 ) -> Result<(), String> {
   let initialized = CoInitializeEx(None, COINIT_MULTITHREADED);
   if initialized.is_err() {
@@ -581,7 +595,7 @@ unsafe fn run_engine(
   }
   let _guard = ComGuard;
 
-  let session = open_session(config, Input::Microphone)?;
+  let session = open_session(config, input)?;
   log::info!(
     "Voice clipping listening in {} for \"{}\" + \"{}\"",
     session.language,
@@ -1435,21 +1449,23 @@ mod tests {
     }
   }
 
-  /// Proves the whole path works on a machine with no usable microphone: the
-  /// phrase is synthesised into a WAV, then recognised through the same
-  /// session, grammar and event handling the microphone uses.
+  /// SAPI speaking "ClipVault, clip that" into a WAV, with a short leading
+  /// pause so a caller can register a test before the first word is decoded.
   ///
-  /// The fixture is produced with PowerShell's System.Speech because that is
-  /// the shortest reliable way to get speech audio; everything under test is
-  /// the SAPI code in this module.
-  #[test]
-  #[ignore = "synthesises speech and recognises it through the real engine"]
-  fn windows_recognises_the_phrase_from_a_wav_file() {
-    let wav = std::env::temp_dir().join(format!(
-      "clipvault-voice-test-{}.wav",
+  /// The fixture is produced with PowerShell's System.Speech and ffmpeg
+  /// because that is the shortest reliable way to get speech audio; everything
+  /// under test is the SAPI code in this module.
+  fn fixture(name: &str) -> PathBuf {
+    let raw = std::env::temp_dir().join(format!(
+      "clipvault-voice-{name}-{}.wav",
       std::process::id()
     ));
-    let _ = std::fs::remove_file(&wav);
+    let padded = std::env::temp_dir().join(format!(
+      "clipvault-voice-{name}-padded-{}.wav",
+      std::process::id()
+    ));
+    let _ = std::fs::remove_file(&raw);
+    let _ = std::fs::remove_file(&padded);
 
     let script = format!(
       "Add-Type -AssemblyName System.Speech; \
@@ -1460,7 +1476,7 @@ mod tests {
        $s.SetOutputToWaveFile('{}', $f); \
        $s.Speak('ClipVault, clip that'); \
        $s.Dispose()",
-      wav.display()
+      raw.display()
     );
     let spoken = std::process::Command::new("powershell")
       .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -1469,8 +1485,118 @@ mod tests {
       .unwrap_or(false);
     assert!(spoken, "the test WAV could not be synthesised");
 
-    let size = std::fs::metadata(&wav).map(|meta| meta.len()).unwrap_or(0);
+    // ffmpeg is a hard requirement of ClipVault, so it is available here.
+    let padded_ok = std::process::Command::new("ffmpeg")
+      .args(["-y", "-loglevel", "error", "-i"])
+      .arg(&raw)
+      .args([
+        "-af",
+        "adelay=1500:all=1",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+      ])
+      .arg(&padded)
+      .status()
+      .map(|status| status.success())
+      .unwrap_or(false);
+    let _ = std::fs::remove_file(&raw);
+    assert!(padded_ok, "the test WAV could not be padded");
+    let size = std::fs::metadata(&padded).map(|meta| meta.len()).unwrap_or(0);
     assert!(size > 10_000, "the spoken WAV is only {size} bytes");
+    padded
+  }
+
+  /// Stands in for the application: records what the engine asked for.
+  #[derive(Default)]
+  struct FakeSink {
+    saves: Mutex<Vec<u32>>,
+  }
+
+  impl VoiceSink for FakeSink {
+    fn save(&self, seconds: u32) -> SaveOutcome {
+      self.saves.lock().unwrap().push(seconds);
+      SaveOutcome::Saved
+    }
+
+    fn buffer_ready(&self) -> bool {
+      true
+    }
+
+    fn status_changed(&self, _status: &VoiceStatus) {}
+  }
+
+  fn wait_until_ready(handle: &VoiceHandle) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+      if handle.status().state == STATE_READY {
+        return;
+      }
+      std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("the engine never became ready: {:?}", handle.status());
+  }
+
+  /// The whole path the application uses: real recogniser, real matcher, real
+  /// engine thread. The phrase is heard once and one save is requested.
+  #[test]
+  #[ignore = "drives the real engine from a synthesised WAV"]
+  fn windows_a_trigger_asks_for_exactly_one_save() {
+    let wav = fixture("trigger");
+    let sink = Arc::new(FakeSink::default());
+    let handle = VoiceHandle::start_with(config(), sink.clone(), Input::File(wav.clone()));
+    wait_until_ready(&handle);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline && sink.saves.lock().unwrap().is_empty() {
+      std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+      sink.saves.lock().unwrap().clone(),
+      vec![30],
+      "one spoken command, one save"
+    );
+
+    // Nothing in the rest of the file may save again.
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(sink.saves.lock().unwrap().len(), 1);
+
+    drop(handle);
+    let _ = std::fs::remove_file(&wav);
+  }
+
+  /// A microphone test reports what it heard and never saves, even when the
+  /// words are a complete command.
+  #[test]
+  #[ignore = "drives the real engine from a synthesised WAV"]
+  fn windows_a_test_reports_the_phrase_without_saving() {
+    let wav = fixture("test");
+    let sink = Arc::new(FakeSink::default());
+    let handle = VoiceHandle::start_with(config(), sink.clone(), Input::File(wav.clone()));
+    wait_until_ready(&handle);
+
+    let outcome = handle.test(Duration::from_secs(20));
+    assert_eq!(outcome.status, "heard", "{outcome:?}");
+    assert!(outcome.matched, "{outcome:?}");
+    assert!(
+      sink.saves.lock().unwrap().is_empty(),
+      "a test must never save a clip"
+    );
+
+    drop(handle);
+    let _ = std::fs::remove_file(&wav);
+  }
+
+  /// Proves the whole path works on a machine with no usable microphone: the
+  /// phrase is synthesised into a WAV, then recognised through the same
+  /// session, grammar and event handling the microphone uses.
+  #[test]
+  #[ignore = "synthesises speech and recognises it through the real engine"]
+  fn windows_recognises_the_phrase_from_a_wav_file() {
+    let wav = fixture("recognise");
 
     unsafe {
       let initialized = CoInitializeEx(None, COINIT_MULTITHREADED);
