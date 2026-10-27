@@ -8,6 +8,7 @@ use crate::ffmpeg::{self, AudioDevice, EncoderInfo};
 use crate::hotkey::{self, HotkeyManager};
 use crate::monitors::{self, MonitorInfo};
 use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
+use crate::sound;
 use crate::storage::{Clip, Storage};
 use crate::timeline::{Timeline, TimelineView, TrimEdge};
 use chrono::Utc;
@@ -358,6 +359,32 @@ pub fn capture_stop_manual(app: AppHandle) -> Result<SaveResult, String> {
   perform_stop_manual(&app)
 }
 
+/// Play the confirmation chime for a clip that has just been written and
+/// registered in the library. Called only from success paths, so the sound is a
+/// dependable "the file is on disk" signal rather than a hint that a save
+/// started. It never blocks: the sound module plays on its own thread.
+pub fn confirm_saved(state: &AppState) {
+  let (enabled, volume) = {
+    let settings = state.settings.lock().unwrap();
+    (
+      settings.confirmation_sound_enabled,
+      settings.confirmation_sound_volume,
+    )
+  };
+  if enabled {
+    sound::play(volume);
+  }
+}
+
+/// Audition the chime. The settings screen passes its draft volume so the
+/// slider can be heard before the change is saved.
+#[tauri::command]
+pub fn preview_confirmation_sound(volume: u8) -> bool {
+  let volume = volume.min(100);
+  sound::play(volume);
+  sound::is_audible(volume)
+}
+
 pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<SaveResult, String> {
   let state = app.state::<AppState>();
   let state: &AppState = &state;
@@ -393,6 +420,8 @@ pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<Save
       if let Ok(clip) = clip_from_result(state, saved) {
         let _ = app.emit("clip-saved", &clip);
       }
+      // Only after the file and its library row exist.
+      confirm_saved(state);
     }
     Err(error) => {
       let _ = app.emit("app-error", error.clone());
@@ -459,6 +488,8 @@ pub fn perform_stop_manual(app: &AppHandle) -> Result<SaveResult, String> {
       if let Ok(clip) = clip_from_result(state, saved) {
         let _ = app.emit("clip-saved", &clip);
       }
+      // Only after the file and its library row exist.
+      confirm_saved(state);
     }
     Err(error) => {
       let _ = app.emit("app-error", error.clone());
@@ -742,6 +773,8 @@ pub fn editor_export(
       add_save_result(state.inner(), &saved)?;
       let clip = clip_from_result(state.inner(), &saved)?;
       let _ = app.emit("clip-saved", &clip);
+      // The edited file is registered at this point, so the cue is honest.
+      confirm_saved(state.inner());
       Ok(clip)
     }
     Err(error) => {

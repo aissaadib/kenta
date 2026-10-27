@@ -10,6 +10,7 @@ mod instance;
 mod monitors;
 mod process;
 mod settings;
+mod sound;
 mod storage;
 mod timeline;
 mod worker;
@@ -46,6 +47,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       commands::get_settings,
       commands::save_settings,
+      commands::preview_confirmation_sound,
       commands::capture_start,
       commands::capture_stop,
       commands::capture_status,
