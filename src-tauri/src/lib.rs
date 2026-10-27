@@ -2,6 +2,7 @@ mod autostart;
 mod buffer;
 mod capture;
 mod commands;
+mod editor;
 mod errors;
 mod ffmpeg;
 mod hotkey;
