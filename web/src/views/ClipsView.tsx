@@ -95,17 +95,27 @@ function ClipsViewImpl({ refreshToken, onNotify }: Props) {
     if (pending.length === 0) return;
 
     const run = async () => {
-      for (const clip of pending) {
-        if (cancelled) return;
-        requestedThumbnails.current.add(clip.id);
-        try {
-          const generated = await generateThumbnail(clip.id);
+      const queue = [...pending];
+      const worker = async () => {
+        for (;;) {
           if (cancelled) return;
-          setThumbnails((previous) => ({ ...previous, [clip.id]: fileSrc(generated) }));
-        } catch {
-          // A thumbnail is a convenience; never surface a blocking error for it.
+          const clip = queue.shift();
+          if (!clip) return;
+          requestedThumbnails.current.add(clip.id);
+          try {
+            const generated = await generateThumbnail(clip.id);
+            if (cancelled) return;
+            setThumbnails((previous) => ({ ...previous, [clip.id]: fileSrc(generated) }));
+          } catch {
+            // A thumbnail is a convenience; never surface a blocking error for it.
+          }
         }
-      }
+      };
+      // Two at a time halves the wait on a full library without putting a crowd
+      // of FFmpeg processes next to the live capture encoder.
+      await Promise.all(
+        Array.from({ length: Math.min(2, queue.length) }, () => worker()),
+      );
     };
     void run();
     return () => {
