@@ -444,7 +444,11 @@ export default function App() {
 
           {mountedViews.clips ? (
             <div className="view-slot" hidden={view !== "clips"}>
-              <ClipsView refreshToken={refreshToken} onNotify={addToast} />
+              <ClipsView
+                refreshToken={refreshToken}
+                active={view === "clips"}
+                onNotify={addToast}
+              />
             </div>
           ) : null}
 

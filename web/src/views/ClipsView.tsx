@@ -28,6 +28,8 @@ import { formatBytes, formatDate, formatDuration, formatRelative, sourceLabel } 
 
 interface Props {
   refreshToken: number;
+  /** False while another section is on screen. */
+  active: boolean;
   onNotify: (kind: "success" | "error" | "info", title: string, message?: string) => void;
 }
 
@@ -41,7 +43,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "duration", label: "Longest first" },
 ];
 
-function ClipsViewImpl({ refreshToken, onNotify }: Props) {
+function ClipsViewImpl({ refreshToken, active, onNotify }: Props) {
   const [clips, setClips] = useState<ClipListItem[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date");
@@ -56,6 +58,12 @@ function ClipsViewImpl({ refreshToken, onNotify }: Props) {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [localRefresh, setLocalRefresh] = useState(0);
   const requestedThumbnails = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    // The preview holds an autoplaying <video>. Hiding the section would leave
+    // it playing behind another view, so close it on the way out.
+    if (!active) setPreview(null);
+  }, [active]);
 
   useEffect(() => {
     let cancelled = false;
