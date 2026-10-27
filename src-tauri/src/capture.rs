@@ -849,10 +849,13 @@ pub fn build_segment_args(
   segment_list: &Path,
   encoder: &str,
 ) -> AppResult<Vec<String>> {
-  let mut audio_devices: Vec<String> = Vec::new();
+  // Each source becomes its own stream with a title. The editor identifies a
+  // track from that title, so the sources must not be mixed here: an `amix`
+  // would destroy the information before the file even exists.
+  let mut audio_sources: Vec<(String, &'static str)> = Vec::new();
   if config.mic_enabled {
     if let Some(device) = config.mic_device.as_ref().filter(|d| !d.trim().is_empty()) {
-      audio_devices.push(device.clone());
+      audio_sources.push((device.clone(), "Microphone"));
     }
   }
   if config.desktop_audio_enabled {
@@ -861,8 +864,11 @@ pub fn build_segment_args(
       .as_ref()
       .filter(|d| !d.trim().is_empty())
     {
-      if !audio_devices.iter().any(|d| d == device) {
-        audio_devices.push(device.clone());
+      // Opening one device twice fails, so when both settings point at the same
+      // device it is recorded once and labelled with what it really contains.
+      match audio_sources.iter_mut().find(|(existing, _)| existing == device) {
+        Some((_, title)) => *title = "Mixed Audio",
+        None => audio_sources.push((device.clone(), "PC Audio")),
       }
     }
   }
@@ -887,41 +893,22 @@ pub fn build_segment_args(
   args.push(format!("{}x{}", config.width, config.height));
   args.push("-i".into());
   args.push("desktop".into());
-  for device in &audio_devices {
+  for (device, _) in &audio_sources {
     args.push("-f".into());
     args.push("dshow".into());
     args.push("-i".into());
     args.push(format!("audio={device}"));
   }
 
-  let mut filters: Vec<String> = Vec::new();
-  if audio_devices.len() >= 2 {
-    for index in 1..=audio_devices.len() {
-      filters.push(format!(
-        "[{index}:a]aresample={rate},aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}]",
-        rate = config.audio_sample_rate,
-        index = index
-      ));
-    }
-    let inputs: String = (1..=audio_devices.len())
-      .map(|index| format!("[a{index}]"))
-      .collect();
-    filters.push(format!(
-      "{inputs}amix=inputs={}:duration=longest:normalize=0[aout]",
-      audio_devices.len()
-    ));
-  }
-
   args.push("-map".into());
   args.push("0:v:0".into());
-  if audio_devices.len() == 1 {
+  for index in 0..audio_sources.len() {
     args.push("-map".into());
-    args.push("1:a:0".into());
-  } else if audio_devices.len() >= 2 {
-    args.push("-filter_complex".into());
-    args.push(filters.join(";"));
-    args.push("-map".into());
-    args.push("[aout]".into());
+    args.push(format!("{}:a:0", index + 1));
+  }
+  for (index, (_, title)) in audio_sources.iter().enumerate() {
+    args.push(format!("-metadata:s:a:{index}"));
+    args.push(format!("title={title}"));
   }
 
   args.push("-c:v".into());
@@ -950,7 +937,7 @@ pub fn build_segment_args(
   }
   args.push("-pix_fmt".into());
   args.push("yuv420p".into());
-  if !audio_devices.is_empty() {
+  if !audio_sources.is_empty() {
     args.push("-c:a".into());
     args.push("aac".into());
     args.push("-b:a".into());
@@ -1214,7 +1201,7 @@ mod tests {
   }
 
   #[test]
-  fn mixes_two_audio_devices() {
+  fn keeps_pc_audio_and_microphone_as_separate_tagged_streams() {
     let config = CaptureConfig {
       mic_enabled: true,
       mic_device: Some("Mic".into()),
@@ -1230,8 +1217,56 @@ mod tests {
     )
     .unwrap();
     let joined = args.join(" ");
-    assert!(joined.contains("amix=inputs=2"));
-    assert!(joined.contains("-map [aout]"));
+    // Mixing at record time would destroy the source identity the editor needs.
+    assert!(!joined.contains("amix"));
+    assert!(joined.contains("-map 1:a:0"));
+    assert!(joined.contains("-map 2:a:0"));
+    assert!(joined.contains("-metadata:s:a:0 title=Microphone"));
+    assert!(joined.contains("-metadata:s:a:1 title=PC Audio"));
+  }
+
+  #[test]
+  fn tags_a_lone_desktop_stream_as_pc_audio() {
+    let config = CaptureConfig {
+      desktop_audio_enabled: true,
+      desktop_audio_device: Some("Stereo Mix".into()),
+      ..Default::default()
+    };
+    let args = build_segment_args(
+      &config,
+      Path::new("C:/temp/session"),
+      Path::new("C:/temp/session/segments.csv"),
+      "libx264",
+    )
+    .unwrap();
+    let joined = args.join(" ");
+    assert!(joined.contains("-map 1:a:0"));
+    assert!(joined.contains("-metadata:s:a:0 title=PC Audio"));
+    assert!(!joined.contains("-map 2:a:0"));
+  }
+
+  #[test]
+  fn labels_one_device_shared_by_both_sources_as_mixed() {
+    let config = CaptureConfig {
+      mic_enabled: true,
+      mic_device: Some("Same Device".into()),
+      desktop_audio_enabled: true,
+      desktop_audio_device: Some("Same Device".into()),
+      ..Default::default()
+    };
+    let args = build_segment_args(
+      &config,
+      Path::new("C:/temp/session"),
+      Path::new("C:/temp/session/segments.csv"),
+      "libx264",
+    )
+    .unwrap();
+    let joined = args.join(" ");
+    // Opening one device twice fails, so it is recorded once and labelled
+    // honestly instead of pretending the sources are separate.
+    assert_eq!(joined.matches("audio=Same Device").count(), 1);
+    assert!(!joined.contains("-map 2:a:0"));
+    assert!(joined.contains("-metadata:s:a:0 title=Mixed Audio"));
   }
 
   #[test]
