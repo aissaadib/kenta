@@ -98,6 +98,51 @@ export interface HotkeyStatus {
   registered: boolean;
 }
 
+export type TrackKind = "video" | "pc" | "mic" | "mixed";
+
+export interface TimelineSegment {
+  id: number;
+  track: TrackKind;
+  source_in: number;
+  source_out: number;
+  start: number;
+}
+
+export interface TimelineView {
+  duration: number;
+  media_duration: number;
+  segments: TimelineSegment[];
+  can_undo: boolean;
+  can_redo: boolean;
+}
+
+export type AudioLayout =
+  | { kind: "none" }
+  | { kind: "mixed"; streams: number[] }
+  | { kind: "separate"; pc: number | null; mic: number | null };
+
+export interface MediaInfo {
+  duration: number;
+  width: number;
+  height: number;
+  frame_rate: number;
+  video_codec: string | null;
+  layout: AudioLayout;
+}
+
+export interface EditorPayload {
+  clip: ClipListItem;
+  media: MediaInfo;
+  timeline: TimelineView;
+}
+
+export type EditorOp =
+  | { kind: "split"; id: number; at: number }
+  | { kind: "delete"; id: number }
+  | { kind: "trim_in"; id: number; to: number }
+  | { kind: "trim_out"; id: number; to: number }
+  | { kind: "move"; id: number; start: number };
+
 export interface AudioDevice {
   kind: string;
   name: string;
@@ -214,4 +259,32 @@ export function getHotkeyStatus(): Promise<HotkeyStatus> {
 
 export function normalizeShortcut(binding: string): Promise<string> {
   return invoke("normalize_shortcut", { binding });
+}
+
+export function editorOpen(clipId: string): Promise<EditorPayload> {
+  return invoke("editor_open", { clipId });
+}
+
+export function editorApply(op: EditorOp): Promise<TimelineView> {
+  return invoke("editor_apply", { op });
+}
+
+export function editorUndo(): Promise<TimelineView> {
+  return invoke("editor_undo");
+}
+
+export function editorRedo(): Promise<TimelineView> {
+  return invoke("editor_redo");
+}
+
+export function editorExport(): Promise<ClipListItem> {
+  return invoke("editor_export");
+}
+
+export function editorCancel(): Promise<boolean> {
+  return invoke("editor_cancel");
+}
+
+export function editorClose(): Promise<boolean> {
+  return invoke("editor_close");
 }
