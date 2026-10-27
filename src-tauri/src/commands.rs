@@ -555,7 +555,7 @@ pub fn editor_open(
   if !clip.path.is_file() {
     return Err("The clip file is missing from disk.".into());
   }
-  let media = editor::probe_media(&clip.path).map_err(|e| e.to_string())?;
+  let media = editor::probe_media(&clip.path).map_err(|e| e.message())?;
   let timeline = media.timeline();
   timeline.validate().map_err(|e| e.to_string())?;
   let payload = EditorPayload {
@@ -631,7 +631,10 @@ pub fn editor_close(state: State<'_, AppState>) -> bool {
   had_session
 }
 
-#[tauri::command]
+/// Exports the edited timeline. Marked `async` so the encode runs on Tauri's
+/// worker runtime: a synchronous command runs on the main thread, which would
+/// queue `editor_cancel` behind the export and make cancellation impossible.
+#[tauri::command(async)]
 pub fn editor_export(
   app: AppHandle,
   state: State<'_, AppState>,
@@ -710,7 +713,7 @@ pub fn editor_export(
       Ok(outcome) => outcome,
       Err(error) => {
         let _ = std::fs::remove_file(&temporary);
-        return Err(error.to_string());
+        return Err(error.message());
       }
     };
     let size = std::fs::metadata(&temporary)
@@ -742,7 +745,10 @@ pub fn editor_export(
       Ok(clip)
     }
     Err(error) => {
-      let _ = app.emit("app-error", error.clone());
+      // A cancellation is a user decision, not a failure to report.
+      if error != editor::EXPORT_CANCELLED {
+        let _ = app.emit("app-error", error.clone());
+      }
       Err(error)
     }
   }

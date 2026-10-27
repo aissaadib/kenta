@@ -28,6 +28,10 @@ pub const MIC_TITLE: &str = "Microphone";
 
 pub const EXPORT_SAMPLE_RATE: u32 = 48_000;
 
+/// Returned when the user cancels an export. Commands compare against this so a
+/// cancellation is not reported as a failure.
+pub const EXPORT_CANCELLED: &str = "The export was cancelled.";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AudioLayout {
@@ -650,7 +654,7 @@ pub fn run_export(
 
   if cancelled {
     let _ = std::fs::remove_file(request.output);
-    return Err(AppError::Capture("The export was cancelled.".into()));
+    return Err(AppError::Capture(EXPORT_CANCELLED.into()));
   }
   let status = status.ok_or_else(|| AppError::Capture("The export did not finish.".into()))?;
   if !status.success() {
