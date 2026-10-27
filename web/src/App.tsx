@@ -387,9 +387,11 @@ export default function App() {
           <p className="sidebar-status-foot">
             {tone === "error"
               ? "Capture needs attention"
-              : running
-                ? `${formatDuration(status.replay_duration_seconds)} ready to save`
-                : "Buffer is stopped"}
+              : tone === "starting"
+                ? "Starting the replay buffer…"
+                : running
+                  ? `${formatDuration(status.replay_duration_seconds)} ready to save`
+                  : "Buffer is stopped"}
           </p>
           {running ? (
             <div className="sidebar-quick-actions">
