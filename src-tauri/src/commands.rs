@@ -1,18 +1,20 @@
-use crate::autostart;
+﻿use crate::autostart;
 use crate::capture::{
   self, export_plan, CaptureConfig, CaptureEngine, CaptureState, SaveResult, SEGMENT_SECONDS,
 };
+use crate::editor::{self, ExportRequest, MediaInfo};
 use crate::errors::AppResult;
 use crate::ffmpeg::{self, AudioDevice, EncoderInfo};
 use crate::hotkey::{self, HotkeyManager};
 use crate::monitors::{self, MonitorInfo};
 use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
 use crate::storage::{Clip, Storage};
+use crate::timeline::{Timeline, TimelineView, TrimEdge};
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
@@ -24,6 +26,17 @@ pub struct AppState {
   pub startup_warnings: Mutex<Vec<String>>,
   pub capture_warnings: Mutex<Vec<String>>,
   pub last_error: Mutex<Option<String>>,
+  /// One clip at a time. The session is dropped when the editor closes, which
+  /// releases the media and stops any export the user abandoned.
+  pub editor: Mutex<Option<EditorSession>>,
+  /// Kept outside the session lock so cancelling never waits for an export.
+  pub editor_cancel: Arc<AtomicBool>,
+}
+
+pub struct EditorSession {
+  pub path: PathBuf,
+  pub media: MediaInfo,
+  pub timeline: Timeline,
 }
 
 impl AppState {
@@ -37,6 +50,8 @@ impl AppState {
       startup_warnings: Mutex::new(Vec::new()),
       capture_warnings: Mutex::new(Vec::new()),
       last_error: Mutex::new(None),
+      editor: Mutex::new(None),
+      editor_cancel: Arc::new(AtomicBool::new(false)),
     }
   }
 }
@@ -481,6 +496,256 @@ pub fn emit_status(app: &AppHandle) {
   let state = app.state::<AppState>();
   let status = current_status(&state);
   let _ = app.emit("capture-status", &status);
+}
+
+// ---------------------------------------------------------------------------
+// Editor
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub struct EditorPayload {
+  pub clip: ClipListItem,
+  pub media: MediaInfo,
+  pub timeline: TimelineView,
+}
+
+#[derive(Clone, Serialize)]
+pub struct EditorProgress {
+  pub percent: f64,
+}
+
+/// One timeline operation from the UI. Keeping the operations coarse means the
+/// rules live in one place instead of being re-implemented in TypeScript.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EditorOp {
+  Split { id: u64, at: f64 },
+  Delete { id: u64 },
+  TrimIn { id: u64, to: f64 },
+  TrimOut { id: u64, to: f64 },
+  Move { id: u64, start: f64 },
+}
+
+fn apply_op(timeline: &mut Timeline, op: EditorOp) -> Result<(), String> {
+  let result = match op {
+    EditorOp::Split { id, at } => timeline.split(id, at),
+    EditorOp::Delete { id } => timeline.delete(id),
+    EditorOp::TrimIn { id, to } => timeline.trim(id, TrimEdge::In, to),
+    EditorOp::TrimOut { id, to } => timeline.trim(id, TrimEdge::Out, to),
+    EditorOp::Move { id, start } => timeline.move_to(id, start),
+  };
+  result.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn editor_open(
+  state: State<'_, AppState>,
+  clip_id: String,
+) -> Result<EditorPayload, String> {
+  let clip = {
+    let storage = state.storage.lock().unwrap();
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The clip library is not available.".to_string())?;
+    storage
+      .get_clip(&clip_id)
+      .map_err(|e| e.to_string())?
+      .ok_or_else(|| "That clip is no longer in the library.".to_string())?
+  };
+  if !clip.path.is_file() {
+    return Err("The clip file is missing from disk.".into());
+  }
+  let media = editor::probe_media(&clip.path).map_err(|e| e.to_string())?;
+  let timeline = media.timeline();
+  timeline.validate().map_err(|e| e.to_string())?;
+  let payload = EditorPayload {
+    clip: clip_to_item(&clip),
+    media: media.clone(),
+    timeline: timeline.view(),
+  };
+  state.editor_cancel.store(false, Ordering::SeqCst);
+  *state.editor.lock().unwrap() = Some(EditorSession {
+    path: clip.path,
+    media,
+    timeline,
+  });
+  Ok(payload)
+}
+
+#[tauri::command]
+pub fn editor_apply(
+  state: State<'_, AppState>,
+  op: EditorOp,
+) -> Result<TimelineView, String> {
+  let mut guard = state.editor.lock().unwrap();
+  let session = guard
+    .as_mut()
+    .ok_or_else(|| "The editor is not open.".to_string())?;
+  apply_op(&mut session.timeline, op)?;
+  if let Err(error) = session.timeline.validate() {
+    // The operation should already have been rejected; if it somehow produced
+    // an invalid timeline, drop it rather than render something broken.
+    session.timeline.undo();
+    return Err(error.to_string());
+  }
+  Ok(session.timeline.view())
+}
+
+#[tauri::command]
+pub fn editor_undo(state: State<'_, AppState>) -> Result<TimelineView, String> {
+  let mut guard = state.editor.lock().unwrap();
+  let session = guard
+    .as_mut()
+    .ok_or_else(|| "The editor is not open.".to_string())?;
+  session.timeline.undo();
+  Ok(session.timeline.view())
+}
+
+#[tauri::command]
+pub fn editor_redo(state: State<'_, AppState>) -> Result<TimelineView, String> {
+  let mut guard = state.editor.lock().unwrap();
+  let session = guard
+    .as_mut()
+    .ok_or_else(|| "The editor is not open.".to_string())?;
+  session.timeline.redo();
+  Ok(session.timeline.view())
+}
+
+/// Stop a running export. Safe to call while the export holds no locks.
+#[tauri::command]
+pub fn editor_cancel(state: State<'_, AppState>) -> bool {
+  let running = state.exporting.load(Ordering::SeqCst)
+    && state.editor.lock().map(|guard| guard.is_some()).unwrap_or(false);
+  if running {
+    state.editor_cancel.store(true, Ordering::SeqCst);
+  }
+  running
+}
+
+/// Release the editor. An export still running is cancelled rather than left
+/// writing into a folder the user has already left.
+#[tauri::command]
+pub fn editor_close(state: State<'_, AppState>) -> bool {
+  state.editor_cancel.store(true, Ordering::SeqCst);
+  let had_session = state.editor.lock().unwrap().take().is_some();
+  had_session
+}
+
+#[tauri::command]
+pub fn editor_export(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<ClipListItem, String> {
+  if state.exporting.swap(true, Ordering::SeqCst) {
+    return Err("A clip is already being saved. Try again in a moment.".into());
+  }
+  emit_status(&app);
+  state.editor_cancel.store(false, Ordering::SeqCst);
+
+  // Clone the session's media and timeline so the export never holds the editor
+  // lock: closing the editor or cancelling stays responsive while FFmpeg runs.
+  let prepared = {
+    let guard = state.editor.lock().unwrap();
+    match guard.as_ref() {
+      Some(session) => Ok((
+        session.path.clone(),
+        session.media.clone(),
+        session.timeline.clone(),
+      )),
+      None => Err("The editor is not open.".to_string()),
+    }
+  };
+
+  let result = (|| -> Result<SaveResult, String> {
+    let (input, media, timeline) = prepared?;
+    let settings = state.settings.lock().unwrap().clone();
+    let encoder = if ffmpeg::encoder_available(&settings.encoder) {
+      settings.encoder.clone()
+    } else {
+      "libx264".to_string()
+    };
+    let output = editor::edited_output_path(&input, "edited");
+    let temporary = output.with_file_name(format!(
+      ".{}.part.mp4",
+      output
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| "export".into())
+    ));
+
+    let progress_app = app.clone();
+    let last_percent = Arc::new(Mutex::new(-1.0_f64));
+    let progress: Arc<dyn Fn(f64) + Send + Sync> = Arc::new(move |fraction| {
+      let percent = (fraction * 100.0).floor();
+      let should_emit = last_percent
+        .lock()
+        .map(|mut last| {
+          if percent > *last {
+            *last = percent;
+            true
+          } else {
+            false
+          }
+        })
+        .unwrap_or(false);
+      if should_emit {
+        let _ = progress_app.emit("editor-progress", EditorProgress { percent });
+      }
+    });
+
+    let request = ExportRequest {
+      input: &input,
+      output: &temporary,
+      media: &media,
+      timeline: &timeline,
+      encoder: &encoder,
+      quality_preset: &settings.quality_preset,
+      bitrate_kbps: settings.bitrate_kbps,
+    };
+    let outcome = match editor::run_export(
+      &request,
+      Arc::clone(&progress),
+      &state.editor_cancel,
+    ) {
+      Ok(outcome) => outcome,
+      Err(error) => {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+      }
+    };
+    let size = std::fs::metadata(&temporary)
+      .map(|meta| meta.len())
+      .map_err(|e| format!("The edited clip is missing: {e}"))?;
+    if let Err(error) = std::fs::rename(&temporary, &output) {
+      let _ = std::fs::remove_file(&temporary);
+      return Err(format!("The edited clip could not be moved into place: {error}"));
+    }
+    Ok(SaveResult {
+      path: output,
+      duration_seconds: outcome.duration_seconds,
+      file_size_bytes: size,
+      source: "edited".into(),
+      has_audio: media.layout.has_audio(),
+      width: media.width,
+      height: media.height,
+      frame_rate: media.frame_rate,
+    })
+  })();
+
+  state.exporting.store(false, Ordering::SeqCst);
+  emit_status(&app);
+  match result {
+    Ok(saved) => {
+      add_save_result(state.inner(), &saved)?;
+      let clip = clip_from_result(state.inner(), &saved)?;
+      let _ = app.emit("clip-saved", &clip);
+      Ok(clip)
+    }
+    Err(error) => {
+      let _ = app.emit("app-error", error.clone());
+      Err(error)
+    }
+  }
 }
 
 pub fn current_status(state: &AppState) -> CaptureStatus {

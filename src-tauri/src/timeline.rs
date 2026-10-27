@@ -95,7 +95,6 @@ pub enum EditError {
   NotFound(u64),
   InvalidRange(String),
   Overlap(String),
-  NoAudioTrack(TrackKind),
 }
 
 impl fmt::Display for EditError {
@@ -104,9 +103,6 @@ impl fmt::Display for EditError {
       EditError::NotFound(id) => write!(f, "That segment no longer exists ({id})."),
       EditError::InvalidRange(message) => write!(f, "{message}"),
       EditError::Overlap(message) => write!(f, "{message}"),
-      EditError::NoAudioTrack(kind) => {
-        write!(f, "This clip has no {} track.", kind.label().to_lowercase())
-      }
     }
   }
 }
@@ -173,10 +169,6 @@ impl Timeline {
     }
   }
 
-  pub fn media_duration(&self) -> f64 {
-    self.media_duration
-  }
-
   pub fn duration(&self) -> f64 {
     self.duration
   }
@@ -208,12 +200,14 @@ impl Timeline {
       duration: self.duration,
       media_duration: self.media_duration,
       segments: self.segments(),
-      can_undo: !self.undo_stack.is_empty(),
-      can_redo: !self.redo_stack.is_empty(),
+      can_undo: self.can_undo(),
+      can_redo: self.can_redo(),
     }
   }
 
-  /// Spaces on a track with no segment, in timeline order.
+  /// Spaces on a track with no segment, in timeline order. The exporter builds
+  /// the same parts directly, so this accessor exists for the model tests.
+  #[cfg(test)]
   pub fn gaps(&self, kind: TrackKind) -> Vec<(f64, f64)> {
     let Some(track) = self.track(kind) else {
       return Vec::new();

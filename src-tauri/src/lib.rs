@@ -68,6 +68,13 @@ pub fn run() {
       commands::check_ffmpeg,
       commands::generate_thumbnail,
       commands::open_in_player,
+      commands::editor_open,
+      commands::editor_apply,
+      commands::editor_undo,
+      commands::editor_redo,
+      commands::editor_export,
+      commands::editor_cancel,
+      commands::editor_close,
     ])
     .setup(|app| {
       let handle = app.handle().clone();
