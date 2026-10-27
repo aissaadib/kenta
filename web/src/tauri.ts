@@ -62,6 +62,34 @@ export interface Settings {
   confirmation_sound_enabled: boolean;
   /** 0..100. 0 is silent. */
   confirmation_sound_volume: number;
+  /** Hands-free clipping. Off by default because it opens the microphone. */
+  voice_enabled: boolean;
+  /** Spoken first, for example "ClipVault". */
+  voice_wake_phrase: string;
+  /** Spoken after the wake phrase, for example "clip that". */
+  voice_clip_command: string;
+  voice_clip_seconds: number;
+  /** 0..100. Recognitions below this are ignored. */
+  voice_min_confidence: number;
+  voice_cooldown_seconds: number;
+}
+
+/** What the recogniser is doing right now. */
+export interface VoiceStatus {
+  state: "disabled" | "initializing" | "ready" | "unavailable" | "buffer-not-ready";
+  detail: string | null;
+  language: string | null;
+  last_heard: string | null;
+  last_confidence: number | null;
+  armed: boolean;
+}
+
+export interface VoiceTestOutcome {
+  status: "heard" | "timeout" | "unavailable" | "busy";
+  heard: string | null;
+  confidence: number | null;
+  matched: boolean;
+  message: string;
 }
 
 export interface FfmpegInfo {
@@ -188,6 +216,19 @@ export function saveSettings(settings: Settings): Promise<SaveSettingsResult> {
  */
 export function previewConfirmationSound(volume: number): Promise<boolean> {
   return invoke("preview_confirmation_sound", { volume });
+}
+
+/** What the recogniser is doing, or "disabled" when it is not running. */
+export function voiceStatus(): Promise<VoiceStatus> {
+  return invoke("voice_status");
+}
+
+/**
+ * Listen for one utterance and report what was heard. Waits up to
+ * `timeoutSeconds` (2..15) for speech; never saves a clip.
+ */
+export function voiceTest(timeoutSeconds: number): Promise<VoiceTestOutcome> {
+  return invoke("voice_test", { timeoutSeconds });
 }
 
 export function captureStart(): Promise<CaptureStatus> {
