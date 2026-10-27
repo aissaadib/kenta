@@ -1,4 +1,4 @@
-﻿use crate::autostart;
+use crate::autostart;
 use crate::capture::{
   self, export_plan, CaptureConfig, CaptureEngine, CaptureState, SaveResult, SEGMENT_SECONDS,
 };
@@ -393,6 +393,21 @@ pub fn preview_confirmation_sound(volume: u8) -> bool {
   sound::is_audible(volume)
 }
 
+/// Whether a voice-triggered save may run in this capture state. Pure so the
+/// rule can be tested without an app handle: only a buffering replay can be
+/// clipped, and a live recording is never cut short by a stray phrase.
+fn voice_save_gate(state: Option<&CaptureState>) -> Result<(), voice::SaveOutcome> {
+  match state {
+    Some(CaptureState::Buffering) => Ok(()),
+    Some(CaptureState::Recording) => Err(voice::SaveOutcome::NotReady(
+      "A recording is in progress. Stop it to save replays by voice.".into(),
+    )),
+    _ => Err(voice::SaveOutcome::NotReady(
+      "Start capture to save a clip by voice.".into(),
+    )),
+  }
+}
+
 /// The voice engine's view of the app: it can save a replay and report status,
 /// nothing else. Keeping it a trait lets the engine be tested without Tauri.
 struct VoiceBridge {
@@ -408,16 +423,8 @@ impl VoiceSink for VoiceBridge {
       .unwrap()
       .as_ref()
       .map(|engine| engine.state().clone());
-    match capture_state {
-      Some(CaptureState::Buffering) => {}
-      Some(CaptureState::Recording) => {
-        return voice::SaveOutcome::NotReady(
-          "A recording is in progress. Stop it to save replays by voice.".into(),
-        );
-      }
-      _ => {
-        return voice::SaveOutcome::NotReady("Start capture to save a clip by voice.".into());
-      }
+    if let Err(outcome) = voice_save_gate(capture_state.as_ref()) {
+      return outcome;
     }
     match perform_save_replay(&self.app, Some(seconds)) {
       Ok(_) => voice::SaveOutcome::Saved,
@@ -1647,6 +1654,38 @@ pub fn initial_settings() -> (Settings, Vec<String>) {
         settings,
         vec![format!("Your settings could not be loaded: {error}")],
       )
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn voice_can_only_clip_a_buffering_replay() {
+    assert!(voice_save_gate(Some(&CaptureState::Buffering)).is_ok());
+  }
+
+  #[test]
+  fn voice_never_interrupts_a_recording() {
+    match voice_save_gate(Some(&CaptureState::Recording)) {
+      Err(voice::SaveOutcome::NotReady(message)) => {
+        assert!(message.contains("recording is in progress"), "{message}");
+      }
+      other => panic!("expected NotReady, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn voice_explains_that_capture_is_not_running() {
+    for state in [None, Some(&CaptureState::Idle), Some(&CaptureState::Starting)] {
+      match voice_save_gate(state) {
+        Err(voice::SaveOutcome::NotReady(message)) => {
+          assert!(message.contains("Start capture"), "{message}");
+        }
+        other => panic!("expected NotReady, got {other:?}"),
+      }
     }
   }
 }

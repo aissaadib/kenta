@@ -211,7 +211,6 @@ pub fn grammar_xml(wake: &str, command: &str, language: &str) -> String {
 // ---------------------------------------------------------------------------
 // Wake/command state machine
 // ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
   /// Nothing usable, or not confident enough to act on.
@@ -278,6 +277,15 @@ impl Matcher {
       }
       _ => Decision::Ignore,
     }
+  }
+}
+
+/// Repeat triggers inside the cooldown window are dropped, so one spoken
+/// command cannot save the same clip twice.
+fn cooldown_allows(last_save: Option<Instant>, now: Instant, cooldown: Duration) -> bool {
+  match last_save {
+    Some(saved) => now.duration_since(saved) >= cooldown,
+    None => true,
   }
 }
 
@@ -697,13 +705,12 @@ unsafe fn handle_recognition(
       }
     }
     Decision::Trigger => {
-      if let Some(saved_at) = *last_save {
-        if saved_at.elapsed() < config.cooldown {
-          log::info!("Voice command ignored: still cooling down");
-          return;
-        }
+      let now = Instant::now();
+      if !cooldown_allows(*last_save, now, config.cooldown) {
+        log::info!("Voice command ignored: still cooling down");
+        return;
       }
-      *last_save = Some(Instant::now());
+      *last_save = Some(now);
       if let Some(status) = shared.update(|status| status.armed = false) {
         sink.status_changed(&status);
       }
@@ -1333,6 +1340,22 @@ mod tests {
     // A trigger consumes the armed state; the same words cannot fire twice.
     assert_eq!(matcher.decide("clip that", 0.9, now), Decision::Trigger);
     assert_eq!(matcher.decide("clip that", 0.9, now), Decision::Ignore);
+  }
+
+  #[test]
+  fn the_first_trigger_is_never_cooling_down() {
+    assert!(cooldown_allows(None, Instant::now(), Duration::from_secs(5)));
+  }
+
+  #[test]
+  fn a_second_trigger_waits_out_the_cooldown() {
+    let now = Instant::now();
+    let cooldown = Duration::from_secs(5);
+    assert!(!cooldown_allows(Some(now), now + Duration::from_millis(100), cooldown));
+    assert!(!cooldown_allows(Some(now), now + Duration::from_secs(4), cooldown));
+    // The boundary is inclusive, so a cooldown of 5 s allows at 5 s.
+    assert!(cooldown_allows(Some(now), now + cooldown, cooldown));
+    assert!(cooldown_allows(Some(now), now + Duration::from_secs(30), cooldown));
   }
 
   // -- test outcome -------------------------------------------------------
