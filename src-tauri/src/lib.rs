@@ -10,6 +10,7 @@ mod monitors;
 mod process;
 mod settings;
 mod storage;
+mod timeline;
 mod worker;
 
 use capture::{CaptureConfig, CaptureEngine};
