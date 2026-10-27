@@ -477,3 +477,93 @@ Verification
   as Windows requires, but reports 0 visible windows. Capture keeps
   working: one ffmpeg.exe child, buffer growing, 32/32 unit tests pass.
 
+9.2 WHY SECTION SWITCHING FELT SLOW
+------------------------------------------------------------
+What it was not
+  A CDP profile of the running app measured click-to-content at 9-10 ms,
+  click-to-paint at 16-56 ms, no long tasks, and 8.3 ms frames. GPU
+  status reported hardware compositing (ANGLE/D3D11 on the RTX 3050 Ti,
+  DirectComposition enabled), so neither the main thread nor the
+  compositor was the bottleneck.
+
+What it was
+  1. A 280 ms view-in animation (fade plus a 6 px slide) ran on every
+     mount, so a section looked unsettled for a third of a second after
+     it had already painted.
+  2. Every view unmounted on switch. Clips threw away its list and
+     regenerated thumbnails; Settings re-ran DShow device enumeration
+     (about 300 ms), encoder enumeration, and monitor enumeration.
+  3. Selecting Clips bumped refreshToken, so the list refetched even when
+     nothing had changed.
+  4. listClips always waited 180 ms before issuing its request.
+  5. capture-status arrives every 500 ms and re-rendered the whole clip
+     grid and the settings form, even while they were hidden.
+  6. Both buffer bars animated width, relaying out on every tick.
+  7. The topbar carried a backdrop-filter blur even though it is a flex
+     sibling of the scroll area and nothing ever moves behind it.
+
+Fixes
+  - Sections mount on first use (on click, or on pointer or keyboard focus
+    over the nav item) and are then kept mounted, hidden with [hidden].
+  - ClipsView and SettingsView are memoised; the status tick no longer
+    re-renders either of them.
+  - The clip list is no longer refetched on navigation, and no longer
+    waits 180 ms unless the user is typing in the search box.
+  - The view transition is a 120 ms fade with no movement.
+  - Buffer bars animate transform: scaleX instead of width.
+  - The topbar blur is gone.
+  - Thumbnails decode asynchronously and generate two at a time.
+  - The clip preview closes when its section is left, so an autoplaying
+    video cannot keep producing sound behind another view.
+  - Unreferenced leftovers from the Vite template were deleted
+    (App.css, react.svg, vite.svg, hero.png, public/icons.svg).
+
+After
+  click-to-content    5-8 ms
+  click-to-paint      15-23 ms
+  long tasks          none
+  remount on switch   none (verified with an element identity marker)
+  warm startup        35-52 ms
+  release exe         8,433,152 bytes
+  unit tests          32 passed
+
+9.3 COMMITS IN THIS PASS
+------------------------------------------------------------
+Thirty-one commits on top of ffc18ba, one concern each:
+
+  feat(process): add a no-console spawn helper
+  fix(export): hide the console window for export jobs
+  fix(export): hide the console window during the FFprobe check
+  fix(export): hide the console window during the FFmpeg check
+  fix(settings): hide the console window during encoder enumeration
+  fix(settings): hide the console window during device enumeration
+  fix(clips): hide the console window during duration probes
+  fix(capture): hide the console window of the replay encoder
+  fix(clips): hide the console window used for thumbnails
+  refactor(process): use the CREATE_NO_WINDOW constant from windows-sys
+  perf(web): stop reloading the clip list on every visit
+  perf(web): keep visited views mounted
+  refactor(web): separate mounting a view from showing it
+  perf(web): preload a section when its nav item is hovered
+  perf(web): stop re-rendering the clip grid on every status tick
+  perf(web): stop re-rendering the settings form on every status tick
+  perf(web): fetch the clip list without an artificial delay
+  perf(web): remove the slide from the view transition
+  perf(web): shorten the view fade to 120 ms
+  perf(web): animate the sidebar buffer bar with a transform
+  perf(web): animate the capture buffer bar with a transform
+  perf(web): drop the topbar backdrop blur
+  fix(web): make hidden view slots explicit
+  fix(clips): close the preview when leaving the library
+  perf(clips): decode thumbnails off the main thread
+  perf(clips): generate missing thumbnails two at a time
+  chore(web): delete the unused App.css
+  chore(web): delete the unused Vite template logos
+  chore(web): delete the unused hero image
+  chore(web): delete the unused icon sprite
+  docs: record the hidden-console diagnosis and fix
+
+This section is the final commit. Everything above is pushed to
+origin/main; no history was rewritten.
+
+
