@@ -21,6 +21,7 @@ use windows_sys::Win32::System::JobObjects::{
   SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 static JOB: OnceLock<usize> = OnceLock::new();
 
@@ -63,9 +64,6 @@ pub fn contain(child: &Child) {
     let _ = AssignProcessToJobObject(job as HANDLE, child.as_raw_handle() as HANDLE);
   }
 }
-
-/// `CREATE_NO_WINDOW`: run a console program without allocating a console.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Stop a child process from opening a console window.
 ///
