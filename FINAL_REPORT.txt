@@ -1,7 +1,7 @@
 CLIPVAULT - FINAL ENGINEERING REPORT
 Repository: C:\Users\aissa\Desktop\kenta
-Branch: main (local only; not pushed)
-Date: 2026-10-26
+Initial snapshot branch: main (local only; not pushed, 2026-10-26)
+Initial report date: 2026-10-26; final status addendum: 2026-10-27
 
 ============================================================
 1. SUMMARY
@@ -816,3 +816,67 @@ Engineering notes worth keeping
     not "all elements".
   - The grammar token's Language value lives under the token's Attributes
     subkey.
+
+
+============================================================
+11. FINAL PUSH AND MERGE STATE — 2026-10-27
+============================================================
+
+Feature completion (reported by the implementer)
+  Branch: feature/editor-voice-sound
+  Feature tip at push: dd47afc
+  Base reported for the feature series: a9e356f
+  Commits: 25 on top of the reported base
+  Local status at push: clean working tree; remote matched local
+  The three feature areas are the saved-clip editor, configurable voice
+  clipping, and the adjustable save-confirmation chime.
+
+Verification evidence reported
+  cargo test --release --lib: 121 passed, 0 failed, 5 ignored.
+  All five ignored Windows-specific tests were then run explicitly and
+  reported as passing (recogniser enumeration, WAV-fed recognition,
+  exactly one save, test-captures-save-nothing, and chime acceptance).
+  cargo check --release --lib: 0 warnings, 0 errors.
+  npx tsc --noEmit: clean.
+  Production build: passed.
+  Editor E2E: a 20-second 1920x1080@60 export, expected black-video
+  gap, unchanged original SHA-256/mtime, cancellation under 0.7 seconds,
+  no partial output, and capture remained Buffering.
+  Voice E2E: one live voice save, no focus steal with Notepad in front,
+  and disabling voice stopped listening.
+  The library save/delete round-trip was re-checked.
+
+Known limitations retained from verification
+  - Live speech was reproducible only once with the available microphone;
+    the WAV-driven recognition tests are the deterministic engine evidence.
+  - No physical PC-audio loopback source was available, so separate PC
+    Audio track behavior was tested using synthetic tagged media.
+  - SAPI requires an installed speech language.
+  - Editor export re-encodes and therefore takes time proportional to
+    the kept media range.
+  - A confirmation chime may enter a later loopback buffer when the
+    same playback device is being captured; it cannot enter the clip
+    that has already been finalized.
+  These are reported test results and limitations; this documentation
+  update did not independently rerun the application's test suite.
+
+Output-folder housekeeping
+  The final report supplied for this pass states that the output folder
+  contained no MP4 files, while the original replay ZIP
+  ClipVault_2026-10-26_22-26-08_replay.zip remained untouched. The report
+  states that the editor preserved the original clip's SHA-256 and mtime
+  during export verification, and that the missing MP4 was not attributed
+  to the new editor/voice/chime implementation. The ZIP was not restored
+  or modified as part of this report update.
+
+Remote-reference check during documentation
+  The feature branch was observed at dd47afc. The remote main branch
+  subsequently showed merge commit 9a75f3b, whose parents are a9e356f
+  and dd47afc, with commit message:
+    Merge pull request #2 from aissaadib/feature/editor-voice-sound
+
+  This means the implementation had been merged to remote main after the
+  earlier supplied status that said main was untouched. The original
+  branch-push statement is preserved above as the status at that time;
+  this section records the later GitHub state observed while appending
+  the report.
