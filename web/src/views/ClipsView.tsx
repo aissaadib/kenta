@@ -271,7 +271,7 @@ function ClipsViewImpl({ refreshToken, onNotify }: Props) {
                 aria-label={`Preview ${clip.name}`}
               >
                 {thumbnails[clip.id] ? (
-                  <img src={thumbnails[clip.id]} alt="" loading="lazy" />
+                  <img src={thumbnails[clip.id]} alt="" loading="lazy" decoding="async" />
                 ) : (
                   <span className="thumb-placeholder">
                     <Film size={26} />
