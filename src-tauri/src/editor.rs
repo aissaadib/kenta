@@ -1,4 +1,4 @@
-//! On-demand clip editor: media probing, export planning and export execution.
+﻿//! On-demand clip editor: media probing, export planning and export execution.
 //!
 //! The timeline rules live in [`crate::timeline`]; this module turns a timeline
 //! into a real FFmpeg render. Nothing here runs until the user opens a clip.
@@ -246,9 +246,12 @@ pub fn parse_probe_json(text: &str) -> AppResult<MediaInfo> {
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string(),
+          // FFmpeg's MP4 muxer writes a stream `title` as the MP4 `name` tag,
+          // so both spellings have to be read or a real recording looks
+          // untagged.
           title: stream
             .get("tags")
-            .and_then(|tags| tags.get("title"))
+            .and_then(|tags| tags.get("title").or_else(|| tags.get("name")))
             .and_then(|value| value.as_str())
             .map(|value| value.to_string()),
           width: stream
@@ -555,6 +558,7 @@ fn part_segment_position(parts: &[Part], part_index: usize) -> usize {
     .count()
 }
 
+#[derive(Debug, Clone)]
 pub struct ExportOutcome {
   pub duration_seconds: f64,
 }
@@ -865,6 +869,27 @@ mod tests {
   }
 
   #[test]
+  fn reads_the_mp4_name_tag_as_a_stream_title() {
+    // What `-metadata:s:a:0 title=PC Audio` actually produces in an MP4.
+    let json = r#"{
+      "streams": [
+        {"index": 0, "codec_type": "video", "width": 640, "height": 360, "avg_frame_rate": "30/1"},
+        {"index": 1, "codec_type": "audio", "tags": {"language": "und", "handler_name": "SoundHandler", "name": "PC Audio"}},
+        {"index": 2, "codec_type": "audio", "tags": {"language": "und", "handler_name": "SoundHandler", "name": "Microphone"}}
+      ],
+      "format": {"duration": "6.0"}
+    }"#;
+    let media = parse_probe_json(json).unwrap();
+    assert_eq!(
+      media.layout,
+      AudioLayout::Separate {
+        pc: Some(1),
+        mic: Some(2)
+      }
+    );
+  }
+
+  #[test]
   fn falls_back_to_stream_duration_when_the_container_has_none() {
     let json = r#"{"streams":[{"index":0,"codec_type":"video","width":640,"height":360,"avg_frame_rate":"30/1","duration":"4.5"}],"format":{}}"#;
     let media = parse_probe_json(json).unwrap();
@@ -991,4 +1016,5 @@ mod tests {
       other => panic!("expected a segment, got {other:?}"),
     }
   }
+
 }
