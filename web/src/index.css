@@ -1907,7 +1907,7 @@ a {
 .editor-view {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 
 .editor-heading {
@@ -1950,7 +1950,7 @@ a {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 10px 13px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.02);
@@ -1986,7 +1986,7 @@ a {
 .editor-video {
   display: block;
   width: 100%;
-  max-height: 44vh;
+  max-height: 36vh;
   background: #000;
   object-fit: contain;
 }
