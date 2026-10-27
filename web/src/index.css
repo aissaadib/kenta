@@ -1467,6 +1467,33 @@ a {
   gap: 5px;
 }
 
+/* The save-confirmation volume: a slider that reads as a level, not a number
+   box, with the exact value beside it and an audition button on the end. */
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.volume-row input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.volume-row input[type="range"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.volume-value {
+  min-width: 38px;
+  color: var(--text-soft);
+  font-size: 12px;
+  text-align: right;
+}
+
 .field-label {
   font-size: 10.5px;
   font-weight: 700;

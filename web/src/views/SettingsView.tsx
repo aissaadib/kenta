@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   AudioLines,
+  Bell,
   Check,
   ChevronDown,
   Cpu,
@@ -11,6 +12,7 @@ import {
   Loader2,
   Mic,
   Monitor,
+  Play,
   RefreshCw,
   RotateCcw,
   Save,
@@ -24,6 +26,7 @@ import {
   enumerateVideoEncoders,
   openFileLocation,
   openOutputDir,
+  previewConfirmationSound,
   selectOutputDir,
   type AudioDevice,
   type EncoderInfo,
@@ -770,6 +773,71 @@ function SettingsViewImpl({
               <ChevronDown size={14} className="select-chevron" />
             </span>
           </label>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <header>
+          <span className="settings-icon"><Bell size={18} /></span>
+          <div>
+            <h3>Save confirmation</h3>
+            <p>A short chime the moment a clip is on disk.</p>
+          </div>
+        </header>
+        <div className="settings-body">
+          <div className="switch-stack">
+            <Switch
+              checked={draft.confirmation_sound_enabled}
+              onChange={(checked) => update("confirmation_sound_enabled", checked)}
+              label="Play a sound when a clip is saved"
+              description="Plays once, after the file is written and added to the library. Failed and cancelled saves stay silent."
+            />
+          </div>
+          <div className="field">
+            <span className="field-label" id="confirmation-volume-label">
+              Volume
+            </span>
+            <div className="volume-row">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={draft.confirmation_sound_volume}
+                disabled={!draft.confirmation_sound_enabled}
+                aria-labelledby="confirmation-volume-label"
+                aria-valuetext={`${draft.confirmation_sound_volume}%`}
+                onChange={(event) =>
+                  update("confirmation_sound_volume", Number(event.target.value))
+                }
+              />
+              <span className="mono volume-value">{draft.confirmation_sound_volume}%</span>
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={draft.confirmation_sound_volume === 0}
+                onClick={() => {
+                  previewConfirmationSound(draft.confirmation_sound_volume).catch((reason) =>
+                    onNotify("error", "Could not play the sound", String(reason)),
+                  );
+                }}
+              >
+                <Play size={14} /> Preview
+              </button>
+            </div>
+            <p className="field-hint">
+              Preview plays at the volume above, even before you save. The chime is generated on
+              this PC; nothing is downloaded.
+            </p>
+          </div>
+          <div className="inline-note">
+            <Info size={14} />
+            <span>
+              Desktop audio is captured from the system&apos;s own output, so a clip recorded right
+              after a save can contain the chime. The clip that triggered it has already been
+              written and is never affected.
+            </span>
+          </div>
         </div>
       </section>
 
