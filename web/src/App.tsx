@@ -257,14 +257,19 @@ export default function App() {
     setDraft(saved);
   }, [saved]);
 
-  const showView = useCallback((next: View) => {
-    // The scroll container is shared, so reset it before swapping content in.
-    contentRef.current?.scrollTo({ top: 0 });
-    setView(next);
+  // Mounting a view runs its effects, so keep it separate from switching to it.
+  const mountView = useCallback((next: View) => {
     setMountedViews((previous) =>
       previous[next] ? previous : { ...previous, [next]: true },
     );
   }, []);
+
+  const showView = useCallback((next: View) => {
+    // The scroll container is shared, so reset it before swapping content in.
+    contentRef.current?.scrollTo({ top: 0 });
+    setView(next);
+    mountView(next);
+  }, [mountView]);
 
   const openSettings = useCallback(() => showView("settings"), [showView]);
 
