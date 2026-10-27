@@ -34,6 +34,10 @@ pub struct Settings {
   pub minimize_to_tray: bool,
   pub monitor_offset_x: Option<i32>,
   pub monitor_offset_y: Option<i32>,
+  /// A short chime after a clip is saved. Generated in memory, never bundled.
+  pub confirmation_sound_enabled: bool,
+  /// 0 is silent, 100 is the full (still deliberately quiet) level.
+  pub confirmation_sound_volume: u8,
 }
 
 impl Default for Settings {
@@ -62,6 +66,8 @@ impl Default for Settings {
       minimize_to_tray: true,
       monitor_offset_x: None,
       monitor_offset_y: None,
+      confirmation_sound_enabled: true,
+      confirmation_sound_volume: 70,
     }
   }
 }
@@ -209,6 +215,11 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
     settings.monitor_offset_y = None;
     warnings.push("Monitor offset was incomplete and was reset to the primary display.".into());
   }
+  let sound_volume = settings.confirmation_sound_volume;
+  settings.confirmation_sound_volume = sound_volume.min(100);
+  if settings.confirmation_sound_volume != sound_volume {
+    warnings.push("The confirmation sound volume was reset to 100%.".into());
+  }
   if let Some(dir) = settings.output_dir.clone() {
     // A folder that does not exist yet is valid: it is created when the first
     // clip is saved. Only a missing drive, relative path, or a file is invalid.
@@ -286,6 +297,11 @@ pub fn validate(settings: &Settings) -> AppResult<()> {
   if settings.monitor_offset_x.is_some() != settings.monitor_offset_y.is_some() {
     return Err(AppError::Validation(
       "Both monitor offsets must be set together.".into(),
+    ));
+  }
+  if settings.confirmation_sound_volume > 100 {
+    return Err(AppError::Validation(
+      "The confirmation sound volume must be between 0 and 100.".into(),
     ));
   }
   if let Some(dir) = &settings.output_dir {
@@ -377,5 +393,34 @@ mod tests {
     assert_eq!(settings.frame_rate, 240);
     assert_eq!(settings.hotkey_save_replay, DEFAULT_SAVE_HOTKEY);
     assert!(!warnings.is_empty());
+  }
+
+  #[test]
+  fn confirmation_sound_defaults_are_enabled_and_quiet() {
+    let settings = Settings::default();
+    assert!(settings.confirmation_sound_enabled);
+    assert_eq!(settings.confirmation_sound_volume, 70);
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn confirmation_sound_volume_is_clamped_and_validated() {
+    let mut settings = Settings::default();
+    settings.confirmation_sound_volume = 250;
+    assert!(validate(&settings).is_err());
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.confirmation_sound_volume, 100);
+    assert!(warnings.iter().any(|warning| warning.contains("sound volume")));
+  }
+
+  #[test]
+  fn older_settings_files_without_the_sound_keys_still_load() {
+    let settings: Settings = serde_json::from_str(
+      r#"{"replay_duration_seconds": 90, "mic_enabled": true}"#,
+    )
+    .unwrap();
+    assert!(settings.confirmation_sound_enabled);
+    assert_eq!(settings.confirmation_sound_volume, 70);
   }
 }
