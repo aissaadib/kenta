@@ -1,4 +1,4 @@
-﻿//! On-demand clip editor: media probing, export planning and export execution.
+//! On-demand clip editor: media probing, export planning and export execution.
 //!
 //! The timeline rules live in [`crate::timeline`]; this module turns a timeline
 //! into a real FFmpeg render. Nothing here runs until the user opens a clip.
@@ -1017,4 +1017,249 @@ mod tests {
     }
   }
 
+  // ---- real FFmpeg integration ------------------------------------------
+  //
+  // These run the actual export path on synthetic media and inspect the result
+  // with FFprobe and audio analysis. They are not mocked.
+
+  fn run_tool(args: &[String]) -> std::process::Output {
+    let mut command = Command::new(ffmpeg::ffmpeg());
+    crate::process::hide_console(&mut command);
+    command
+      .args(args)
+      .stdin(Stdio::null())
+      .output()
+      .expect("ffmpeg could not be started")
+  }
+
+  fn temp_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+      "clipvault_edit_{tag}_{}",
+      uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+  }
+
+  /// 6 s of 320x180@30 video plus a 440 Hz "PC audio" stream and an 880 Hz
+  /// "microphone" stream, tagged the way the recorder tags them.
+  fn synthetic_clip(dir: &Path) -> PathBuf {
+    let path = dir.join("fixture.mp4");
+    let output = run_tool(&[
+      "-y".into(),
+      "-hide_banner".into(),
+      "-loglevel".into(),
+      "error".into(),
+      "-f".into(),
+      "lavfi".into(),
+      "-i".into(),
+      "testsrc=size=320x180:rate=30:duration=6".into(),
+      "-f".into(),
+      "lavfi".into(),
+      "-i".into(),
+      "sine=frequency=440:sample_rate=48000:duration=6".into(),
+      "-f".into(),
+      "lavfi".into(),
+      "-i".into(),
+      "sine=frequency=880:sample_rate=48000:duration=6".into(),
+      "-map".into(),
+      "0:v".into(),
+      "-map".into(),
+      "1:a".into(),
+      "-map".into(),
+      "2:a".into(),
+      "-c:v".into(),
+      "libx264".into(),
+      "-preset".into(),
+      "veryfast".into(),
+      "-pix_fmt".into(),
+      "yuv420p".into(),
+      "-c:a".into(),
+      "aac".into(),
+      "-b:a".into(),
+      "128k".into(),
+      "-metadata:s:a:0".into(),
+      "title=PC Audio".into(),
+      "-metadata:s:a:1".into(),
+      "title=Microphone".into(),
+      "-t".into(),
+      "6".into(),
+      path.to_string_lossy().to_string(),
+    ]);
+    assert!(
+      output.status.success(),
+      "fixture generation failed: {}",
+      String::from_utf8_lossy(&output.stderr)
+    );
+    path
+  }
+
+  fn mean_volume_db(path: &Path, start: f64, length: f64) -> f64 {
+    let output = run_tool(&[
+      "-hide_banner".into(),
+      "-nostats".into(),
+      "-ss".into(),
+      format!("{start}"),
+      "-t".into(),
+      format!("{length}"),
+      "-i".into(),
+      path.to_string_lossy().to_string(),
+      "-af".into(),
+      "volumedetect".into(),
+      "-f".into(),
+      "null".into(),
+      "-".into(),
+    ]);
+    let text = String::from_utf8_lossy(&output.stderr).to_string();
+    text.lines()
+      .find_map(|line| {
+        let (_, value) = line.split_once("mean_volume:")?;
+        value.trim().trim_end_matches(" dB").trim().parse::<f64>().ok()
+      })
+      .unwrap_or_else(|| panic!("no mean_volume in: {text}"))
+  }
+
+  #[test]
+  fn exports_independent_video_and_audio_edits_to_a_real_file() {
+    if !ffmpeg::ffprobe_available() {
+      eprintln!("skipping real export test: ffprobe is not available");
+      return;
+    }
+    let dir = temp_dir("real");
+    let fixture = synthetic_clip(&dir);
+    let media = probe_media(&fixture).unwrap();
+    assert_eq!(
+      media.layout,
+      AudioLayout::Separate {
+        pc: Some(1),
+        mic: Some(2)
+      },
+      "the tagged streams must be recognised as separate sources"
+    );
+    assert!((media.duration - 6.0).abs() < 0.2);
+    assert_eq!((media.width, media.height, media.frame_rate), (320, 180, 30));
+
+    let mut timeline = media.timeline();
+    // Video: drop the first second, so the clip must open on black.
+    let video = timeline.track(TrackKind::Video).unwrap().segments[0].id;
+    timeline
+      .trim(video, crate::timeline::TrimEdge::In, 1.0)
+      .unwrap();
+    // PC audio: drop its first two seconds, so the mix is silent until 2 s.
+    let pc = timeline.track(TrackKind::Pc).unwrap().segments[0].id;
+    timeline.split(pc, 2.0).unwrap();
+    let pc_first = timeline.track(TrackKind::Pc).unwrap().segments[0].id;
+    timeline.delete(pc_first).unwrap();
+    // Microphone: remove it completely, so only the PC tone can be heard.
+    let mic = timeline.track(TrackKind::Mic).unwrap().segments[0].id;
+    timeline.delete(mic).unwrap();
+    assert!(timeline.validate().is_ok());
+
+    let output_path = edited_output_path(&fixture, "edited");
+    let request = ExportRequest {
+      input: &fixture,
+      output: &output_path,
+      media: &media,
+      timeline: &timeline,
+      encoder: "libx264",
+      quality_preset: "performance",
+      bitrate_kbps: 2000,
+    };
+    let progress = Arc::new(Mutex::new(Vec::<f64>::new()));
+    let recorded = Arc::clone(&progress);
+    let outcome = run_export(
+      &request,
+      Arc::new(move |fraction| recorded.lock().unwrap().push(fraction)),
+      &AtomicBool::new(false),
+    )
+    .expect("export failed");
+
+    assert!(output_path.exists(), "the export must produce a file");
+    assert!(outcome.duration_seconds > 5.5 && outcome.duration_seconds < 6.5);
+    assert!(
+      progress.lock().unwrap().iter().any(|fraction| *fraction > 0.0),
+      "the export must report progress"
+    );
+
+    // The original is untouched.
+    let original = probe_media(&fixture).unwrap();
+    assert!((original.duration - 6.0).abs() < 0.2);
+    assert!(fixture.exists());
+
+    // Stream layout of the result: one video, one mixed audio output.
+    let probed = probe_media(&output_path).unwrap();
+    assert_eq!((probed.width, probed.height, probed.frame_rate), (320, 180, 30));
+    assert!(
+      probed.layout.has_audio(),
+      "the exported clip must keep audio"
+    );
+    assert!((probed.duration - 6.0).abs() < 0.3);
+
+    // Timing: silence before 2 s, the 440 Hz tone after it.
+    let silence = mean_volume_db(&output_path, 0.1, 1.5);
+    let tone = mean_volume_db(&output_path, 3.0, 2.0);
+    assert!(
+      silence < -55.0,
+      "the first 1.5 s should be silent after the PC audio edit, measured {silence} dB"
+    );
+    assert!(
+      tone > -40.0,
+      "the PC tone should be audible after its new start, measured {tone} dB"
+    );
+
+    // Video: the trimmed first second must render as black, not as shifted
+    // content from a later frame.
+    let black = run_tool(&[
+      "-hide_banner".into(),
+      "-i".into(),
+      output_path.to_string_lossy().to_string(),
+      "-vf".into(),
+      "blackdetect=d=0.4:pix_th=0.10".into(),
+      "-an".into(),
+      "-f".into(),
+      "null".into(),
+      "-".into(),
+    ]);
+    let black_text = String::from_utf8_lossy(&black.stderr).to_string();
+    let black_start = black_text
+      .lines()
+      .find_map(|line| {
+        let (_, rest) = line.split_once("black_start:")?;
+        rest.split_whitespace().next()?.parse::<f64>().ok()
+      })
+      .unwrap_or_else(|| panic!("no black frames detected: {black_text}"));
+    assert!(
+      black_start < 0.25,
+      "the gap should be black from the start, but black began at {black_start}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+  }
+
+  #[test]
+  fn a_cancelled_export_leaves_no_file() {
+    if !ffmpeg::ffprobe_available() {
+      eprintln!("skipping cancellation test: ffprobe is not available");
+      return;
+    }
+    let dir = temp_dir("cancel");
+    let fixture = synthetic_clip(&dir);
+    let media = probe_media(&fixture).unwrap();
+    let timeline = media.timeline();
+    let output_path = edited_output_path(&fixture, "edited");
+    let request = ExportRequest {
+      input: &fixture,
+      output: &output_path,
+      media: &media,
+      timeline: &timeline,
+      encoder: "libx264",
+      quality_preset: "performance",
+      bitrate_kbps: 2000,
+    };
+    let cancel = AtomicBool::new(true);
+    let error = run_export(&request, Arc::new(|_| {}), &cancel).unwrap_err();
+    assert!(error.to_string().to_lowercase().contains("cancelled"));
+    assert!(!output_path.exists(), "a cancelled export must clean up");
+    let _ = std::fs::remove_dir_all(&dir);
+  }
 }
