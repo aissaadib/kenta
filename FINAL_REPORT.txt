@@ -433,3 +433,47 @@ Reading the numbers honestly:
 - Pushed to origin/main after the commits were created.
 - Built artifacts are not tracked: target/release/clipvault.exe (8.0 MiB) and
   target/release/bundle/msi/ClipVault_0.1.0_x64_en-US.msi (3.97 MiB).
+
+
+============================================================
+9. HIDDEN CONSOLE & NAVIGATION PASS (2026-10-27)
+============================================================
+
+9.1 THE VISIBLE TERMINAL
+------------------------------------------------------------
+Symptom
+  A console window stayed on the desktop for as long as ClipVault was
+  running, and short-lived probes flashed one during startup and while
+  opening the clip library.
+
+Cause
+  ClipVault itself has no console: main.rs sets windows_subsystem =
+  "windows" for release builds. But ffmpeg.exe and ffprobe.exe are
+  console programs, and Windows gives a console child of a GUI process
+  a fresh console host with a visible window. Process inspection
+  confirmed it: conhost.exe (PID 24200) was a direct child of the FFmpeg
+  process (PID 22908) that ClipVault had started.
+
+Fix
+  src-tauri/src/process.rs gained hide_console(&mut Command), which sets
+  CREATE_NO_WINDOW (taken from windows-sys instead of a literal). It is
+  applied at every child spawn:
+
+    ffmpeg.rs   run_ffmpeg          exports
+    ffmpeg.rs   ffprobe_available   startup probe
+    ffmpeg.rs   ffmpeg_available    startup probe and explicit recheck
+    ffmpeg.rs   video_encoders      settings, capture start
+    ffmpeg.rs   audio_devices       settings
+    ffmpeg.rs   probe_duration      export validation
+    capture.rs  replay encoder      the long-lived child
+    commands.rs run_thumbnail       clip library
+
+  explorer.exe is a GUI program and is deliberately untouched.
+
+Verification
+  With the app running and buffering, an EnumWindows sweep found zero
+  visible windows of class ConsoleWindowClass or
+  CASCADIA_HOSTING_WINDOW_CLASS. The FFmpeg console host still exists,
+  as Windows requires, but reports 0 visible windows. Capture keeps
+  working: one ffmpeg.exe child, buffer growing, 32/32 unit tests pass.
+
