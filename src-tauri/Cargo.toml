@@ -29,6 +29,17 @@ uuid = { version = "1.17", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 thiserror = "1.0"
+windows = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Media_Audio",
+  "Win32_Media_Speech",
+  "Win32_Security",
+  "Win32_System_Com",
+  "Win32_System_Ole",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+] }
 windows-sys = { version = "0.59", features = [
   "Win32",
   "Win32_Foundation",

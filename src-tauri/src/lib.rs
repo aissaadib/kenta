@@ -13,6 +13,7 @@ mod settings;
 mod sound;
 mod storage;
 mod timeline;
+mod voice;
 mod worker;
 
 use capture::{CaptureConfig, CaptureEngine};
