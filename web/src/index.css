@@ -1986,8 +1986,9 @@ a {
 .editor-video {
   display: block;
   width: 100%;
-  max-height: 52vh;
+  max-height: 44vh;
   background: #000;
+  object-fit: contain;
 }
 
 .editor-transport {

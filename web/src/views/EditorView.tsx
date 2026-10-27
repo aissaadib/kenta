@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
@@ -392,7 +392,7 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
       <div className="view editor-view">
         <div className="empty-state">
           <Loader2 size={30} className="spin" />
-          <strong>Reading the clipâ€¦</strong>
+          <strong>Reading the clip…</strong>
         </div>
       </div>
     );
@@ -425,8 +425,8 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
           <div>
             <h2>{payload.clip.display_name || payload.clip.name}</h2>
             <p className="editor-sub">
-              {formatDuration(duration)} Â· {payload.media.width}Ã—{payload.media.height} Â·{" "}
-              {payload.media.frame_rate} fps Â· {TRACK_LABELS[tracks[tracks.length - 1] ?? "video"]}
+              {formatDuration(duration)} · {payload.media.width}×{payload.media.height} ·{" "}
+              {payload.media.frame_rate} fps · {TRACK_LABELS[tracks[tracks.length - 1] ?? "video"]}
             </p>
           </div>
         </div>
@@ -610,6 +610,7 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
       </div>
 
       <p className="editor-footnote">
+        The preview plays the original clip; the timeline above is the edit that will be saved.
         Saving writes a new clip next to the original and leaves this file untouched. Editing
         re-encodes the clip, so it takes about as long as the clip's own duration.
       </p>
