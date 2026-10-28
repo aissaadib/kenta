@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
+  ArrowLeft,
   Clapperboard,
   Film,
   Gamepad2,
   Loader2,
-  Save,
   Settings2,
-  Square,
-  Circle,
 } from "lucide-react";
 import {
   captureSaveReplay,
@@ -30,19 +28,20 @@ import { CaptureView } from "./views/CaptureView";
 import { ClipsView } from "./views/ClipsView";
 import { EditorView } from "./views/EditorView";
 import { SettingsView } from "./views/SettingsView";
+import { Popover } from "./components/Popover";
 import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
 import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
 
 type View = "capture" | "clips" | "settings";
 
-const NAV: { key: View; label: string; icon: ReactNode; caption: string }[] = [
-  { key: "capture", label: "Capture", icon: <Gamepad2 size={18} />, caption: "Replay buffer" },
-  { key: "clips", label: "Clips", icon: <Film size={18} />, caption: "Your library" },
-  { key: "settings", label: "Settings", icon: <Settings2 size={18} />, caption: "Tune ClipVault" },
+const NAV: { key: View; label: string; icon: ReactNode }[] = [
+  { key: "capture", label: "Capture", icon: <Gamepad2 size={17} /> },
+  { key: "clips", label: "Clips", icon: <Film size={17} /> },
+  { key: "settings", label: "Settings", icon: <Settings2 size={17} /> },
 ];
 
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
-  capture: { title: "Capture", subtitle: "Ready when something worth keeping happens." },
+  capture: { title: "Capture", subtitle: "Replay buffer status and manual recording." },
   clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
   settings: { title: "Settings", subtitle: "Make ClipVault fit your setup." },
 };
@@ -61,6 +60,7 @@ export default function App() {
   const [savingReplay, setSavingReplay] = useState(false);
   const [togglingRecording, setTogglingRecording] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [warningsOpen, setWarningsOpen] = useState(false);
   // The editor is a full-screen mode of the Clips section, not a fourth tab.
   // Holding the id here means exactly one clip is open, and clearing it returns
   // to the library the user came from.
@@ -157,12 +157,21 @@ export default function App() {
     return JSON.stringify(saved) !== JSON.stringify(draft);
   }, [saved, draft]);
 
+  // The content scroller is shared by every section. Reset it after the swap
+  // as well as before it, so a section never reopens at an old offset.
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [view, editingClipId]);
+
   const tone = statusTone(status?.state ?? "Idle");
-  const running = tone === "buffering" || tone === "recording" || tone === "saving";
   const inEditor = editingClipId !== null;
   const heading = inEditor
     ? { title: "Editor", subtitle: "Cut this clip without touching the original." }
     : VIEW_TITLES[view];
+  // One status surface per screen: the Capture hero owns it, Clips and the
+  // editor share the compact sidebar block, and Settings uses its save bar.
+  const showSidebarStatus = view === "clips" && status !== null;
+  const showTopbarWarnings = view === "clips" && (status?.warnings.length ?? 0) > 0;
 
   const refreshStatus = async () => {
     try {
@@ -279,6 +288,7 @@ export default function App() {
   const showView = useCallback((next: View) => {
     // Navigating away closes the editor, which releases its session and player.
     setEditingClipId(null);
+    setWarningsOpen(false);
     // The scroll container is shared, so reset it before swapping content in.
     contentRef.current?.scrollTo({ top: 0 });
     setView(next);
@@ -292,6 +302,7 @@ export default function App() {
       addToast("error", "This clip cannot be edited", "Its file is missing from disk.");
       return;
     }
+    setWarningsOpen(false);
     contentRef.current?.scrollTo({ top: 0 });
     setView("clips");
     setEditingClipId(clip.id);
