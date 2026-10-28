@@ -161,10 +161,14 @@ export function CaptureView({
               onClick={onStart}
               disabled={busy || tone === "starting"}
             >
-              <Play size={18} />{" "}
+              {busy || tone === "starting" ? (
+                <Loader2 size={16} className="spin" />
+              ) : (
+                <Play size={16} />
+              )}
               {tone === "error"
                 ? "Retry buffer"
-                : tone === "starting"
+                : tone === "starting" || busy
                   ? "Starting…"
                   : "Start buffer"}
             </button>
@@ -174,22 +178,27 @@ export function CaptureView({
             <button
               type="button"
               className={`btn btn-lg ${tone === "recording" ? "btn-danger" : "btn-ghost"}`}
+              data-testid="capture-record"
               onClick={onToggleRecording}
               disabled={busy || togglingRecording}
             >
-              {tone === "recording" ? <Square size={16} /> : <Circle size={14} fill="currentColor" />}
+              {tone === "recording" ? (
+                <Square size={14} />
+              ) : (
+                <Circle size={12} fill="currentColor" />
+              )}
               {tone === "recording" ? "Stop & save recording" : "Start recording"}
             </button>
           ) : null}
 
           {running && tone !== "recording" ? (
-            <button type="button" className="btn btn-ghost btn-lg" onClick={onStop} disabled={busy}>
-              <Square size={15} /> Stop buffer
+            <button type="button" className="btn btn-quiet btn-lg" onClick={onStop} disabled={busy}>
+              <Square size={13} /> Stop buffer
             </button>
           ) : null}
 
           <button type="button" className="btn btn-quiet btn-lg" onClick={onOpenFolder}>
-            <FolderOpen size={17} /> Clips folder
+            <FolderOpen size={15} /> Clips folder
           </button>
         </div>
 
@@ -203,98 +212,52 @@ export function CaptureView({
             Start / stop recording
           </span>
           <button type="button" className="link-btn" onClick={onOpenSettings}>
-            <Settings2 size={14} /> Change shortcuts
+            <Settings2 size={13} /> Change shortcuts
           </button>
         </div>
       </section>
 
-      <section className="stat-grid">
-        <article className="stat-card">
-          <span className="stat-icon"><Clock3 size={17} /></span>
-          <span className="stat-label">Replay window</span>
-          <strong>{formatDuration(status.replay_duration_seconds)}</strong>
-          <span className="stat-foot">
-            {status.segment_count} segment{status.segment_count === 1 ? "" : "s"} buffered
-          </span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-icon"><Gauge size={17} /></span>
-          <span className="stat-label">Encoder</span>
-          <strong>{status.encoder_in_use || "Not running"}</strong>
-          <span className="stat-foot">
-            {status.encoder_fallback
-              ? `Fallback from ${status.encoder_requested}`
-              : "Requested encoder active"}
-          </span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-icon"><HardDrive size={17} /></span>
-          <span className="stat-label">Quality</span>
-          <strong>
-            {settings.resolution_width} × {settings.resolution_height}
-          </strong>
-          <span className="stat-foot">
-            {settings.frame_rate} fps · {settings.bitrate_kbps.toLocaleString()} kbps
-          </span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-icon">
-            {status.has_audio ? <Volume2 size={17} /> : <Mic size={17} />}
-          </span>
-          <span className="stat-label">Audio</span>
-          <strong>{status.has_audio ? "Captured" : "Off"}</strong>
-          <span className="stat-foot">
-            {[status.mic_active ? "Microphone" : null, status.desktop_audio_active ? "Desktop" : null]
-              .filter(Boolean)
-              .join(" + ") || "No audio sources"}
-          </span>
-        </article>
-      </section>
-
-      {status.warnings.length > 0 ? (
-        <section className="notice-card notice-warn">
-          <div className="notice-heading">
-            <AlertTriangle size={17} />
-            <strong>Capture notes</strong>
+      {hasWarnings ? (
+        <section className="notice notice-warn" aria-label="Capture notes">
+          <AlertTriangle size={16} />
+          <div className="notice-copy">
+            {allWarnings ? (
+              <ul>
+                {warnings.map((warning, index) => (
+                  <li key={`${warning}-${index}`}>{warning}</li>
+                ))}
+              </ul>
+            ) : (
+              <span>{warnings[0]}</span>
+            )}
           </div>
-          <ul>
-            {status.warnings.map((warning, index) => (
-              <li key={`${warning}-${index}`}>{warning}</li>
-            ))}
-          </ul>
+          <div className="notice-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>
+              Audio settings
+            </button>
+            {warnings.length > 1 ? (
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                aria-expanded={allWarnings}
+                onClick={() => setAllWarnings((value) => !value)}
+              >
+                {allWarnings ? "Show less" : `+${warnings.length - 1} more`}
+              </button>
+            ) : null}
+          </div>
         </section>
       ) : null}
 
       {tone === "error" && status.message ? (
-        <section className="notice-card notice-error">
-          <div className="notice-heading">
-            <AlertTriangle size={17} />
+        <section className="notice notice-error" aria-label="Capture error">
+          <AlertTriangle size={16} />
+          <div className="notice-copy">
             <strong>Capture error</strong>
+            <span>{status.message}</span>
           </div>
-          <p>{status.message}</p>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>
-            <Settings2 size={14} /> Review capture settings
-          </button>
         </section>
       ) : null}
-
-      <section className="tip-row">
-        <div className="tip-card">
-          <strong>Replay-first by design</strong>
-          <p>
-            ClipVault writes short local MP4 segments and keeps only your chosen window on disk.
-            Saving stitches the exact segments together without re-encoding, so it is fast and
-            lossless.
-          </p>
-        </div>
-        <div className="tip-card">
-          <strong>Record longer moments</strong>
-          <p>
-            Start a recording when a match begins, then stop it to save everything from that point.
-            The replay buffer restarts automatically.
-          </p>
-        </div>
-      </section>
     </div>
   );
 }
