@@ -1478,16 +1478,18 @@ mod tests {
        $s.Dispose()",
       raw.display()
     );
-    let spoken = std::process::Command::new("powershell")
-      .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    let mut speech = std::process::Command::new("powershell");
+    speech.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    crate::process::hide_console(&mut speech);
+    let spoken = speech
       .status()
       .map(|status| status.success())
       .unwrap_or(false);
     assert!(spoken, "the test WAV could not be synthesised");
 
     // ffmpeg is a hard requirement of ClipVault, so it is available here.
-    let padded_ok = std::process::Command::new("ffmpeg")
-      .args(["-y", "-loglevel", "error", "-i"])
+    let mut pad = std::process::Command::new("ffmpeg");
+    pad.args(["-y", "-loglevel", "error", "-i"])
       .arg(&raw)
       .args([
         "-af",
@@ -1499,7 +1501,9 @@ mod tests {
         "-c:a",
         "pcm_s16le",
       ])
-      .arg(&padded)
+      .arg(&padded);
+    crate::process::hide_console(&mut pad);
+    let padded_ok = pad
       .status()
       .map(|status| status.success())
       .unwrap_or(false);
