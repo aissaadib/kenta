@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
@@ -6,10 +6,12 @@ import {
   Bell,
   Check,
   ChevronDown,
+  Clock3,
   Cpu,
   FolderOpen,
   HardDrive,
   Info,
+  Keyboard,
   Loader2,
   Mic,
   Monitor,
@@ -17,8 +19,6 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
-  Settings2,
-  Volume2,
 } from "lucide-react";
 import {
   checkFfmpeg,
@@ -72,6 +72,19 @@ const PRESETS = [
   { label: "3840 × 2160", width: 3840, height: 2160 },
 ];
 
+const ADVANCED_KEYS: (keyof Settings)[] = [
+  "monitor_offset_x",
+  "monitor_offset_y",
+  "resolution_width",
+  "resolution_height",
+  "frame_rate",
+  "bitrate_kbps",
+  "encoder",
+  "quality_preset",
+  "start_at_startup",
+  "minimize_to_tray",
+];
+
 /** How long a test waits for speech before giving up. */
 const VOICE_TEST_SECONDS = 8;
 
@@ -119,6 +132,26 @@ function numericOptions(values: number[], current: number): number[] {
   return values.includes(current)
     ? values
     : [...values, current].sort((a, b) => a - b);
+}
+
+interface RowProps {
+  label: string;
+  hint?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}
+
+/** One aligned label/control row. The label column stays fixed at 200px. */
+function Row({ label, hint, children, className }: RowProps) {
+  return (
+    <div className={`setting-row ${className ?? ""}`}>
+      <span className="setting-label">{label}</span>
+      <div className="setting-control">
+        {children}
+        {hint ? <p className="field-hint">{hint}</p> : null}
+      </div>
+    </div>
+  );
 }
 
 interface NumericFieldProps {
@@ -188,27 +221,33 @@ function NumericField({
   };
 
   return (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      <span className={`input-with-suffix ${error ? "has-error" : ""}`}>
-        <input
-          className="input"
-          inputMode="numeric"
-          aria-label={label}
-          aria-invalid={!valid}
-          value={text}
-          onChange={(event) => handleChange(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.currentTarget.blur();
-            }
-          }}
-        />
-        {suffix ? <span className="input-suffix">{suffix}</span> : null}
-      </span>
-      {error ? <span className="field-error">{error}</span> : hint ? <span className="field-hint">{hint}</span> : null}
-    </label>
+    <div className="setting-row">
+      <span className="setting-label">{label}</span>
+      <div className="setting-control">
+        <span className={`input-with-suffix ${error ? "has-error" : ""}`}>
+          <input
+            className="input"
+            inputMode="numeric"
+            aria-label={label}
+            aria-invalid={!valid}
+            value={text}
+            onChange={(event) => handleChange(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+            }}
+          />
+          {suffix ? <span className="input-suffix">{suffix}</span> : null}
+        </span>
+        {error ? (
+          <span className="field-error">{error}</span>
+        ) : hint ? (
+          <span className="field-hint">{hint}</span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -237,6 +276,7 @@ function SettingsViewImpl({
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [invalidFields, setInvalidFields] = useState<Record<string, boolean>>({});
   const [resetToken, setResetToken] = useState(0);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const voice = useVoiceStatus();
   const [testingVoice, setTestingVoice] = useState(false);
   const [voiceTestResult, setVoiceTestResult] = useState<VoiceTestOutcome | null>(null);
@@ -344,6 +384,13 @@ function SettingsViewImpl({
 
   const canSave = dirty && validation.length === 0 && !saving;
 
+  const advancedDirty = useMemo(
+    () => ADVANCED_KEYS.some((key) => saved[key] !== draft[key]),
+    [draft, saved],
+  );
+
+  const selectedEncoder = encoders.find((encoder) => encoder.name === draft.encoder);
+
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) => {
     onChange({ ...draft, [key]: value });
   };
@@ -399,76 +446,75 @@ function SettingsViewImpl({
     }
   };
 
-  const selectedEncoder = encoders.find((encoder) => encoder.name === draft.encoder);
+  const scrollToAudio = () => {
+    document.getElementById("settings-audio")?.scrollIntoView({ block: "start" });
+  };
 
   return (
     <div className="view settings-view">
-      <div className="view-heading">
-        <div>
-          <h2>Settings</h2>
-          <p>Changes are saved together so capture never starts with half an update.</p>
-        </div>
-        <span className={`save-state ${dirty ? "is-dirty" : ""}`}>
-          {dirty ? (
-            <>
-              <span className="dirty-dot" /> Unsaved changes
-            </>
-          ) : (
-            <>
-              <Check size={14} /> All changes saved
-            </>
-          )}
-        </span>
-      </div>
-
-      {!ffmpegInfo.available ? (
-        <div className="notice-card notice-error">
-          <div className="notice-heading">
-            <AlertTriangle size={17} />
-            <strong>FFmpeg was not found</strong>
+      {warnings.length > 0 ? (
+        <div className="notice notice-warn settings-notice">
+          <AlertTriangle size={16} />
+          <div className="notice-copy">
+            <strong>From your last load or save</strong>
+            {warnings.length === 1 ? (
+              <span>{warnings[0]}</span>
+            ) : (
+              <ul>
+                {warnings.map((warning, index) => (
+                  <li key={`${warning}-${index}`}>{warning}</li>
+                ))}
+              </ul>
+            )}
           </div>
-          <p>
-            ClipVault needs FFmpeg to capture and finalise clips. Install it and make sure{" "}
-            <span className="mono">ffmpeg.exe</span> is on your PATH, or place it next to{" "}
-            <span className="mono">ClipVault.exe</span>.
-          </p>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void handleRecheckFfmpeg()}>
-            {checkingFfmpeg ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Check again
-          </button>
+          <div className="notice-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={scrollToAudio}>
+              Audio settings
+            </button>
+          </div>
         </div>
       ) : null}
 
-      {warnings.length > 0 ? (
-        <div className="notice-card notice-warn">
-          <div className="notice-heading">
-            <Info size={17} />
-            <strong>From your last load or save</strong>
+      {!ffmpegInfo.available ? (
+        <div className="notice notice-error settings-notice">
+          <AlertTriangle size={16} />
+          <div className="notice-copy">
+            <strong>FFmpeg was not found</strong>
+            <span>
+              ClipVault needs FFmpeg to capture and finalise clips. Install it and make sure{" "}
+              <span className="mono">ffmpeg.exe</span> is on your PATH, or place it next to{" "}
+              <span className="mono">ClipVault.exe</span>.
+            </span>
           </div>
-          <ul>
-            {warnings.map((warning, index) => (
-              <li key={`${warning}-${index}`}>{warning}</li>
-            ))}
-          </ul>
+          <div className="notice-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void handleRecheckFfmpeg()}>
+              {checkingFfmpeg ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Check again
+            </button>
+          </div>
         </div>
       ) : null}
 
       <section className="settings-section">
         <header>
-          <span className="settings-icon"><HardDrive size={18} /></span>
-          <div>
-            <h3>Clips &amp; storage</h3>
-            <p>Where finished MP4 files live.</p>
-          </div>
+          <HardDrive size={16} className="settings-icon" />
+          <h2>Clips &amp; storage</h2>
+          <p>Where finished MP4 files live.</p>
         </header>
         <div className="settings-body">
-          <div className="field">
-            <span className="field-label">Clip folder</span>
+          <Row
+            label="Clip folder"
+            hint={
+              draft.output_dir
+                ? "Created automatically when you save your first clip."
+                : `Default folder: ${defaultOutputDir}`
+            }
+          >
             <div className="path-picker">
               <span className="path-value mono" title={draft.output_dir ?? defaultOutputDir}>
                 {draft.output_dir ?? defaultOutputDir}
               </span>
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => void handleBrowse()}>
-                <FolderOpen size={14} /> Browse…
+                <FolderOpen size={13} /> Browse
               </button>
               {draft.output_dir ? (
                 <button type="button" className="btn btn-quiet btn-sm" onClick={() => update("output_dir", null)}>
@@ -483,252 +529,50 @@ function SettingsViewImpl({
                 Open
               </button>
             </div>
-            <p className="field-hint">
-              {draft.output_dir
-                ? "Custom folder selected. It is created automatically when you save your first clip."
-                : `Default folder: ${defaultOutputDir}`}
-            </p>
-          </div>
+          </Row>
         </div>
       </section>
 
       <section className="settings-section">
         <header>
-          <span className="settings-icon"><Settings2 size={18} /></span>
-          <div>
-            <h3>Replay buffer</h3>
-            <p>How much recent gameplay stays ready to save.</p>
-          </div>
+          <Clock3 size={16} className="settings-icon" />
+          <h2>Replay buffer</h2>
+          <p>How much recent gameplay stays ready to save.</p>
         </header>
         <div className="settings-body">
-          <div className="field-grid">
-            <NumericField
-              key={`replay-${resetToken}`}
-              label="Replay window"
-              value={draft.replay_duration_seconds}
-              min={5}
-              max={3600}
-              suffix="seconds"
-              hint="Longer windows use more disk space. 60 seconds is a good start."
-              onChange={(value) => update("replay_duration_seconds", value)}
-              onValidationChange={(valid) => setFieldValidity("replay", valid)}
-            />
-            <div className="field">
-              <span className="field-label">Window presets</span>
-              <div className="segmented">
-                {[30, 60, 90, 120, 300].map((seconds) => (
-                  <button
-                    key={seconds}
-                    type="button"
-                    className={draft.replay_duration_seconds === seconds ? "is-active" : ""}
-                    onClick={() => update("replay_duration_seconds", seconds)}
-                  >
-                    {seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}
-                  </button>
-                ))}
-              </div>
-              <p className="field-hint">Changing the window does not stop the buffer.</p>
+          <NumericField
+            key={`replay-${resetToken}`}
+            label="Replay window"
+            value={draft.replay_duration_seconds}
+            min={5}
+            max={3600}
+            suffix="seconds"
+            hint="Longer windows use more disk space."
+            onChange={(value) => update("replay_duration_seconds", value)}
+            onValidationChange={(valid) => setFieldValidity("replay", valid)}
+          />
+          <Row label="Window presets" hint="Changing the window does not stop the buffer.">
+            <div className="segmented">
+              {[30, 60, 90, 120, 300].map((seconds) => (
+                <button
+                  key={seconds}
+                  type="button"
+                  className={draft.replay_duration_seconds === seconds ? "is-active" : ""}
+                  onClick={() => update("replay_duration_seconds", seconds)}
+                >
+                  {seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}
+                </button>
+              ))}
             </div>
-          </div>
+          </Row>
         </div>
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section" id="settings-audio">
         <header>
-          <span className="settings-icon"><Monitor size={18} /></span>
-          <div>
-            <h3>Capture</h3>
-            <p>What ClipVault records and how it is encoded.</p>
-          </div>
-        </header>
-        <div className="settings-body">
-          <div className="field-grid">
-            <label className="field">
-              <span className="field-label">Monitor</span>
-              <span className="select-wrap select-full">
-                <select
-                  aria-label="Monitor"
-                  value={selectedMonitor?.index ?? ""}
-                  onChange={(event) => handleSelectMonitor(Number(event.target.value))}
-                  disabled={loadingMonitors || monitors.length === 0}
-                >
-                  {loadingMonitors ? <option value="">Looking for displays…</option> : null}
-                  {monitors.map((monitor) => (
-                    <option key={monitor.index} value={monitor.index}>
-                      Display {monitor.index + 1} · {monitor.width}×{monitor.height}
-                      {monitor.primary ? " (primary)" : ""}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={14} className="select-chevron" />
-              </span>
-              <p className="field-hint">
-                {selectedMonitor
-                  ? `Position ${selectedMonitor.x}, ${selectedMonitor.y}. Choosing a display also matches its resolution.`
-                  : "Displays could not be detected; the primary desktop is used."}
-              </p>
-            </label>
-
-            <div className="field">
-              <span className="field-label">Resolution</span>
-              <div className="resolution-row">
-                <span className="select-wrap">
-                  <select
-                    aria-label="Resolution preset"
-                    value={`${draft.resolution_width}x${draft.resolution_height}`}
-                    onChange={(event) => {
-                      const preset = PRESETS.find(
-                        (item) => `${item.width}x${item.height}` === event.target.value,
-                      );
-                      if (preset) {
-                        onChange({
-                          ...draft,
-                          resolution_width: preset.width,
-                          resolution_height: preset.height,
-                        });
-                      }
-                    }}
-                  >
-                    {PRESETS.map((preset) => (
-                      <option key={preset.label} value={`${preset.width}x${preset.height}`}>
-                        {preset.label}
-                      </option>
-                    ))}
-                    {!PRESETS.some(
-                      (preset) =>
-                        preset.width === draft.resolution_width &&
-                        preset.height === draft.resolution_height,
-                    ) ? (
-                      <option value={`${draft.resolution_width}x${draft.resolution_height}`}>
-                        Custom
-                      </option>
-                    ) : null}
-                  </select>
-                  <ChevronDown size={14} className="select-chevron" />
-                </span>
-                <input
-                  className="input input-compact"
-                  inputMode="numeric"
-                  value={draft.resolution_width}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (Number.isFinite(value)) update("resolution_width", value);
-                  }}
-                  aria-label="Capture width"
-                />
-                <span className="dim">×</span>
-                <input
-                  className="input input-compact"
-                  inputMode="numeric"
-                  value={draft.resolution_height}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (Number.isFinite(value)) update("resolution_height", value);
-                  }}
-                  aria-label="Capture height"
-                />
-              </div>
-              <p className="field-hint">Width 16–7,680 · height 16–4,320.</p>
-            </div>
-
-            <label className="field">
-              <span className="field-label">Frame rate</span>
-              <span className="select-wrap select-full">
-                <select
-                  aria-label="Frame rate"
-                  value={draft.frame_rate}
-                  onChange={(event) => update("frame_rate", Number(event.target.value))}
-                >
-                  {numericOptions(FPS_OPTIONS, draft.frame_rate).map((fps) => (
-                    <option key={fps} value={fps}>
-                      {fps} fps
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={14} className="select-chevron" />
-              </span>
-            </label>
-
-            <NumericField
-              key={`bitrate-${resetToken}`}
-              label="Video bitrate"
-              value={draft.bitrate_kbps}
-              min={500}
-              max={100_000}
-              suffix="kbps"
-              hint="8,000 kbps is a balanced 1080p60 setting."
-              onChange={(value) => update("bitrate_kbps", value)}
-              onValidationChange={(valid) => setFieldValidity("bitrate", valid)}
-            />
-
-            <label className="field">
-              <span className="field-label">Encoder</span>
-              <span className="select-wrap select-full">
-                <select
-                  aria-label="Encoder"
-                  value={draft.encoder}
-                  onChange={(event) => update("encoder", event.target.value)}
-                  disabled={loadingEncoders}
-                >
-                  {loadingEncoders ? <option value={draft.encoder}>Detecting encoders…</option> : null}
-                  {encoders.map((encoder) => (
-                    <option key={encoder.name} value={encoder.name} disabled={!encoder.available}>
-                      {encoder.label}
-                      {encoder.available ? "" : " — unavailable"}
-                    </option>
-                  ))}
-                  {!loadingEncoders && !encoders.some((encoder) => encoder.name === draft.encoder) ? (
-                    <option value={draft.encoder}>{draft.encoder} — not detected</option>
-                  ) : null}
-                </select>
-                <ChevronDown size={14} className="select-chevron" />
-              </span>
-              <p className="field-hint">
-                {selectedEncoder
-                  ? selectedEncoder.available
-                    ? selectedEncoder.hardware
-                      ? "Hardware encoder detected. ClipVault falls back to CPU x264 if it fails at runtime."
-                      : "CPU encoder. Works everywhere but uses more CPU."
-                    : "This encoder is not available on this PC; ClipVault will use CPU x264."
-                  : "ClipVault will verify the encoder when capture starts."}
-              </p>
-            </label>
-
-            <label className="field">
-              <span className="field-label">Quality preset</span>
-              <span className="select-wrap select-full">
-                <select
-                  aria-label="Quality preset"
-                  value={draft.quality_preset}
-                  onChange={(event) => update("quality_preset", event.target.value)}
-                >
-                  {QUALITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={14} className="select-chevron" />
-              </span>
-            </label>
-          </div>
-          <div className="inline-note">
-            <Info size={14} />
-            <span>
-              Changing capture settings restarts the replay buffer. If a manual recording is running,
-              stop it first.
-            </span>
-          </div>
-        </div>
-      </section>
-
-      <section className="settings-section">
-        <header>
-          <span className="settings-icon"><AudioLines size={18} /></span>
-          <div>
-            <h3>Audio</h3>
-            <p>Microphone and desktop sound are mixed into the clip.</p>
-          </div>
+          <AudioLines size={16} className="settings-icon" />
+          <h2>Audio</h2>
+          <p>Microphone and desktop sound are mixed into the clip.</p>
         </header>
         <div className="settings-body">
           {deviceError ? (
@@ -737,78 +581,67 @@ function SettingsViewImpl({
               <span>Audio devices could not be listed: {deviceError}</span>
             </div>
           ) : null}
-          <div className="switch-stack">
-            <div className="audio-block">
-              <Switch
-                checked={draft.mic_enabled}
-                onChange={(checked) => update("mic_enabled", checked)}
-                label="Microphone"
-                description="Capture your voice with the game audio."
-              />
-              <label className="field">
-                <span className="field-label">Microphone device</span>
-                <span className="select-wrap select-full">
-                  <select
-                    aria-label="Microphone device"
-                    value={draft.mic_device ?? ""}
-                    onChange={(event) => update("mic_device", event.target.value || null)}
-                    disabled={!draft.mic_enabled || loadingDevices}
-                  >
-                    <option value="">Default microphone</option>
-                    {(microphoneOptions.length > 0 ? microphoneOptions : audioOptions).map((device) => (
-                      <option key={device.alt_name ?? device.name} value={device.alt_name ?? device.name}>
-                        {device.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown size={14} className="select-chevron" />
-                </span>
-                {!loadingDevices && audioOptions.length === 0 ? (
-                  <span className="field-error">No audio input devices were found on this PC.</span>
-                ) : null}
-              </label>
-            </div>
-
-            <div className="audio-block">
-              <Switch
-                checked={draft.desktop_audio_enabled}
-                onChange={(checked) => update("desktop_audio_enabled", checked)}
-                label="Desktop audio"
-                description="Capture game and system sound. Needs a loopback device such as Stereo Mix."
-              />
-              <label className="field">
-                <span className="field-label">Desktop audio device</span>
-                <span className="select-wrap select-full">
-                  <select
-                    aria-label="Desktop audio device"
-                    value={draft.desktop_audio_device ?? ""}
-                    onChange={(event) => update("desktop_audio_device", event.target.value || null)}
-                    disabled={!draft.desktop_audio_enabled || loadingDevices}
-                  >
-                    <option value="">Default loopback device</option>
-                    {(loopbackOptions.length > 0 ? loopbackOptions : audioOptions).map((device) => (
-                      <option key={device.alt_name ?? device.name} value={device.alt_name ?? device.name}>
-                        {device.name}
-                        {device.is_loopback ? " (loopback)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown size={14} className="select-chevron" />
-                </span>
-                {draft.desktop_audio_enabled && !loadingDevices && loopbackOptions.length === 0 ? (
-                  <span className="field-hint">
-                    No loopback device detected. Enable Stereo Mix in Windows sound settings or use a
-                    virtual audio cable.
-                  </span>
-                ) : null}
-              </label>
-            </div>
-          </div>
-
-          <label className="field field-inline">
-            <span className="field-label">
-              <Volume2 size={13} /> Audio sample rate
+          <Switch
+            checked={draft.mic_enabled}
+            onChange={(checked) => update("mic_enabled", checked)}
+            label="Microphone"
+            description="Capture your voice with the game audio."
+          />
+          <Row label="Microphone device" className="setting-sub">
+            <span className="select-wrap select-full">
+              <select
+                aria-label="Microphone device"
+                value={draft.mic_device ?? ""}
+                onChange={(event) => update("mic_device", event.target.value || null)}
+                disabled={!draft.mic_enabled || loadingDevices}
+              >
+                <option value="">Default microphone</option>
+                {(microphoneOptions.length > 0 ? microphoneOptions : audioOptions).map((device) => (
+                  <option key={device.alt_name ?? device.name} value={device.alt_name ?? device.name}>
+                    {device.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={14} className="select-chevron" />
             </span>
+            {!loadingDevices && audioOptions.length === 0 ? (
+              <span className="field-error">No audio input devices were found on this PC.</span>
+            ) : null}
+          </Row>
+
+          <Switch
+            checked={draft.desktop_audio_enabled}
+            onChange={(checked) => update("desktop_audio_enabled", checked)}
+            label="Desktop audio"
+            description="Capture game and system sound through a loopback device."
+          />
+          <Row label="Desktop audio device" className="setting-sub">
+            <span className="select-wrap select-full">
+              <select
+                aria-label="Desktop audio device"
+                value={draft.desktop_audio_device ?? ""}
+                onChange={(event) => update("desktop_audio_device", event.target.value || null)}
+                disabled={!draft.desktop_audio_enabled || loadingDevices}
+              >
+                <option value="">Default loopback device</option>
+                {(loopbackOptions.length > 0 ? loopbackOptions : audioOptions).map((device) => (
+                  <option key={device.alt_name ?? device.name} value={device.alt_name ?? device.name}>
+                    {device.name}
+                    {device.is_loopback ? " (loopback)" : ""}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={14} className="select-chevron" />
+            </span>
+            {draft.desktop_audio_enabled && !loadingDevices && loopbackOptions.length === 0 ? (
+              <span className="field-hint">
+                No loopback device detected. Enable Stereo Mix in Windows sound settings or use a
+                virtual audio cable.
+              </span>
+            ) : null}
+          </Row>
+
+          <Row label="Audio sample rate">
             <span className="select-wrap">
               <select
                 aria-label="Audio sample rate"
