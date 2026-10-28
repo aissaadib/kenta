@@ -14,6 +14,7 @@
         "title": "ClipVault",
         "width": 1000,
         "height": 700,
+        "theme": "Dark",
         "resizable": true,
         "fullscreen": false,
         "minimizable": true,
