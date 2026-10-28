@@ -2637,17 +2637,12 @@ a {
 
   .brand {
     justify-content: center;
-    padding-bottom: 12px;
+    padding-bottom: 14px;
   }
 
   .nav-item {
     justify-content: center;
-    padding: 9px;
-  }
-
-  .nav-icon {
-    width: 34px;
-    height: 34px;
+    padding: 0;
   }
 
   .content,
@@ -2656,32 +2651,58 @@ a {
     padding-right: 18px;
   }
 
-  .field-grid {
+  .editor-hint {
+    display: none;
+  }
+
+  .editor-ruler-row,
+  .editor-track {
+    grid-template-columns: 66px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .setting-row {
     grid-template-columns: 1fr;
+    gap: 4px;
+    align-items: start;
+  }
+
+  .setting-sub {
+    padding-left: 0;
+  }
+
+  .settings-savebar {
+    margin-inline: -18px;
+    padding-inline: 18px;
+  }
+
+  .library-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .search-field {
+    flex-basis: 100%;
+  }
+
+  .library-count {
+    margin-left: auto;
   }
 }
 
 @media (max-width: 640px) {
-  .hero-main {
+  .capture-main {
     flex-direction: column;
-    gap: 14px;
+    align-items: flex-start;
+    gap: 12px;
   }
 
-  .hero-timer {
-    align-items: flex-start;
+  .capture-line {
     text-align: left;
   }
 
-  .stat-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .library-toolbar {
-    flex-direction: column;
-  }
-
-  .view-heading {
-    flex-direction: column;
+  .hotkey-strip .link-btn {
+    margin-left: 0;
   }
 
   .settings-savebar {
@@ -2699,5 +2720,15 @@ a {
 
   .path-value {
     flex-basis: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
