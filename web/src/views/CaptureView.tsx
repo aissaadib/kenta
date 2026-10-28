@@ -1,17 +1,14 @@
+import { useState } from "react";
 import {
   AlertTriangle,
   Circle,
-  Clock3,
   Cpu,
   FolderOpen,
-  Gauge,
-  HardDrive,
-  Mic,
+  Loader2,
   Play,
   Save,
   Settings2,
   Square,
-  Volume2,
 } from "lucide-react";
 import type { CaptureStatus, Settings } from "../tauri";
 import { formatClock, formatDuration, statusTone } from "../format";
@@ -39,22 +36,43 @@ const TONE_LABEL: Record<string, string> = {
   error: "Needs attention",
 };
 
-function stateDescription(status: CaptureStatus, settings: Settings): string {
+function encoderLabel(status: CaptureStatus, settings: Settings): string {
+  const name = (status.encoder_in_use || settings.encoder || "").toLowerCase();
+  if (name.includes("nvenc")) {
+    if (name.includes("hevc")) return "HEVC (NVENC)";
+    if (name.includes("av1")) return "AV1 (NVENC)";
+    return "H.264 (NVENC)";
+  }
+  if (name.includes("x264")) return "H.264 (x264)";
+  if (name.includes("x265")) return "HEVC (x265)";
+  if (name.includes("qsv")) return "H.264 (QSV)";
+  if (name.includes("amf")) return "H.264 (AMF)";
+  return status.encoder_in_use || settings.encoder || "Not running";
+}
+
+function audioLabel(status: CaptureStatus): string {
+  if (!status.has_audio) return "No audio";
+  const sources = [
+    status.mic_active ? "Mic" : null,
+    status.desktop_audio_active ? "desktop" : null,
+  ].filter(Boolean);
+  return sources.length > 0 ? sources.join(" + ") : "Audio";
+}
+
+function stateLine(status: CaptureStatus): string {
   switch (statusTone(status.state)) {
     case "starting":
-      return "Warming up the encoder and opening the capture device.";
+      return "Starting the encoder…";
     case "buffering":
-      return `The rolling buffer is live. Save the last ${formatDuration(
-        settings.replay_duration_seconds,
-      )} whenever something happens.`;
+      return `The last ${Math.round(status.replay_duration_seconds)} seconds are ready to save.`;
     case "recording":
-      return "Manual recording is running. Stop the recording to save the full session.";
+      return "Recording a full clip. Stop to save it.";
     case "saving":
-      return "ClipVault is finalising your clip. This can take a few seconds.";
+      return "ClipVault is finalising your clip.";
     case "error":
-      return status.message ?? "Capture stopped unexpectedly. Check the details below.";
+      return status.message ?? "Capture stopped unexpectedly.";
     default:
-      return "The replay buffer is off. Start it before you play so the last moments are ready.";
+      return "The buffer is stopped.";
   }
 }
 
@@ -71,6 +89,7 @@ export function CaptureView({
   onOpenFolder,
   onOpenSettings,
 }: Props) {
+  const [allWarnings, setAllWarnings] = useState(false);
   const tone = statusTone(status.state);
   const running = tone === "buffering" || tone === "recording" || tone === "saving";
   const canSave = tone === "buffering" || tone === "recording";
@@ -79,70 +98,61 @@ export function CaptureView({
     0,
     Math.min(100, (status.buffered_seconds / Math.max(1, status.replay_duration_seconds)) * 100),
   );
-  const recordSeconds =
-    tone === "recording" ? status.recording_seconds : 0;
+  const timerValue =
+    tone === "recording" ? status.recording_seconds : status.buffered_seconds;
+  const warnings = status.warnings;
+  const hasWarnings = warnings.length > 0;
 
   return (
     <div className="view capture-view">
-      <section className={`hero-card tone-${tone}`}>
-        <div className="hero-glow" aria-hidden="true" />
-        <div className="hero-topline">
-          <span className={`status-pill tone-${tone}`}>
+      <section className={`capture-stage tone-${tone}`}>
+        <div className="capture-status-row">
+          <span className="status-pill" data-testid="capture-status">
             <span className="status-dot" />
             {TONE_LABEL[tone] ?? status.state}
           </span>
           {status.encoder_fallback ? (
             <span className="badge badge-warn" title={status.fallback_reason ?? undefined}>
-              <Cpu size={13} /> CPU fallback
+              <Cpu size={11} /> CPU fallback
             </span>
           ) : null}
-          {status.exporting ? (
-            <span className="badge badge-info">Finalising clip</span>
-          ) : null}
+          {status.exporting ? <span className="badge badge-info">Finalising clip</span> : null}
+          <span className="capture-meta">
+            {settings.resolution_width}×{settings.resolution_height} · {settings.frame_rate} fps ·{" "}
+            {encoderLabel(status, settings)} · {audioLabel(status)}
+          </span>
         </div>
 
-        <div className="hero-main">
-          <div>
-            <h2>{stateDescription(status, settings)}</h2>
-            <p className="hero-sub">
-              {status.output_dir ? (
-                <>
-                  Saving to <span className="mono">{status.output_dir}</span>
-                </>
-              ) : (
-                "Choose a clip folder in Settings."
-              )}
-            </p>
-          </div>
-          <div className="hero-timer">
-            <span className="hero-timer-label">
+        <div className="capture-main">
+          <div className="capture-timer">
+            <span className="capture-timer-label">
               {tone === "recording" ? "Recording" : "Buffered"}
             </span>
-            <strong>
-              {tone === "recording"
-                ? formatClock(recordSeconds)
-                : formatClock(status.buffered_seconds)}
-            </strong>
-            <span className="hero-timer-window">
+            <strong data-testid="capture-timer">{formatClock(timerValue)}</strong>
+            <span className="capture-timer-window">
               of {formatDuration(status.replay_duration_seconds)} window
             </span>
           </div>
+          <p className="capture-line">{stateLine(status)}</p>
         </div>
 
         <div className="buffer-track" aria-hidden="true">
           <div className="buffer-fill" style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
 
-        <div className="hero-actions">
+        <div className="capture-actions">
           {canSave ? (
             <button
               type="button"
               className="btn btn-primary btn-lg"
+              data-testid="capture-save"
               onClick={onSaveReplay}
               disabled={busy || savingReplay}
             >
-              <Save size={18} />
-              {savingReplay ? "Saving clip…" : `Save last ${formatDuration(status.replay_duration_seconds)}`}
+              {savingReplay ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {savingReplay
+                ? "Saving clip…"
+                : `Save last ${formatDuration(status.replay_duration_seconds)}`}
             </button>
           ) : (
             <button
