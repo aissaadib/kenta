@@ -67,6 +67,26 @@ export function formatRelative(iso: string): string {
   return formatDate(iso);
 }
 
+const GENERATED_CLIP_NAME =
+  /^ClipVault[_-](\d{4})-(\d{2})-(\d{2})[_-](\d{2})-(\d{2})-(\d{2})(?:_(?:replay|recording))?(?:_edited)?$/i;
+
+/** True when the stored name is the generated timestamp, not a custom name. */
+export function isGeneratedClipName(name: string): boolean {
+  return GENERATED_CLIP_NAME.test(name.trim());
+}
+
+/**
+ * Turn the generated filename into a readable timestamp while keeping the
+ * stored name and the file on disk untouched. Custom names pass through.
+ */
+export function formatClipTitle(clip: { display_name: string | null; name: string }): string {
+  const raw = (clip.display_name || clip.name).trim();
+  const match = raw.match(GENERATED_CLIP_NAME);
+  if (!match) return raw;
+  const [, year, month, day, hour, minute, second] = match;
+  return `${year}-${month}-${day} · ${hour}:${minute}:${second}`;
+}
+
 export function sourceLabel(source: string): string {
   if (source === "replay") return "Replay";
   if (source === "recording") return "Recording";
