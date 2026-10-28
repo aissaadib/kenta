@@ -31,6 +31,50 @@ const TRAY_RECORD: &str = "tray-toggle-recording";
 const TRAY_FOLDER: &str = "tray-open-folder";
 const TRAY_QUIT: &str = "tray-quit";
 
+#[cfg(windows)]
+fn apply_window_theme(window: &tauri::WebviewWindow) {
+  use windows_sys::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+    DWMWA_USE_IMMERSIVE_DARK_MODE,
+  };
+
+  let Ok(hwnd) = window.hwnd() else { return; };
+  let hwnd = hwnd.0 as *mut core::ffi::c_void;
+
+  // COLORREF is 0x00BBGGRR.
+  let caption: u32 = 0x0012_0e0b; // #0b0e12
+  let text: u32 = 0x00f5_f1ed; // #edf1f5
+  let border: u32 = 0x0035_2d26; // #262d35
+  let dark: i32 = 1;
+
+  unsafe {
+    let _ = DwmSetWindowAttribute(
+      hwnd,
+      DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+      &dark as *const _ as *const _,
+      std::mem::size_of::<i32>() as u32,
+    );
+    let _ = DwmSetWindowAttribute(
+      hwnd,
+      DWMWA_CAPTION_COLOR as u32,
+      &caption as *const _ as *const _,
+      4,
+    );
+    let _ = DwmSetWindowAttribute(
+      hwnd,
+      DWMWA_TEXT_COLOR as u32,
+      &text as *const _ as *const _,
+      4,
+    );
+    let _ = DwmSetWindowAttribute(
+      hwnd,
+      DWMWA_BORDER_COLOR as u32,
+      &border as *const _ as *const _,
+      4,
+    );
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // One capture pipeline per machine. A second launch focuses the running
@@ -83,6 +127,10 @@ pub fn run() {
     ])
     .setup(|app| {
       let handle = app.handle().clone();
+      #[cfg(windows)]
+      if let Some(window) = app.get_webview_window("main") {
+        apply_window_theme(&window);
+      }
       initialise(&handle)?;
       build_tray(app)?;
       worker::start(handle);
