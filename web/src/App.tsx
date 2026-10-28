@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
+  ArrowLeft,
   Clapperboard,
   Film,
   Gamepad2,
   Loader2,
-  Save,
   Settings2,
-  Square,
-  Circle,
 } from "lucide-react";
 import {
   captureSaveReplay,
@@ -30,19 +28,20 @@ import { CaptureView } from "./views/CaptureView";
 import { ClipsView } from "./views/ClipsView";
 import { EditorView } from "./views/EditorView";
 import { SettingsView } from "./views/SettingsView";
+import { Popover } from "./components/Popover";
 import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
 import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
 
 type View = "capture" | "clips" | "settings";
 
-const NAV: { key: View; label: string; icon: ReactNode; caption: string }[] = [
-  { key: "capture", label: "Capture", icon: <Gamepad2 size={18} />, caption: "Replay buffer" },
-  { key: "clips", label: "Clips", icon: <Film size={18} />, caption: "Your library" },
-  { key: "settings", label: "Settings", icon: <Settings2 size={18} />, caption: "Tune ClipVault" },
+const NAV: { key: View; label: string; icon: ReactNode }[] = [
+  { key: "capture", label: "Capture", icon: <Gamepad2 size={17} /> },
+  { key: "clips", label: "Clips", icon: <Film size={17} /> },
+  { key: "settings", label: "Settings", icon: <Settings2 size={17} /> },
 ];
 
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
-  capture: { title: "Capture", subtitle: "Ready when something worth keeping happens." },
+  capture: { title: "Capture", subtitle: "Replay buffer status and manual recording." },
   clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
   settings: { title: "Settings", subtitle: "Make ClipVault fit your setup." },
 };
@@ -61,6 +60,7 @@ export default function App() {
   const [savingReplay, setSavingReplay] = useState(false);
   const [togglingRecording, setTogglingRecording] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [warningsOpen, setWarningsOpen] = useState(false);
   // The editor is a full-screen mode of the Clips section, not a fourth tab.
   // Holding the id here means exactly one clip is open, and clearing it returns
   // to the library the user came from.
@@ -157,12 +157,21 @@ export default function App() {
     return JSON.stringify(saved) !== JSON.stringify(draft);
   }, [saved, draft]);
 
+  // The content scroller is shared by every section. Reset it after the swap
+  // as well as before it, so a section never reopens at an old offset.
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [view, editingClipId]);
+
   const tone = statusTone(status?.state ?? "Idle");
-  const running = tone === "buffering" || tone === "recording" || tone === "saving";
   const inEditor = editingClipId !== null;
   const heading = inEditor
     ? { title: "Editor", subtitle: "Cut this clip without touching the original." }
     : VIEW_TITLES[view];
+  // One status surface per screen: the Capture hero owns it, Clips and the
+  // editor share the compact sidebar block, and Settings uses its save bar.
+  const showSidebarStatus = view === "clips" && status !== null;
+  const showTopbarWarnings = view === "clips" && (status?.warnings.length ?? 0) > 0;
 
   const refreshStatus = async () => {
     try {
@@ -279,6 +288,7 @@ export default function App() {
   const showView = useCallback((next: View) => {
     // Navigating away closes the editor, which releases its session and player.
     setEditingClipId(null);
+    setWarningsOpen(false);
     // The scroll container is shared, so reset it before swapping content in.
     contentRef.current?.scrollTo({ top: 0 });
     setView(next);
@@ -292,6 +302,7 @@ export default function App() {
       addToast("error", "This clip cannot be edited", "Its file is missing from disk.");
       return;
     }
+    setWarningsOpen(false);
     contentRef.current?.scrollTo({ top: 0 });
     setView("clips");
     setEditingClipId(clip.id);
@@ -329,7 +340,7 @@ export default function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark"><Clapperboard size={19} /></span>
+          <span className="brand-mark"><Clapperboard size={18} /></span>
           <span className="brand-copy">
             <strong>ClipVault</strong>
             <span>Replay studio</span>
@@ -350,107 +361,100 @@ export default function App() {
               aria-current={view === item.key ? "page" : undefined}
             >
               <span className="nav-icon">{item.icon}</span>
-              <span className="nav-copy">
-                <strong>{item.label}</strong>
-                <span>{item.caption}</span>
-              </span>
+              {item.label}
             </button>
           ))}
         </nav>
 
-        <div className={`sidebar-status tone-${tone}`}>
-          <div className="sidebar-status-head">
-            <span className={`status-pill tone-${tone}`}>
-              <span className="status-dot" />
-              {status.state}
-            </span>
-            {status.exporting ? <span className="mini-spinner" /> : null}
-          </div>
-          <div className="sidebar-metric">
-            <span>{tone === "recording" ? "Recording" : "Buffered"}</span>
-            <strong>
-              {tone === "recording"
-                ? formatClock(status.recording_seconds)
-                : formatClock(status.buffered_seconds)}
-            </strong>
-          </div>
-          <div className="sidebar-track">
-            <span
-              style={{
-                transform: `scaleX(${Math.min(
-                  1,
-                  status.buffered_seconds / Math.max(1, status.replay_duration_seconds),
-                )})`,
-              }}
-            />
-          </div>
-          <p className="sidebar-status-foot">
-            {tone === "error"
-              ? "Capture needs attention"
-              : tone === "starting"
-                ? "Starting the replay buffer…"
-                : running
-                  ? `${formatDuration(status.replay_duration_seconds)} ready to save`
-                  : "Buffer is stopped"}
-          </p>
-          {running ? (
-            <div className="sidebar-quick-actions">
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={() => void handleSaveReplay()}
-                disabled={savingReplay || tone === "saving"}
-              >
-                <Save size={14} /> Save
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${tone === "recording" ? "btn-danger" : "btn-ghost"}`}
-                onClick={() => void handleToggleRecording()}
-                disabled={togglingRecording}
-              >
-                {tone === "recording" ? <Square size={12} /> : <Circle size={11} fill="currentColor" />}
-                {tone === "recording" ? "Stop" : "Record"}
-              </button>
+        <div className="sidebar-foot">
+          {showSidebarStatus ? (
+            <div className="sidebar-status" aria-label="Capture status">
+              <div className="sidebar-status-head">
+                <span className={`status-dot tone-${tone}`} />
+                <span className="sidebar-state">{status.state}</span>
+                <strong className="sidebar-time">
+                  {tone === "recording"
+                    ? formatClock(status.recording_seconds)
+                    : formatClock(status.buffered_seconds)}
+                </strong>
+              </div>
+              <div className="sidebar-track" aria-hidden="true">
+                <span
+                  style={{
+                    transform: `scaleX(${Math.min(
+                      1,
+                      status.buffered_seconds / Math.max(1, status.replay_duration_seconds),
+                    )})`,
+                  }}
+                />
+              </div>
             </div>
           ) : null}
+          <p className="sidebar-footnote">Local capture · No cloud uploads</p>
         </div>
-
-        <p className="sidebar-footnote">Local capture · No cloud uploads</p>
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div className="topbar-heading">
+            {inEditor ? (
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={closeEditor}
+                aria-label="Back to the library"
+                title="Back to the library"
+              >
+                <ArrowLeft size={17} />
+              </button>
+            ) : null}
             <h1>{heading.title}</h1>
             <p>{heading.subtitle}</p>
           </div>
           <div className="topbar-actions">
-            {status.warnings.length > 0 ? (
-              <span className="badge badge-warn" title={status.warnings[0]}>
-                <AlertTriangle size={13} /> {status.warnings.length} note
-                {status.warnings.length === 1 ? "" : "s"}
-              </span>
+            {showTopbarWarnings ? (
+              <Popover
+                open={warningsOpen}
+                onOpenChange={setWarningsOpen}
+                role="dialog"
+                label="Capture notes"
+                className="popover-warnings"
+                trigger={(props) => (
+                  <button
+                    {...props}
+                    type="button"
+                    className="icon-btn warnings-button"
+                    data-testid="warnings-button"
+                    aria-label="Capture notes"
+                    title="Capture notes"
+                  >
+                    <AlertTriangle size={16} />
+                    <span className="warning-count" aria-hidden="true">
+                      {status.warnings.length}
+                    </span>
+                  </button>
+                )}
+              >
+                <p className="popover-title">Capture notes</p>
+                <ul className="popover-list">
+                  {status.warnings.map((warning, index) => (
+                    <li key={`${warning}-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+                <div className="popover-foot">
+                  <button type="button" className="btn btn-quiet btn-sm" onClick={openSettings}>
+                    <Settings2 size={13} /> Audio settings
+                  </button>
+                </div>
+              </Popover>
             ) : null}
-            <span className={`topbar-status tone-${tone}`}>
-              <span className="status-dot" />
-              {status.state}
-            </span>
-            <button
-              type="button"
-              className="icon-btn"
-              title="Settings"
-              aria-label="Open settings"
-              onClick={openSettings}
-              onPointerEnter={() => mountView("settings")}
-              onFocus={() => mountView("settings")}
-            >
-              <Settings2 size={17} />
-            </button>
           </div>
         </header>
 
-        <div className="content" ref={contentRef}>
+        <div
+          className={`content ${view === "settings" && !inEditor ? "content-settings" : ""}`}
+          ref={contentRef}
+        >
           {mountedViews.capture ? (
             <div className="view-slot" hidden={inEditor || view !== "capture"}>
               <CaptureView
@@ -480,6 +484,7 @@ export default function App() {
                 active={view === "clips" && !inEditor}
                 onNotify={addToast}
                 onEdit={openEditor}
+                onOpenCapture={() => showView("capture")}
               />
             </div>
           ) : null}
