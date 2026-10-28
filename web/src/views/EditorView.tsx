@@ -1,9 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
   ArrowLeft,
+  AudioLines,
+  Film,
+  Info,
   Loader2,
+  Mic,
   Pause,
   Play,
   Redo2,
@@ -11,6 +23,7 @@ import {
   Scissors,
   Trash2,
   Undo2,
+  Volume2,
   X,
 } from "lucide-react";
 import {
@@ -28,7 +41,8 @@ import {
   type TimelineView,
   type TrackKind,
 } from "../tauri";
-import { formatDuration } from "../format";
+import { formatClipTitle, formatDuration } from "../format";
+import { Popover } from "../components/Popover";
 
 interface Props {
   clipId: string;
@@ -41,9 +55,16 @@ const TRACK_ORDER: TrackKind[] = ["video", "pc", "mic", "mixed"];
 
 const TRACK_LABELS: Record<TrackKind, string> = {
   video: "Video",
-  pc: "PC Audio",
+  pc: "PC audio",
   mic: "Microphone",
   mixed: "Mixed Audio",
+};
+
+const TRACK_ICONS: Record<TrackKind, typeof Film> = {
+  video: Film,
+  pc: Volume2,
+  mic: Mic,
+  mixed: AudioLines,
 };
 
 interface DragState {
@@ -65,10 +86,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function layoutNote(payload: EditorPayload): string | null {
+function audioExplanation(payload: EditorPayload): string | null {
   switch (payload.media.layout.kind) {
     case "mixed":
-      return "This clip was recorded with mixed audio. The original PC and microphone sources cannot be separated, so they are edited together.";
+      return "This clip was recorded with mixed audio. PC and microphone sound are edited together and cannot be separated.";
     case "none":
       return "This clip has no audio track.";
     case "separate":
@@ -88,6 +109,7 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [savedName, setSavedName] = useState<string | null>(null);
+  const [audioOpen, setAudioOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const closeTimer = useRef<number | null>(null);
 
