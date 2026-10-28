@@ -1,17 +1,14 @@
+import { useState } from "react";
 import {
   AlertTriangle,
   Circle,
-  Clock3,
   Cpu,
   FolderOpen,
-  Gauge,
-  HardDrive,
-  Mic,
+  Loader2,
   Play,
   Save,
   Settings2,
   Square,
-  Volume2,
 } from "lucide-react";
 import type { CaptureStatus, Settings } from "../tauri";
 import { formatClock, formatDuration, statusTone } from "../format";
@@ -39,22 +36,43 @@ const TONE_LABEL: Record<string, string> = {
   error: "Needs attention",
 };
 
-function stateDescription(status: CaptureStatus, settings: Settings): string {
+function encoderLabel(status: CaptureStatus, settings: Settings): string {
+  const name = (status.encoder_in_use || settings.encoder || "").toLowerCase();
+  if (name.includes("nvenc")) {
+    if (name.includes("hevc")) return "HEVC (NVENC)";
+    if (name.includes("av1")) return "AV1 (NVENC)";
+    return "H.264 (NVENC)";
+  }
+  if (name.includes("x264")) return "H.264 (x264)";
+  if (name.includes("x265")) return "HEVC (x265)";
+  if (name.includes("qsv")) return "H.264 (QSV)";
+  if (name.includes("amf")) return "H.264 (AMF)";
+  return status.encoder_in_use || settings.encoder || "Not running";
+}
+
+function audioLabel(status: CaptureStatus): string {
+  if (!status.has_audio) return "No audio";
+  const sources = [
+    status.mic_active ? "Mic" : null,
+    status.desktop_audio_active ? "desktop" : null,
+  ].filter(Boolean);
+  return sources.length > 0 ? sources.join(" + ") : "Audio";
+}
+
+function stateLine(status: CaptureStatus): string {
   switch (statusTone(status.state)) {
     case "starting":
-      return "Warming up the encoder and opening the capture device.";
+      return "Starting the encoder…";
     case "buffering":
-      return `The rolling buffer is live. Save the last ${formatDuration(
-        settings.replay_duration_seconds,
-      )} whenever something happens.`;
+      return `The last ${Math.round(status.replay_duration_seconds)} seconds are ready to save.`;
     case "recording":
-      return "Manual recording is running. Stop the recording to save the full session.";
+      return "Recording a full clip. Stop to save it.";
     case "saving":
-      return "ClipVault is finalising your clip. This can take a few seconds.";
+      return "ClipVault is finalising your clip.";
     case "error":
-      return status.message ?? "Capture stopped unexpectedly. Check the details below.";
+      return status.message ?? "Capture stopped unexpectedly.";
     default:
-      return "The replay buffer is off. Start it before you play so the last moments are ready.";
+      return "The buffer is stopped.";
   }
 }
 
@@ -71,6 +89,7 @@ export function CaptureView({
   onOpenFolder,
   onOpenSettings,
 }: Props) {
+  const [allWarnings, setAllWarnings] = useState(false);
   const tone = statusTone(status.state);
   const running = tone === "buffering" || tone === "recording" || tone === "saving";
   const canSave = tone === "buffering" || tone === "recording";
@@ -79,70 +98,61 @@ export function CaptureView({
     0,
     Math.min(100, (status.buffered_seconds / Math.max(1, status.replay_duration_seconds)) * 100),
   );
-  const recordSeconds =
-    tone === "recording" ? status.recording_seconds : 0;
+  const timerValue =
+    tone === "recording" ? status.recording_seconds : status.buffered_seconds;
+  const warnings = status.warnings;
+  const hasWarnings = warnings.length > 0;
 
   return (
     <div className="view capture-view">
-      <section className={`hero-card tone-${tone}`}>
-        <div className="hero-glow" aria-hidden="true" />
-        <div className="hero-topline">
-          <span className={`status-pill tone-${tone}`}>
+      <section className={`capture-stage tone-${tone}`}>
+        <div className="capture-status-row">
+          <span className="status-pill" data-testid="capture-status">
             <span className="status-dot" />
             {TONE_LABEL[tone] ?? status.state}
           </span>
           {status.encoder_fallback ? (
             <span className="badge badge-warn" title={status.fallback_reason ?? undefined}>
-              <Cpu size={13} /> CPU fallback
+              <Cpu size={11} /> CPU fallback
             </span>
           ) : null}
-          {status.exporting ? (
-            <span className="badge badge-info">Finalising clip</span>
-          ) : null}
+          {status.exporting ? <span className="badge badge-info">Finalising clip</span> : null}
+          <span className="capture-meta">
+            {settings.resolution_width}×{settings.resolution_height} · {settings.frame_rate} fps ·{" "}
+            {encoderLabel(status, settings)} · {audioLabel(status)}
+          </span>
         </div>
 
-        <div className="hero-main">
-          <div>
-            <h2>{stateDescription(status, settings)}</h2>
-            <p className="hero-sub">
-              {status.output_dir ? (
-                <>
-                  Saving to <span className="mono">{status.output_dir}</span>
-                </>
-              ) : (
-                "Choose a clip folder in Settings."
-              )}
-            </p>
-          </div>
-          <div className="hero-timer">
-            <span className="hero-timer-label">
+        <div className="capture-main">
+          <div className="capture-timer">
+            <span className="capture-timer-label">
               {tone === "recording" ? "Recording" : "Buffered"}
             </span>
-            <strong>
-              {tone === "recording"
-                ? formatClock(recordSeconds)
-                : formatClock(status.buffered_seconds)}
-            </strong>
-            <span className="hero-timer-window">
+            <strong data-testid="capture-timer">{formatClock(timerValue)}</strong>
+            <span className="capture-timer-window">
               of {formatDuration(status.replay_duration_seconds)} window
             </span>
           </div>
+          <p className="capture-line">{stateLine(status)}</p>
         </div>
 
         <div className="buffer-track" aria-hidden="true">
           <div className="buffer-fill" style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
 
-        <div className="hero-actions">
+        <div className="capture-actions">
           {canSave ? (
             <button
               type="button"
               className="btn btn-primary btn-lg"
+              data-testid="capture-save"
               onClick={onSaveReplay}
               disabled={busy || savingReplay}
             >
-              <Save size={18} />
-              {savingReplay ? "Saving clip…" : `Save last ${formatDuration(status.replay_duration_seconds)}`}
+              {savingReplay ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {savingReplay
+                ? "Saving clip…"
+                : `Save last ${formatDuration(status.replay_duration_seconds)}`}
             </button>
           ) : (
             <button
@@ -151,10 +161,14 @@ export function CaptureView({
               onClick={onStart}
               disabled={busy || tone === "starting"}
             >
-              <Play size={18} />{" "}
+              {busy || tone === "starting" ? (
+                <Loader2 size={16} className="spin" />
+              ) : (
+                <Play size={16} />
+              )}
               {tone === "error"
                 ? "Retry buffer"
-                : tone === "starting"
+                : tone === "starting" || busy
                   ? "Starting…"
                   : "Start buffer"}
             </button>
@@ -164,22 +178,27 @@ export function CaptureView({
             <button
               type="button"
               className={`btn btn-lg ${tone === "recording" ? "btn-danger" : "btn-ghost"}`}
+              data-testid="capture-record"
               onClick={onToggleRecording}
               disabled={busy || togglingRecording}
             >
-              {tone === "recording" ? <Square size={16} /> : <Circle size={14} fill="currentColor" />}
+              {tone === "recording" ? (
+                <Square size={14} />
+              ) : (
+                <Circle size={12} fill="currentColor" />
+              )}
               {tone === "recording" ? "Stop & save recording" : "Start recording"}
             </button>
           ) : null}
 
           {running && tone !== "recording" ? (
-            <button type="button" className="btn btn-ghost btn-lg" onClick={onStop} disabled={busy}>
-              <Square size={15} /> Stop buffer
+            <button type="button" className="btn btn-quiet btn-lg" onClick={onStop} disabled={busy}>
+              <Square size={13} /> Stop buffer
             </button>
           ) : null}
 
           <button type="button" className="btn btn-quiet btn-lg" onClick={onOpenFolder}>
-            <FolderOpen size={17} /> Clips folder
+            <FolderOpen size={15} /> Clips folder
           </button>
         </div>
 
@@ -193,98 +212,52 @@ export function CaptureView({
             Start / stop recording
           </span>
           <button type="button" className="link-btn" onClick={onOpenSettings}>
-            <Settings2 size={14} /> Change shortcuts
+            <Settings2 size={13} /> Change shortcuts
           </button>
         </div>
       </section>
 
-      <section className="stat-grid">
-        <article className="stat-card">
-          <span className="stat-icon"><Clock3 size={17} /></span>
-          <span className="stat-label">Replay window</span>
-          <strong>{formatDuration(status.replay_duration_seconds)}</strong>
-          <span className="stat-foot">
-            {status.segment_count} segment{status.segment_count === 1 ? "" : "s"} buffered
-          </span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-icon"><Gauge size={17} /></span>
-          <span className="stat-label">Encoder</span>
-          <strong>{status.encoder_in_use || "Not running"}</strong>
-          <span className="stat-foot">
-            {status.encoder_fallback
-              ? `Fallback from ${status.encoder_requested}`
-              : "Requested encoder active"}
-          </span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-icon"><HardDrive size={17} /></span>
-          <span className="stat-label">Quality</span>
-          <strong>
-            {settings.resolution_width} × {settings.resolution_height}
-          </strong>
-          <span className="stat-foot">
-            {settings.frame_rate} fps · {settings.bitrate_kbps.toLocaleString()} kbps
-          </span>
-        </article>
-        <article className="stat-card">
-          <span className="stat-icon">
-            {status.has_audio ? <Volume2 size={17} /> : <Mic size={17} />}
-          </span>
-          <span className="stat-label">Audio</span>
-          <strong>{status.has_audio ? "Captured" : "Off"}</strong>
-          <span className="stat-foot">
-            {[status.mic_active ? "Microphone" : null, status.desktop_audio_active ? "Desktop" : null]
-              .filter(Boolean)
-              .join(" + ") || "No audio sources"}
-          </span>
-        </article>
-      </section>
-
-      {status.warnings.length > 0 ? (
-        <section className="notice-card notice-warn">
-          <div className="notice-heading">
-            <AlertTriangle size={17} />
-            <strong>Capture notes</strong>
+      {hasWarnings ? (
+        <section className="notice notice-warn" aria-label="Capture notes">
+          <AlertTriangle size={16} />
+          <div className="notice-copy">
+            {allWarnings ? (
+              <ul>
+                {warnings.map((warning, index) => (
+                  <li key={`${warning}-${index}`}>{warning}</li>
+                ))}
+              </ul>
+            ) : (
+              <span>{warnings[0]}</span>
+            )}
           </div>
-          <ul>
-            {status.warnings.map((warning, index) => (
-              <li key={`${warning}-${index}`}>{warning}</li>
-            ))}
-          </ul>
+          <div className="notice-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>
+              Audio settings
+            </button>
+            {warnings.length > 1 ? (
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                aria-expanded={allWarnings}
+                onClick={() => setAllWarnings((value) => !value)}
+              >
+                {allWarnings ? "Show less" : `+${warnings.length - 1} more`}
+              </button>
+            ) : null}
+          </div>
         </section>
       ) : null}
 
       {tone === "error" && status.message ? (
-        <section className="notice-card notice-error">
-          <div className="notice-heading">
-            <AlertTriangle size={17} />
+        <section className="notice notice-error" aria-label="Capture error">
+          <AlertTriangle size={16} />
+          <div className="notice-copy">
             <strong>Capture error</strong>
+            <span>{status.message}</span>
           </div>
-          <p>{status.message}</p>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>
-            <Settings2 size={14} /> Review capture settings
-          </button>
         </section>
       ) : null}
-
-      <section className="tip-row">
-        <div className="tip-card">
-          <strong>Replay-first by design</strong>
-          <p>
-            ClipVault writes short local MP4 segments and keeps only your chosen window on disk.
-            Saving stitches the exact segments together without re-encoding, so it is fast and
-            lossless.
-          </p>
-        </div>
-        <div className="tip-card">
-          <strong>Record longer moments</strong>
-          <p>
-            Start a recording when a match begins, then stop it to save everything from that point.
-            The replay buffer restarts automatically.
-          </p>
-        </div>
-      </section>
     </div>
   );
 }
