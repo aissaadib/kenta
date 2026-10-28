@@ -7,6 +7,7 @@ import {
   Film,
   FolderOpen,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Play,
   RefreshCw,
@@ -25,7 +26,16 @@ import {
   renameClip,
   type ClipListItem,
 } from "../tauri";
-import { formatBytes, formatDate, formatDuration, formatRelative, sourceLabel } from "../format";
+import {
+  formatBytes,
+  formatClipTitle,
+  formatDate,
+  formatDuration,
+  formatRelative,
+  isGeneratedClipName,
+  sourceLabel,
+} from "../format";
+import { Popover } from "../components/Popover";
 
 interface Props {
   refreshToken: number;
@@ -34,6 +44,8 @@ interface Props {
   onNotify: (kind: "success" | "error" | "info", title: string, message?: string) => void;
   /** Open the editor for one saved clip. Only saved clips can be edited. */
   onEdit: (clip: ClipListItem) => void;
+  /** Leave the library for the Capture screen. */
+  onOpenCapture: () => void;
 }
 
 type SortKey = "date" | "oldest" | "name" | "size" | "duration";
@@ -46,7 +58,7 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "duration", label: "Longest first" },
 ];
 
-function ClipsViewImpl({ refreshToken, active, onNotify, onEdit }: Props) {
+function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }: Props) {
   const [clips, setClips] = useState<ClipListItem[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date");
@@ -54,6 +66,7 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<ClipListItem | null>(null);
+  const [menuClipId, setMenuClipId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<ClipListItem | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -65,7 +78,10 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit }: Props) {
   useEffect(() => {
     // The preview holds an autoplaying <video>. Hiding the section would leave
     // it playing behind another view, so close it on the way out.
-    if (!active) setPreview(null);
+    if (!active) {
+      setPreview(null);
+      setMenuClipId(null);
+    }
   }, [active]);
 
   useEffect(() => {
@@ -142,6 +158,26 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit }: Props) {
   const refresh = () => {
     setLoading(true);
     setLocalRefresh((value) => value + 1);
+  };
+
+  const openFolder = () =>
+    openFileLocation("").catch((reason) =>
+      onNotify("error", "Could not open folder", String(reason)),
+    );
+
+  const playInPlayer = (clip: ClipListItem) =>
+    openInPlayer(clip.id).catch((reason) =>
+      onNotify("error", "Could not play clip", String(reason)),
+    );
+
+  const showInFolder = (clip: ClipListItem) =>
+    openFileLocation(clip.path).catch((reason) =>
+      onNotify("error", "Could not open location", String(reason)),
+    );
+
+  const startRename = (clip: ClipListItem) => {
+    setRenaming(clip);
+    setRenameValue(clip.display_name || clip.name);
   };
 
   const handleRename = async () => {
