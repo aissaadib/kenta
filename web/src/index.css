@@ -835,31 +835,47 @@ a {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 0 11px;
+  gap: 8px;
+  min-width: 240px;
+  height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
+  border-radius: 6px;
+  background: var(--bg-soft);
   color: var(--muted);
 }
 
 .search-field:focus-within {
   border-color: var(--accent-strong);
-  box-shadow: 0 0 0 3px rgba(245, 255, 46, 0.1);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .search-field input {
   flex: 1;
   min-width: 0;
-  height: 38px;
+  height: 100%;
   border: 0;
   background: transparent;
+  color: var(--text);
   outline: none;
+  font-size: 12.5px;
 }
 
 .search-field input::placeholder {
   color: var(--faint);
+}
+
+.search-field .icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.library-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .select-wrap {
@@ -871,12 +887,13 @@ a {
 
 .select-wrap select {
   width: 100%;
-  height: 38px;
-  padding: 0 32px 0 11px;
+  height: 34px;
+  padding: 0 30px 0 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
+  border-radius: 6px;
+  background: var(--bg-soft);
   color: var(--text-soft);
+  font-size: 12.5px;
   outline: none;
   appearance: none;
   cursor: pointer;
@@ -888,17 +905,17 @@ a {
 
 .select-wrap select:focus {
   border-color: var(--accent-strong);
-  box-shadow: 0 0 0 3px rgba(245, 255, 46, 0.1);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .select-wrap select:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .select-chevron {
   position: absolute;
-  right: 10px;
+  right: 9px;
   pointer-events: none;
   color: var(--muted);
 }
@@ -910,26 +927,25 @@ a {
 
 .clip-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
 }
 
 .clip-card {
-  overflow: hidden;
+  min-width: 0;
+  overflow: visible;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 8px;
   background: var(--panel);
-  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+  transition: border-color 120ms var(--ease);
 }
 
 .clip-card:hover {
   border-color: var(--border-strong);
-  transform: translateY(-1px);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
 }
 
 .clip-card.is-missing {
-  opacity: 0.7;
+  opacity: 0.55;
 }
 
 .clip-thumb {
@@ -939,6 +955,7 @@ a {
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 0;
+  border-radius: 7px 7px 0 0;
   background: #080a0d;
 }
 
@@ -946,11 +963,6 @@ a {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.3s ease;
-}
-
-.clip-card:hover .clip-thumb img {
-  transform: scale(1.03);
 }
 
 .thumb-placeholder {
@@ -959,7 +971,7 @@ a {
   display: grid;
   place-items: center;
   color: var(--faint);
-  background: linear-gradient(145deg, #12171d, #0a0d11);
+  background: #0a0d11;
 }
 
 .thumb-play {
