@@ -1237,42 +1237,81 @@ a {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 320px;
-  padding: 36px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.012);
+  max-width: 360px;
+  margin: 40px auto;
+  padding: 24px;
   color: var(--muted);
   text-align: center;
 }
 
+.empty-state > svg {
+  color: var(--faint);
+}
+
 .empty-state strong {
   color: var(--text);
-  font-size: 15px;
+  font-size: 14px;
+  font-weight: 650;
 }
 
 .empty-state p {
-  max-width: 430px;
   font-size: 12.5px;
 }
 
 .empty-state .btn {
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
-.empty-icon {
-  width: 58px;
-  height: 58px;
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.skeleton-grid {
   display: grid;
-  place-items: center;
-  margin-bottom: 4px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--panel);
-  color: var(--accent);
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
 }
 
-/* ------------------------------------------------------------------ modal */
+.skeleton-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.skeleton-thumb {
+  aspect-ratio: 16 / 9;
+  background: var(--panel-raised);
+}
+
+.skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 12px 14px;
+}
+
+.skeleton-line {
+  height: 8px;
+  border-radius: 2px;
+  background: var(--panel-raised);
+}
+
+.skeleton-line.is-short {
+  width: 55%;
+}
+
+.skeleton-caption {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ----------------------------------------------------------------- modal */
 
 .modal-overlay {
   position: fixed;
@@ -1282,9 +1321,8 @@ a {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(4, 6, 8, 0.66);
-  backdrop-filter: blur(7px);
-  animation: fade-in 0.16s ease both;
+  background: rgba(4, 5, 7, 0.72);
+  animation: fade-in 160ms var(--ease) both;
 }
 
 @keyframes fade-in {
@@ -1301,22 +1339,22 @@ a {
   max-width: 100%;
   max-height: 88vh;
   overflow-y: auto;
-  padding: 20px;
+  padding: 18px;
   border: 1px solid var(--border-strong);
-  border-radius: 16px;
-  background: var(--panel-raised);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
-  animation: modal-in 0.18s ease both;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  animation: modal-in 180ms var(--ease) both;
 }
 
 .modal-wide {
-  width: min(860px, 100%);
+  width: min(720px, 100%);
 }
 
 @keyframes modal-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.99);
+    transform: translateY(4px) scale(0.99);
   }
   to {
     opacity: 1;
@@ -1329,19 +1367,19 @@ a {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .modal-head h2 {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 650;
-  letter-spacing: -0.25px;
+  letter-spacing: -0.2px;
 }
 
 .modal-sub {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .modal-body {
@@ -1355,16 +1393,21 @@ a {
 
 .modal-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.modal-actions .btn-danger {
+  margin-left: auto;
 }
 
 .preview-video {
   width: 100%;
   max-height: 62vh;
-  border-radius: 10px;
+  border-radius: 6px;
   background: #000;
 }
 
@@ -1372,14 +1415,14 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 26px;
-  border-radius: 10px;
+  padding: 22px;
+  border-radius: 6px;
   background: var(--danger-soft);
   color: var(--danger);
   font-size: 13px;
 }
 
-/* ------------------------------------------------------------------ toasts */
+/* ---------------------------------------------------------------- toasts */
 
 .toast-stack {
   position: fixed;
@@ -1388,30 +1431,31 @@ a {
   z-index: 200;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  width: min(390px, calc(100vw - 40px));
+  gap: 8px;
+  width: min(380px, calc(100vw - 40px));
 }
 
 .toast {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 12px 12px 12px 13px;
+  gap: 9px;
+  padding: 10px 10px 10px 12px;
   border: 1px solid var(--border-strong);
-  border-radius: 12px;
+  border-left-width: 2px;
+  border-radius: 8px;
   background: var(--panel-raised);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
-  animation: toast-in 0.22s ease both;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  animation: toast-in 160ms var(--ease) both;
 }
 
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateX(14px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
   }
 }
 
