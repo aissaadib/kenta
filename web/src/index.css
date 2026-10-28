@@ -980,112 +980,256 @@ a {
   display: grid;
   place-items: center;
   color: #fff;
-  background: rgba(4, 8, 10, 0.32);
+  background: rgba(0, 0, 0, 0.28);
   opacity: 0;
-  transition: opacity 0.16s ease;
+  transition: opacity 120ms var(--ease);
 }
 
-.clip-card:hover .thumb-play {
+.clip-card:hover .thumb-play,
+.clip-thumb:focus-visible .thumb-play {
   opacity: 1;
 }
 
 .thumb-duration {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
-  padding: 2px 6px;
-  border-radius: 5px;
+  right: 7px;
+  bottom: 7px;
+  padding: 2px 5px;
+  border-radius: 4px;
   background: rgba(0, 0, 0, 0.72);
   color: #fff;
   font-family: var(--mono);
   font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.thumb-source {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text-soft);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .thumb-missing {
   position: absolute;
-  top: 8px;
-  left: 8px;
-  padding: 3px 7px;
-  border-radius: 5px;
-  background: rgba(251, 113, 133, 0.9);
-  color: #2b0610;
-  font-size: 10px;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--danger);
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(8, 9, 12, 0.55);
 }
 
 .clip-body {
-  padding: 12px 13px 13px;
-}
-
-.clip-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  padding: 10px 12px 12px;
 }
 
 .clip-title-row h3 {
-  flex: 1;
-  min-width: 0;
   overflow: hidden;
-  font-size: 13.5px;
+  color: var(--text);
+  font-size: 13px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.source-badge {
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+.clip-title-row h3.is-generated {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.clip-meta {
+  margin-top: 3px;
+  overflow: hidden;
   color: var(--muted);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.source-replay {
-  color: var(--accent);
-  border-color: rgba(245, 255, 46, 0.3);
-  background: var(--accent-soft);
-}
-
-.source-recording {
-  color: var(--danger);
-  border-color: rgba(251, 113, 133, 0.3);
-  background: var(--danger-soft);
-}
-
-.clip-meta,
-.clip-specs {
-  margin-top: 4px;
-  color: var(--faint);
-  font-size: 11px;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .clip-specs {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .spec-audio {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  color: var(--muted);
+  color: var(--faint);
 }
 
 .clip-actions {
   display: flex;
-  gap: 2px;
-  margin-top: 9px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--divider);
 }
 
-/* -------------------------------------------------------------- empty state */
+.clip-actions .btn {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11.5px;
+}
+
+/* ------------------------------------------------------------- popovers */
+
+.popover-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel-raised);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  animation: popover-in 160ms var(--ease) both;
+}
+
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.popover-warnings {
+  width: 320px;
+  padding: 10px;
+}
+
+.popover-audio {
+  width: 320px;
+  padding: 10px 12px;
+}
+
+.popover-menu {
+  width: 180px;
+}
+
+.popover-title {
+  padding: 2px 4px 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 15px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.popover-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--divider);
+}
+
+.popover-copy {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--divider);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.menu-item:disabled {
+  opacity: 0.4;
+}
+
+.menu-item.is-danger {
+  color: var(--danger);
+}
+
+.menu-item.is-danger:hover:not(:disabled),
+.menu-item.is-danger:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.warnings-button {
+  position: relative;
+}
+
+.warning-count {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--warn);
+  color: #1c1403;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* --------------------------------------------------------- empty states */
 
 .empty-state {
   display: flex;
