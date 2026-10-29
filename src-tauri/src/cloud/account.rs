@@ -77,6 +77,10 @@ impl AccountManager {
   pub fn production(storage: Arc<Mutex<Option<Storage>>>) -> Self {
     let (config, config_error) = match config::load() {
       Ok(config) => (Some(config), None),
+      // A missing file is the normal state on a fresh install, so the section
+      // shows the actionable setup hint instead of a dead end. A malformed
+      // file keeps its specific complaint.
+      Err(config::ConfigError::Missing) => (None, None),
       Err(error) => (None, Some(error.message())),
     };
     Self::with(
