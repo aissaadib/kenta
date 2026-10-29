@@ -401,6 +401,12 @@ impl AccountManager {
   pub fn storage(&self) -> Arc<Mutex<Option<Storage>>> {
     Arc::clone(&self.storage)
   }
+
+  /// The transport the upload worker uses. Exposed so both share the same
+  /// connection pool and test transport.
+  pub fn drive_http(&self) -> Arc<dyn HttpTransport> {
+    Arc::clone(&self.drive_http)
+  }
 }
 
 #[cfg(test)]
