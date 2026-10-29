@@ -781,7 +781,7 @@ mod tests {
     let form = &seen[0].1;
     assert!(form.iter().any(|(key, value)| key == "code_verifier" && value == "verifier-1"));
     assert!(form.iter().any(|(key, value)| key == "grant_type" && value == "authorization_code"));
-    assert!(form.iter().any(|(key, value)| key == "redirect_uri"));
+    assert!(form.iter().any(|(key, _)| key == "redirect_uri"));
   }
 
   #[test]
