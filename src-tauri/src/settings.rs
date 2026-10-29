@@ -52,6 +52,9 @@ pub struct Settings {
   pub voice_min_confidence: u8,
   /// Seconds during which repeat triggers are ignored after a save.
   pub voice_cooldown_seconds: u32,
+  /// Upload every new clip to Google Drive. Off by default: connecting an
+  /// account must never silently upload the existing library.
+  pub drive_auto_upload: bool,
 }
 
 impl Default for Settings {
@@ -88,6 +91,7 @@ impl Default for Settings {
       voice_clip_seconds: 30,
       voice_min_confidence: 60,
       voice_cooldown_seconds: 5,
+      drive_auto_upload: false,
     }
   }
 }
@@ -519,6 +523,22 @@ mod tests {
     .unwrap();
     assert!(settings.confirmation_sound_enabled);
     assert_eq!(settings.confirmation_sound_volume, 70);
+  }
+
+  #[test]
+  fn drive_auto_upload_is_off_by_default() {
+    let settings = Settings::default();
+    assert!(
+      !settings.drive_auto_upload,
+      "connecting Drive must not upload the existing library"
+    );
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn older_settings_files_without_drive_auto_upload_still_load() {
+    let settings: Settings = serde_json::from_str(r#"{"replay_duration_seconds": 90}"#).unwrap();
+    assert!(!settings.drive_auto_upload);
   }
 
   #[test]
