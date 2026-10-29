@@ -2027,6 +2027,12 @@ button.clip-upload:focus-visible {
   text-overflow: ellipsis;
 }
 
+/* The auto-upload switch follows a setup note; without this the note and the
+   switch label sit on top of each other. */
+.settings-body > .inline-note + .switch-row {
+  margin-top: 8px;
+}
+
 .voice-test {
   display: flex;
   align-items: flex-start;
