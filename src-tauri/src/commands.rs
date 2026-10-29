@@ -1435,6 +1435,8 @@ fn unavailable_status(auto_upload: bool) -> DriveStatus {
       "The clip library is unavailable, so Google Drive is disabled for this session.".into(),
     ),
     error: None,
+    active_uploads: 0,
+    failed_uploads: 0,
   }
 }
 

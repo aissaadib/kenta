@@ -9,7 +9,7 @@ use crate::cloud::oauth::{
   self, Authorizer, BrowserAuthorizer, OAuthError, OAuthHttp, TokenCache, UreqHttp,
 };
 use crate::cloud::secrets::{CredentialStore, TokenStore};
-use crate::storage::{CloudAccount, Storage};
+use crate::storage::{CloudAccount, Storage, UploadStatus};
 use chrono::Utc;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +27,10 @@ pub struct DriveStatus {
   pub auto_upload: bool,
   pub setup_hint: Option<String>,
   pub error: Option<String>,
+  /// Clips queued or in flight for this account.
+  pub active_uploads: u32,
+  /// Clips whose last attempt failed. The user can retry each one.
+  pub failed_uploads: u32,
 }
 
 impl DriveStatus {
@@ -39,6 +43,8 @@ impl DriveStatus {
       auto_upload: false,
       setup_hint: None,
       error: None,
+      active_uploads: 0,
+      failed_uploads: 0,
     }
   }
 }
@@ -195,6 +201,21 @@ impl AccountManager {
       .map(|id| format!("{FOLDER_URL}/{id}"));
     status.auto_upload = auto_upload;
     status.error = self.last_error.lock().ok().and_then(|error| error.clone());
+    // The section shows "uploading" and "failed" without asking the webview to
+    // poll every clip: two counters are enough.
+    if let Ok(guard) = self.storage.lock() {
+      if let Some(storage) = guard.as_ref() {
+        if let Ok(rows) = storage.list_uploads(&active.id) {
+          for row in rows {
+            if row.status.is_unfinished() {
+              status.active_uploads += 1;
+            } else if row.status == UploadStatus::Failed {
+              status.failed_uploads += 1;
+            }
+          }
+        }
+      }
+    }
     status
   }
 
@@ -534,6 +555,33 @@ mod tests {
       // Revocation is a no-op in these tests.
       Ok((200, "{}".into())),
     ]
+  }
+
+  #[test]
+  fn the_status_counts_active_and_failed_uploads() {
+    let (manager, _store) = manager(
+      storage(),
+      connect_responses("google-1"),
+      vec![
+        response(200, r#"{"files":[]}"#),
+        response(200, r#"{"id":"folder-1"}"#),
+      ],
+    );
+    manager.connect().unwrap();
+    {
+      let storage = manager.storage();
+      let guard = storage.lock().unwrap();
+      let storage = guard.as_ref().unwrap();
+      let mut uploading = crate::storage::CloudUpload::new("clip-1", "google-1", 10);
+      uploading.status = UploadStatus::Uploading;
+      storage.upsert_upload(&uploading).unwrap();
+      let mut failed = crate::storage::CloudUpload::new("clip-2", "google-1", 10);
+      failed.status = UploadStatus::Failed;
+      storage.upsert_upload(&failed).unwrap();
+    }
+    let status = manager.status(false);
+    assert_eq!(status.active_uploads, 1);
+    assert_eq!(status.failed_uploads, 1);
   }
 
   #[test]
