@@ -25,6 +25,7 @@ import {
   deleteClip,
   fileSrc,
   generateThumbnail,
+  getGoogleDriveStatus,
   listClips,
   openFileLocation,
   openGoogleDrive,
@@ -34,6 +35,7 @@ import {
   uploadClipToGoogleDrive,
   type ClipListItem,
   type ClipUploadStatus,
+  type DriveStatus,
   type DriveUploadEvent,
 } from "../tauri";
 import {
@@ -133,6 +135,34 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
   const [localRefresh, setLocalRefresh] = useState(0);
   const requestedThumbnails = useRef<Set<string>>(new Set());
   const [uploadBusy, setUploadBusy] = useState<string | null>(null);
+  // Drive actions only make sense once an account is connected. Without this,
+  // the menu would offer an upload that can only fail with "connect first".
+  const [driveConnected, setDriveConnected] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: UnlistenFn | undefined;
+    const apply = (status: DriveStatus) => {
+      if (!cancelled) setDriveConnected(status.state === "connected");
+    };
+    getGoogleDriveStatus()
+      .then(apply)
+      .catch(() => {
+        // A missing library already disables Drive on the Rust side.
+      });
+    listen<DriveStatus>("drive-status", (event) => apply(event.payload))
+      .then((stop) => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {
+        // The initial read is enough if events are unavailable.
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     // The preview holds an autoplaying <video>. Hiding the section would leave
@@ -641,58 +671,62 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
                         <FolderOpen size={14} /> Show in folder
                       </button>
                       <div className="menu-separator" role="separator" />
-                      {uploadActive ? (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="menu-item"
-                          onClick={() => {
-                            closeMenu();
-                            void cancelUpload(clip);
-                          }}
-                        >
-                          <X size={14} /> Cancel Google Drive upload
-                        </button>
-                      ) : upload?.status === "uploaded" ? (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="menu-item"
-                          onClick={() => {
-                            closeMenu();
-                            void openRemote(clip);
-                          }}
-                        >
-                          <Cloud size={14} /> Open in Google Drive
-                        </button>
-                      ) : upload?.status === "failed" ? (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="menu-item"
-                          disabled={uploadBusy === clip.id}
-                          onClick={() => {
-                            closeMenu();
-                            void retryUpload(clip);
-                          }}
-                        >
-                          <CloudUpload size={14} /> Retry Google Drive upload
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="menu-item"
-                          disabled={!clip.exists || uploadBusy === clip.id}
-                          onClick={() => {
-                            closeMenu();
-                            void uploadClip(clip);
-                          }}
-                        >
-                          <CloudUpload size={14} /> Upload to Google Drive
-                        </button>
-                      )}
-                      <div className="menu-separator" role="separator" />
+                      {driveConnected ? (
+                        <>
+                          {uploadActive ? (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="menu-item"
+                              onClick={() => {
+                                closeMenu();
+                                void cancelUpload(clip);
+                              }}
+                            >
+                              <X size={14} /> Cancel Google Drive upload
+                            </button>
+                          ) : upload?.status === "uploaded" ? (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="menu-item"
+                              onClick={() => {
+                                closeMenu();
+                                void openRemote(clip);
+                              }}
+                            >
+                              <Cloud size={14} /> Open in Google Drive
+                            </button>
+                          ) : upload?.status === "failed" ? (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="menu-item"
+                              disabled={uploadBusy === clip.id}
+                              onClick={() => {
+                                closeMenu();
+                                void retryUpload(clip);
+                              }}
+                            >
+                              <CloudUpload size={14} /> Retry Google Drive upload
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="menu-item"
+                              disabled={!clip.exists || uploadBusy === clip.id}
+                              onClick={() => {
+                                closeMenu();
+                                void uploadClip(clip);
+                              }}
+                            >
+                              <CloudUpload size={14} /> Upload to Google Drive
+                            </button>
+                          )}
+                          <div className="menu-separator" role="separator" />
+                        </>
+                      ) : null}
                       <button
                         type="button"
                         role="menuitem"
