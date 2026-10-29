@@ -1,8 +1,12 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
   AudioLines,
   Clapperboard,
+  Cloud,
+  CloudOff,
+  CloudUpload,
   ExternalLink,
   Film,
   FolderOpen,
@@ -17,14 +21,20 @@ import {
   X,
 } from "lucide-react";
 import {
+  cancelDriveUpload,
   deleteClip,
   fileSrc,
   generateThumbnail,
   listClips,
   openFileLocation,
+  openGoogleDrive,
   openInPlayer,
   renameClip,
+  retryDriveUpload,
+  uploadClipToGoogleDrive,
   type ClipListItem,
+  type ClipUploadStatus,
+  type DriveUploadEvent,
 } from "../tauri";
 import {
   formatBytes,
@@ -58,8 +68,56 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "duration", label: "Longest first" },
 ];
 
-function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }: Props) {
-  const [clips, setClips] = useState<ClipListItem[]>([]);
+/** A tiny per-clip Drive state. Uploaded clips open in the browser. */
+function ClipUploadBadge({
+  upload,
+  onOpen,
+}: {
+  upload: ClipUploadStatus;
+  onOpen: () => void;
+}) {
+  if (upload.status === "uploaded") {
+    return (
+      <button
+        type="button"
+        className="clip-upload is-uploaded"
+        title="Open this clip in Google Drive"
+        onClick={onOpen}
+      >
+        <Cloud size={11} /> In Google Drive
+      </button>
+    );
+  }
+  const label =
+    upload.status === "queued"
+      ? "Queued for Drive"
+      : upload.status === "uploading"
+        ? `Uploading ${upload.percent}%`
+        : upload.status === "retrying"
+          ? `Retrying ${upload.percent}%`
+          : upload.status === "finalizing"
+            ? "Finishing upload"
+            : upload.status === "failed"
+              ? "Drive upload failed"
+              : "Drive upload cancelled";
+  return (
+    <span
+      className={`clip-upload is-${upload.status}`}
+      title={upload.error ?? undefined}
+    >
+      {upload.status === "failed" ? (
+        <AlertTriangle size={11} />
+      ) : upload.status === "cancelled" ? (
+        <CloudOff size={11} />
+      ) : (
+        <Loader2 size={11} className="spin" />
+      )}
+      {label}
+    </span>
+  );
+}
+
+function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }: Props) {  const [clips, setClips] = useState<ClipListItem[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date");
   const [loading, setLoading] = useState(true);
@@ -74,6 +132,7 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [localRefresh, setLocalRefresh] = useState(0);
   const requestedThumbnails = useRef<Set<string>>(new Set());
+  const [uploadBusy, setUploadBusy] = useState<string | null>(null);
 
   useEffect(() => {
     // The preview holds an autoplaying <video>. Hiding the section would leave
@@ -159,6 +218,97 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
     setLoading(true);
     setLocalRefresh((value) => value + 1);
   };
+
+  // Upload progress arrives as events, so a card updates in place instead of
+  // reloading the whole grid. The status is also persisted in SQLite, which is
+  // what a fresh `listClips` returns after a restart.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: UnlistenFn | undefined;
+    listen<DriveUploadEvent>("drive-upload", (event) => {
+      if (cancelled) return;
+      const update = event.payload;
+      setClips((previous) =>
+        previous.map((clip) =>
+          clip.id === update.clip_id
+            ? {
+                ...clip,
+                upload: {
+                  status: update.status,
+                  percent: update.percent,
+                  error: update.error,
+                  remote_file_id: update.remote_file_id,
+                },
+              }
+            : clip,
+        ),
+      );
+    })
+      .then((stop) => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {
+        // Without events the cards still show the last persisted state.
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const applyUpload = (clipId: string, upload: ClipUploadStatus) => {
+    setClips((previous) =>
+      previous.map((clip) => (clip.id === clipId ? { ...clip, upload } : clip)),
+    );
+  };
+
+  const uploadClip = async (clip: ClipListItem) => {
+    if (uploadBusy) return;
+    setUploadBusy(clip.id);
+    try {
+      const upload = await uploadClipToGoogleDrive(clip.id);
+      applyUpload(clip.id, upload);
+      onNotify("info", "Upload queued", clip.name);
+    } catch (reason) {
+      onNotify("error", "Could not upload clip", String(reason));
+    } finally {
+      setUploadBusy(null);
+    }
+  };
+
+  const retryUpload = async (clip: ClipListItem) => {
+    if (uploadBusy) return;
+    setUploadBusy(clip.id);
+    try {
+      const upload = await retryDriveUpload(clip.id);
+      applyUpload(clip.id, upload);
+      onNotify("info", "Upload queued", clip.name);
+    } catch (reason) {
+      onNotify("error", "Could not retry the upload", String(reason));
+    } finally {
+      setUploadBusy(null);
+    }
+  };
+
+  const cancelUpload = async (clip: ClipListItem) => {
+    try {
+      await cancelDriveUpload(clip.id);
+      applyUpload(clip.id, {
+        status: "cancelled",
+        percent: clip.upload?.percent ?? 0,
+        error: null,
+        remote_file_id: clip.upload?.remote_file_id ?? null,
+      });
+    } catch (reason) {
+      onNotify("error", "Could not cancel the upload", String(reason));
+    }
+  };
+
+  const openRemote = (clip: ClipListItem) =>
+    openGoogleDrive(clip.id).catch((reason) =>
+      onNotify("error", "Could not open Google Drive", String(reason)),
+    );
 
   const openFolder = () =>
     openFileLocation("").catch((reason) =>
@@ -357,6 +507,13 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
             const title = formatClipTitle(clip);
             const generated = isGeneratedClipName(clip.display_name || clip.name);
             const closeMenu = () => setMenuClipId(null);
+            const upload = clip.upload;
+            const uploadActive =
+              upload !== null &&
+              (upload.status === "queued" ||
+                upload.status === "uploading" ||
+                upload.status === "retrying" ||
+                upload.status === "finalizing");
             return (
               <article
                 className={`clip-card ${clip.exists ? "" : "is-missing"}`}
@@ -411,6 +568,14 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
                       </span>
                     ) : null}
                   </p>
+                  {upload ? (
+                    <ClipUploadBadge
+                      upload={upload}
+                      onOpen={() => {
+                        void openRemote(clip);
+                      }}
+                    />
+                  ) : null}
                   <div className="clip-actions">
                     <button
                       type="button"
@@ -475,6 +640,59 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
                       >
                         <FolderOpen size={14} /> Show in folder
                       </button>
+                      <div className="menu-separator" role="separator" />
+                      {uploadActive ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="menu-item"
+                          onClick={() => {
+                            closeMenu();
+                            void cancelUpload(clip);
+                          }}
+                        >
+                          <X size={14} /> Cancel Google Drive upload
+                        </button>
+                      ) : upload?.status === "uploaded" ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="menu-item"
+                          onClick={() => {
+                            closeMenu();
+                            void openRemote(clip);
+                          }}
+                        >
+                          <Cloud size={14} /> Open in Google Drive
+                        </button>
+                      ) : upload?.status === "failed" ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="menu-item"
+                          disabled={uploadBusy === clip.id}
+                          onClick={() => {
+                            closeMenu();
+                            void retryUpload(clip);
+                          }}
+                        >
+                          <CloudUpload size={14} /> Retry Google Drive upload
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="menu-item"
+                          disabled={!clip.exists || uploadBusy === clip.id}
+                          onClick={() => {
+                            closeMenu();
+                            void uploadClip(clip);
+                          }}
+                        >
+                          <CloudUpload size={14} /> Upload to Google Drive
+                        </button>
+                      )}
+                      <div className="menu-separator" role="separator" />
                       <button
                         type="button"
                         role="menuitem"
