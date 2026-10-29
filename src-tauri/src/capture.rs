@@ -826,8 +826,8 @@ pub fn preset_for(encoder: &str, quality: &str) -> &'static str {
   match encoder {
     "libx264" | "libx265" => match quality {
       "performance" => "veryfast",
-      "quality" => "medium",
-      _ => "fast",
+      "quality" => "slow",
+      _ => "medium",
     },
     "h264_nvenc" | "hevc_nvenc" => match quality {
       "performance" => "p3",
@@ -1272,6 +1272,8 @@ mod tests {
   #[test]
   fn maps_quality_presets_per_encoder() {
     assert_eq!(preset_for("libx264", "performance"), "veryfast");
+    assert_eq!(preset_for("libx264", "balanced"), "medium");
+    assert_eq!(preset_for("libx264", "quality"), "slow");
     assert_eq!(preset_for("h264_nvenc", "quality"), "p7");
     assert_eq!(preset_for("h264_amf", "balanced"), "balanced");
   }
