@@ -520,21 +520,63 @@ pub struct ConnectedAccount {
   pub refresh_token: String,
 }
 
-/// Run the full interactive flow. The refresh token is persisted before this
-/// returns, so a caller can treat a success as "credentials are stored".
-pub fn connect(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationCode {
+  pub code: String,
+  pub verifier: String,
+  pub redirect_uri: String,
+}
+
+/// The browser step, separated so tests never open a browser or wait for a
+/// human. Production uses [`BrowserAuthorizer`].
+pub trait Authorizer: Send + Sync {
+  fn authorize(
+    &self,
+    config: &OAuthConfig,
+    cancel: &AtomicBool,
+  ) -> Result<AuthorizationCode, OAuthError>;
+}
+
+pub struct BrowserAuthorizer;
+
+impl Authorizer for BrowserAuthorizer {
+  fn authorize(
+    &self,
+    config: &OAuthConfig,
+    cancel: &AtomicBool,
+  ) -> Result<AuthorizationCode, OAuthError> {
+    let loopback = Loopback::bind()?;
+    let pkce = generate_pkce();
+    let state = generate_state();
+    let url = authorize_url(config, &loopback.redirect_uri, &state, &pkce.challenge);
+    open_browser(&url)?;
+    let code = loopback.wait(&state, DEFAULT_TIMEOUT, cancel)?;
+    Ok(AuthorizationCode {
+      code,
+      verifier: pkce.verifier,
+      redirect_uri: loopback.redirect_uri,
+    })
+  }
+}
+
+/// Run the full interactive flow with the system browser. The refresh token is
+/// persisted before this returns, so a caller can treat a success as
+/// "credentials are stored".
+pub fn connect_with(
   config: &OAuthConfig,
   http: &dyn OAuthHttp,
   store: &dyn TokenStore,
+  authorizer: &dyn Authorizer,
   cancel: &AtomicBool,
 ) -> Result<ConnectedAccount, OAuthError> {
-  let loopback = Loopback::bind()?;
-  let pkce = generate_pkce();
-  let state = generate_state();
-  let url = authorize_url(config, &loopback.redirect_uri, &state, &pkce.challenge);
-  open_browser(&url)?;
-  let code = loopback.wait(&state, DEFAULT_TIMEOUT, cancel)?;
-  let tokens = exchange_code(http, config, &code, &pkce.verifier, &loopback.redirect_uri)?;
+  let authorization = authorizer.authorize(config, cancel)?;
+  let tokens = exchange_code(
+    http,
+    config,
+    &authorization.code,
+    &authorization.verifier,
+    &authorization.redirect_uri,
+  )?;
   let identity = identity_from_id_token(
     tokens
       .id_token
@@ -831,13 +873,46 @@ mod tests {
 
   #[test]
   fn the_flow_persists_the_refresh_token_only_after_consent() {
-    // The browser step is exercised through the loopback listener in the other
-    // tests; here the token store contract is checked against the mock.
+    struct Fixed(Result<AuthorizationCode, OAuthError>);
+    impl Authorizer for Fixed {
+      fn authorize(
+        &self,
+        _config: &OAuthConfig,
+        _cancel: &AtomicBool,
+      ) -> Result<AuthorizationCode, OAuthError> {
+        self.0.clone()
+      }
+    }
+    let cancel = AtomicBool::new(false);
     let store = MemoryStore::default();
-    store.set("google-1", "rt").unwrap();
-    assert!(store.contains("google-1"));
-    store.delete("google-1").unwrap();
-    assert!(!store.contains("google-1"));
+
+    // Denied consent: no exchange, no credential.
+    let denied = Fixed(Err(OAuthError::Denied));
+    let http = ScriptedHttp::new(Vec::new());
+    assert!(matches!(
+      connect_with(&config(), &http, &store, &denied, &cancel),
+      Err(OAuthError::Denied)
+    ));
+    assert!(!store.contains("sub-1"));
+
+    // Successful consent: the refresh token is stored before returning.
+    let granted = Fixed(Ok(AuthorizationCode {
+      code: "code-1".into(),
+      verifier: "verifier-1".into(),
+      redirect_uri: "http://127.0.0.1:1".into(),
+    }));
+    let http = ScriptedHttp::new(vec![(
+      200,
+      format!(
+        r#"{{"access_token":"at","refresh_token":"rt","expires_in":3600,"id_token":"{}"}}"#,
+        id_token(r#"{"sub":"sub-1","email":"a@b.c"}"#)
+      ),
+    )]);
+    let account = connect_with(&config(), &http, &store, &granted, &cancel).unwrap();
+    assert_eq!(account.id, "sub-1");
+    assert_eq!(account.email.as_deref(), Some("a@b.c"));
+    assert_eq!(store.get("sub-1").unwrap().as_deref(), Some("rt"));
+    assert_eq!(http.seen()[0].1.iter().find(|(key, _)| key == "code_verifier").map(|(_, value)| value.as_str()), Some("verifier-1"));
   }
 
   #[test]

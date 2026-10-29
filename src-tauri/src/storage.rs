@@ -169,8 +169,17 @@ impl Storage {
     Ok(storage)
   }
 
-  fn init_schema(&mut self) -> AppResult<()> {
-    self.conn.execute_batch(
+  /// Test-only constructor so account and upload tests can use the real
+  /// schema without touching the user's library file.
+  #[cfg(test)]
+  pub fn in_memory() -> AppResult<Self> {
+    let conn = Connection::open_in_memory()?;
+    let mut storage = Self { conn };
+    storage.init_schema()?;
+    Ok(storage)
+  }
+
+  fn init_schema(&mut self) -> AppResult<()> {    self.conn.execute_batch(
       "CREATE TABLE IF NOT EXISTS clips (
          id TEXT PRIMARY KEY,
          path TEXT NOT NULL UNIQUE,
