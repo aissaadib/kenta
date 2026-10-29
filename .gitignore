@@ -1,0 +1,5 @@
+# Real Google OAuth desktop-client configuration. Never commit this file: it
+# contains the client id of a specific Google Cloud project (and optionally the
+# public client secret). See google-oauth.example.json for the shape.
+google-oauth.json
+google-oauth.local.json

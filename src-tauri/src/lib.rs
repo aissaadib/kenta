@@ -1,6 +1,7 @@
 mod autostart;
 mod buffer;
 mod capture;
+mod cloud;
 mod commands;
 mod editor;
 mod errors;
