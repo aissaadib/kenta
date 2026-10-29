@@ -146,6 +146,8 @@ enum Command {
 pub struct UploadManager {
   sender: Mutex<Sender<Command>>,
   cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+  account: Arc<AccountManager>,
+  storage: Arc<Mutex<Option<Storage>>>,
 }
 
 impl UploadManager {
@@ -158,8 +160,8 @@ impl UploadManager {
     let (sender, receiver) = mpsc::channel();
     let cancels = Arc::new(Mutex::new(HashMap::new()));
     let worker = Worker {
-      account,
-      storage,
+      account: Arc::clone(&account),
+      storage: Arc::clone(&storage),
       events,
       config,
       cancels: Arc::clone(&cancels),
@@ -170,6 +172,38 @@ impl UploadManager {
     Self {
       sender: Mutex::new(sender),
       cancels,
+      account,
+      storage,
+    }
+  }
+
+  /// Re-enqueue the rows a previous run left unfinished. The worker reconciles
+  /// each one against Drive before sending a byte, so a crash or a power cut
+  /// cannot produce a second remote copy.
+  pub fn resume_pending(&self) {
+    let Some(account) = self.account.active() else {
+      return;
+    };
+    let rows = {
+      let guard = match self.storage.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+      };
+      let Some(storage) = guard.as_ref() else {
+        return;
+      };
+      match storage.unfinished_uploads(&account.id) {
+        Ok(rows) => rows,
+        Err(error) => {
+          log::warn!("could not read unfinished Drive uploads: {error}");
+          return;
+        }
+      }
+    };
+    for row in rows {
+      if let Err(error) = self.enqueue(&row.clip_id, &row.account_id) {
+        log::warn!("could not resume the Drive upload for {}: {error}", row.clip_id);
+      }
     }
   }
 
@@ -1301,6 +1335,33 @@ mod tests {
     let row = wait_for(&harness, UploadStatus::Failed);
     assert!(row.error.unwrap().contains("no longer in the library"));
     assert!(script.requests().is_empty());
+  }
+
+  #[test]
+  fn an_interrupted_upload_is_resumed_after_a_restart() {
+    let script = Arc::new(Script::new(vec![
+      json(r#"{"files":[]}"#),
+      json(r#"{"id":"folder-1","trashed":false}"#),
+      json(r#"{"files":[]}"#),
+      Ok(session_response()),
+      json(r#"{"id":"drive-1","name":"clip.mp4","size":"10","mimeType":"video/mp4"}"#),
+    ]));
+    let harness = harness(script.clone(), &[7u8; 10], 16);
+    // What a crash mid-upload leaves behind.
+    seed_upload(&harness, UploadStatus::Uploading, None);
+    harness.manager.resume_pending();
+    let row = wait_for(&harness, UploadStatus::Uploaded);
+    assert_eq!(row.remote_file_id.as_deref(), Some("drive-1"));
+    assert_eq!(row.uploaded_bytes, 10);
+    // The row was reconciled before a session was started.
+    assert_eq!(
+      script
+        .requests()
+        .iter()
+        .filter(|request| request.method == "POST" && request.url.contains("uploadType=resumable"))
+        .count(),
+      1
+    );
   }
 
   #[test]
