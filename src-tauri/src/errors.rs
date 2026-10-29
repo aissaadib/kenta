@@ -12,6 +12,8 @@ pub enum AppError {
   Hotkey(String),
   #[error("ffmpeg error: {0}")]
   Ffmpeg(String),
+  #[error("google drive error: {0}")]
+  Cloud(String),
   #[error("invalid input: {0}")]
   Validation(String),
   #[error("io error: {0}")]
@@ -35,6 +37,7 @@ impl AppError {
       | AppError::Settings(message)
       | AppError::Hotkey(message)
       | AppError::Ffmpeg(message)
+      | AppError::Cloud(message)
       | AppError::Validation(message) => message.clone(),
       AppError::Io(error) => error.to_string(),
       AppError::Sqlite(error) => error.to_string(),
