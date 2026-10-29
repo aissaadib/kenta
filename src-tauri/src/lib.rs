@@ -1,6 +1,7 @@
 mod autostart;
 mod buffer;
 mod capture;
+mod cloud;
 mod commands;
 mod editor;
 mod errors;
@@ -17,10 +18,13 @@ mod voice;
 mod worker;
 
 use capture::{CaptureConfig, CaptureEngine};
+use cloud::account::AccountManager;
+use cloud::uploads::{AppEvents, UploadConfig, UploadManager};
 use commands::AppState;
 use errors::AppError;
 use hotkey::HotkeyManager;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
@@ -124,6 +128,15 @@ pub fn run() {
       commands::editor_export,
       commands::editor_cancel,
       commands::editor_close,
+      commands::get_google_drive_status,
+      commands::connect_google_drive,
+      commands::cancel_google_drive_connect,
+      commands::disconnect_google_drive,
+      commands::upload_clip_to_google_drive,
+      commands::retry_drive_upload,
+      commands::cancel_drive_upload,
+      commands::get_clip_upload_status,
+      commands::open_google_drive,
     ])
     .setup(|app| {
       let handle = app.handle().clone();
@@ -183,6 +196,39 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
       Err(error) => warnings.push(format!(
         "The clip library could not be opened ({error}). Saving clips will be unavailable until ClipVault is restarted."
       )),
+    }
+  }
+
+  // Google Drive is only wired when the library exists: every command resolves
+  // clips through it, and a half-working cloud section would be dishonest.
+  {
+    let state = handle.state::<AppState>();
+    let library_ready = state
+      .storage
+      .lock()
+      .map(|storage| storage.is_some())
+      .unwrap_or(false);
+    if library_ready {
+      let storage = Arc::clone(&state.storage);
+      let account = Arc::new(AccountManager::production(Arc::clone(&storage)));
+      // The refresh token lives in the Credential Manager; this only loads the
+      // row and notices a credential that has since been removed.
+      account.load_active();
+      let uploads = Arc::new(UploadManager::start(
+        Arc::clone(&account),
+        storage,
+        Arc::new(AppEvents::new(handle.clone())),
+        UploadConfig::default(),
+      ));
+      // A previous run may have been interrupted mid-upload. Each row is
+      // reconciled against Drive before a byte is resent.
+      uploads.resume_pending();
+      if let Ok(mut drive) = state.drive.lock() {
+        *drive = Some(account);
+      }
+      if let Ok(mut slot) = state.uploads.lock() {
+        *slot = Some(uploads);
+      }
     }
   }
 
@@ -366,6 +412,13 @@ pub fn shutdown(app: &AppHandle) {
   let state = app.state::<AppState>();
   state.exporting.store(false, Ordering::SeqCst);
   commands::stop_voice(&state);
+  // Stop the upload worker at its next chunk boundary. The status rows stay
+  // queued so the next launch reconciles them instead of losing the work.
+  if let Ok(uploads) = state.uploads.lock() {
+    if let Some(uploads) = uploads.as_ref() {
+      uploads.shutdown();
+    }
+  }
   // A startup capture that is still waiting for its first segment has no engine
   // in `capture` yet. Wait for it, otherwise the process would exit with its
   // FFmpeg child still recording into the temp directory.

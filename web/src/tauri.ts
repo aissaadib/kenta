@@ -19,6 +19,25 @@ export interface CaptureStatus {
   exporting: boolean;
 }
 
+export interface ClipUploadStatus {
+  status: "queued" | "uploading" | "retrying" | "finalizing" | "uploaded" | "failed" | "cancelled";
+  percent: number;
+  error: string | null;
+  remote_file_id: string | null;
+}
+
+/** The `drive-upload` event the worker emits while a clip moves. */
+export interface DriveUploadEvent {
+  clip_id: string;
+  account_id: string;
+  status: ClipUploadStatus["status"];
+  uploaded_bytes: number;
+  total_bytes: number;
+  percent: number;
+  error: string | null;
+  remote_file_id: string | null;
+}
+
 export interface ClipListItem {
   id: string;
   name: string;
@@ -34,6 +53,8 @@ export interface ClipListItem {
   frame_rate: number;
   thumbnail: string | null;
   exists: boolean;
+  /** The connected account's upload state, when this clip has one. */
+  upload: ClipUploadStatus | null;
 }
 
 export interface Settings {
@@ -72,6 +93,24 @@ export interface Settings {
   /** 0..100. Recognitions below this are ignored. */
   voice_min_confidence: number;
   voice_cooldown_seconds: number;
+  /** Upload every new clip to Google Drive. Off unless the user opts in. */
+  drive_auto_upload: boolean;
+}
+
+/** The Drive section of Settings. No token, code or session URL ever reaches
+ *  the webview: this is only display state. */
+export interface DriveStatus {
+  state: "not_configured" | "disconnected" | "connecting" | "connected" | "reauth_required";
+  email: string | null;
+  folder_id: string | null;
+  folder_url: string | null;
+  auto_upload: boolean;
+  setup_hint: string | null;
+  error: string | null;
+  /** Clips queued or in flight for this account. */
+  active_uploads: number;
+  /** Clips whose last attempt failed. */
+  failed_uploads: number;
 }
 
 /** What the recogniser is doing right now. */
@@ -340,4 +379,41 @@ export function editorCancel(): Promise<boolean> {
 
 export function editorClose(): Promise<boolean> {
   return invoke("editor_close");
+}
+
+export function getGoogleDriveStatus(): Promise<DriveStatus> {
+  return invoke("get_google_drive_status");
+}
+
+export function connectGoogleDrive(): Promise<DriveStatus> {
+  return invoke("connect_google_drive");
+}
+
+export function cancelGoogleDriveConnect(): Promise<void> {
+  return invoke("cancel_google_drive_connect");
+}
+
+export function disconnectGoogleDrive(): Promise<void> {
+  return invoke("disconnect_google_drive");
+}
+
+export function uploadClipToGoogleDrive(clipId: string): Promise<ClipUploadStatus> {
+  return invoke("upload_clip_to_google_drive", { clipId });
+}
+
+export function retryDriveUpload(clipId: string): Promise<ClipUploadStatus> {
+  return invoke("retry_drive_upload", { clipId });
+}
+
+export function cancelDriveUpload(clipId: string): Promise<void> {
+  return invoke("cancel_drive_upload", { clipId });
+}
+
+export function getClipUploadStatus(clipId: string): Promise<ClipUploadStatus | null> {
+  return invoke("get_clip_upload_status", { clipId });
+}
+
+/** Opens the ClipVault folder, or one remote file, in the browser. */
+export function openGoogleDrive(clipId?: string): Promise<void> {
+  return invoke("open_google_drive", { clipId: clipId ?? null });
 }

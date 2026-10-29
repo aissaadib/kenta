@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
@@ -6,6 +6,7 @@ import {
   Bell,
   Check,
   ChevronDown,
+  Cloud,
   Clock3,
   Cpu,
   FolderOpen,
@@ -21,17 +22,23 @@ import {
   Save,
 } from "lucide-react";
 import {
+  cancelGoogleDriveConnect,
   checkFfmpeg,
+  connectGoogleDrive,
+  disconnectGoogleDrive,
   enumerateAudioDevices,
   enumerateMonitors,
   enumerateVideoEncoders,
+  getGoogleDriveStatus,
   openFileLocation,
+  openGoogleDrive,
   openOutputDir,
   previewConfirmationSound,
   selectOutputDir,
   voiceStatus,
   voiceTest,
   type AudioDevice,
+  type DriveStatus,
   type EncoderInfo,
   type FfmpegInfo,
   type MonitorInfo,
@@ -142,8 +149,7 @@ interface RowProps {
 }
 
 /** One aligned label/control row. The label column stays fixed at 200px. */
-function Row({ label, hint, children, className }: RowProps) {
-  return (
+function Row({ label, hint, children, className }: RowProps) {  return (
     <div className={`setting-row ${className ?? ""}`}>
       <span className="setting-label">{label}</span>
       <div className="setting-control">
@@ -151,6 +157,260 @@ function Row({ label, hint, children, className }: RowProps) {
         {hint ? <p className="field-hint">{hint}</p> : null}
       </div>
     </div>
+  );
+}
+
+const DRIVE_STATE_LABELS: Record<DriveStatus["state"], string> = {
+  not_configured: "Not configured",
+  disconnected: "Not connected",
+  connecting: "Connecting",
+  connected: "Connected",
+  reauth_required: "Reconnect required",
+};
+
+interface DriveSectionProps {
+  autoUpload: boolean;
+  onAutoUploadChange: (checked: boolean) => void;
+  onNotify: (kind: "success" | "error" | "info", title: string, message?: string) => void;
+}
+
+/**
+ * The Google Drive section. It only ever renders display state: the backend
+ * keeps tokens, codes and upload session URLs to itself.
+ */
+function DriveSection({ autoUpload, onAutoUploadChange, onNotify }: DriveSectionProps) {
+  const [status, setStatus] = useState<DriveStatus | null>(null);
+  const [busy, setBusy] = useState<"connect" | "disconnect" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    getGoogleDriveStatus()
+      .then((next) => {
+        setStatus(next);
+        setError(null);
+      })
+      .catch((reason: unknown) => setError(String(reason)));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    let cancelled = false;
+    let unlisten: UnlistenFn | undefined;
+    listen<DriveStatus>("drive-status", (event) => {
+      if (!cancelled) setStatus(event.payload);
+    })
+      .then((stop) => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {
+        // Events are a convenience; the initial read already has the state.
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [refresh]);
+
+  // Poll only while something is moving. An idle connected account costs
+  // nothing, and an upload that finishes stops the timer by itself.
+  const moving = status?.state === "connecting" || (status?.active_uploads ?? 0) > 0;
+  useEffect(() => {
+    if (!moving) return;
+    const timer = window.setInterval(refresh, 1500);
+    return () => window.clearInterval(timer);
+  }, [moving, refresh]);
+
+  const connect = () => {
+    setBusy("connect");
+    setError(null);
+    setStatus((current) => (current ? { ...current, state: "connecting" } : current));
+    connectGoogleDrive()
+      .then((next) => {
+        setStatus(next);
+        onNotify(
+          "success",
+          "Google Drive connected",
+          next.email ? `Clips can now be uploaded as ${next.email}.` : undefined,
+        );
+      })
+      .catch((reason: unknown) => {
+        setError(String(reason));
+        refresh();
+      })
+      .finally(() => setBusy(null));
+  };
+
+  const disconnect = () => {
+    setBusy("disconnect");
+    setError(null);
+    disconnectGoogleDrive()
+      .then(() => {
+        onNotify("success", "Google Drive disconnected", "Your local clips were not changed.");
+        refresh();
+      })
+      .catch((reason: unknown) => setError(String(reason)))
+      .finally(() => setBusy(null));
+  };
+
+  const cancelConnect = () => {
+    cancelGoogleDriveConnect()
+      .then(refresh)
+      .catch((reason: unknown) => setError(String(reason)));
+  };
+
+  const state = status?.state ?? "disconnected";
+  const connected = state === "connected";
+  const hasAccount = connected || state === "reauth_required";
+
+  return (
+    <section className="settings-section" id="settings-drive">
+      <header>
+        <Cloud size={16} className="settings-icon" />
+        <h2>Google Drive</h2>
+        <p>An optional second copy of your clips. Local files stay where they are.</p>
+        <span className={`drive-pill is-${state}`}>{DRIVE_STATE_LABELS[state]}</span>
+      </header>
+      <div className="settings-body">
+        {state === "not_configured" ? (
+          <div className="inline-note">
+            <Info size={14} />
+            <span>
+              {status?.setup_hint ??
+                "Add a Google OAuth client to enable Drive uploads. See GOOGLE_DRIVE.md."}
+            </span>
+          </div>
+        ) : null}
+
+        {state === "disconnected" ? (
+          <Row
+            label="Account"
+            hint="Opens your browser. ClipVault only sees the ClipVault folder it creates, never the rest of your Drive."
+          >
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={connect}
+              disabled={busy !== null}
+            >
+              {busy === "connect" ? <Loader2 size={13} className="spin" /> : <Cloud size={13} />}
+              Connect Google Drive
+            </button>
+          </Row>
+        ) : null}
+
+        {state === "connecting" ? (
+          <Row label="Account" hint="Finish signing in in your browser. This window can stay open.">
+            <div className="drive-actions">
+              <span className="drive-waiting">
+                <Loader2 size={13} className="spin" /> Waiting for consent…
+              </span>
+              <button type="button" className="btn btn-quiet btn-sm" onClick={cancelConnect}>
+                Cancel
+              </button>
+            </div>
+          </Row>
+        ) : null}
+
+        {hasAccount ? (
+          <>
+            <Row label="Account">
+              <span className="mono drive-account">{status?.email ?? "Google account"}</span>
+            </Row>
+            <Row label="Folder" hint="Every upload lands in this folder. Nothing else is touched.">
+              <div className="drive-actions">
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  onClick={() =>
+                    openGoogleDrive().catch((reason) =>
+                      onNotify("error", "Could not open Google Drive", String(reason)),
+                    )
+                  }
+                  disabled={!status?.folder_url}
+                >
+                  <FolderOpen size={13} /> Open folder
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  onClick={disconnect}
+                  disabled={busy !== null}
+                >
+                  {busy === "disconnect" ? <Loader2 size={13} className="spin" /> : null}
+                  Disconnect
+                </button>
+              </div>
+            </Row>
+          </>
+        ) : null}
+
+        {state === "reauth_required" ? (
+          <div className="inline-note inline-note-error">
+            <AlertTriangle size={14} />
+            <span>
+              Google revoked access, or the saved credential is gone. Reconnect to resume
+              uploads. Your local clips are untouched.
+            </span>
+          </div>
+        ) : null}
+
+        {hasAccount && status?.error ? (
+          <div className="inline-note inline-note-error">
+            <AlertTriangle size={14} />
+            <span>{status.error}</span>
+          </div>
+        ) : null}
+
+        {state === "reauth_required" ? (
+          <Row label="Reconnect">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={connect}
+              disabled={busy !== null}
+            >
+              {busy === "connect" ? <Loader2 size={13} className="spin" /> : null}
+              Connect again
+            </button>
+          </Row>
+        ) : null}
+
+        <Switch
+          checked={autoUpload}
+          onChange={onAutoUploadChange}
+          label="Upload new clips automatically"
+          description="Off by default. Turning it on uploads future clips only, never the ones you already have."
+          disabled={!connected}
+        />
+
+        {status && status.active_uploads > 0 ? (
+          <div className="inline-note">
+            <Loader2 size={14} className="spin" />
+            <span>
+              Uploading {status.active_uploads} clip{status.active_uploads === 1 ? "" : "s"}…
+            </span>
+          </div>
+        ) : null}
+
+        {status && status.failed_uploads > 0 ? (
+          <div className="inline-note inline-note-error">
+            <AlertTriangle size={14} />
+            <span>
+              {status.failed_uploads} upload{status.failed_uploads === 1 ? "" : "s"} failed. Use the
+              clip menu to retry.
+            </span>
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="inline-note inline-note-error">
+            <AlertTriangle size={14} />
+            <span>{error}</span>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -532,6 +792,12 @@ function SettingsViewImpl({
           </Row>
         </div>
       </section>
+
+      <DriveSection
+        autoUpload={draft.drive_auto_upload}
+        onAutoUploadChange={(checked) => update("drive_auto_upload", checked)}
+        onNotify={onNotify}
+      />
 
       <section className="settings-section">
         <header>

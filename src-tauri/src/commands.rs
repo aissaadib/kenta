@@ -2,6 +2,8 @@ use crate::autostart;
 use crate::capture::{
   self, export_plan, CaptureConfig, CaptureEngine, CaptureState, SaveResult, SEGMENT_SECONDS,
 };
+use crate::cloud::account::{AccountManager, DriveStatus};
+use crate::cloud::uploads::UploadManager;
 use crate::editor::{self, ExportRequest, MediaInfo};
 use crate::errors::AppResult;
 use crate::ffmpeg::{self, AudioDevice, EncoderInfo};
@@ -9,11 +11,12 @@ use crate::hotkey::{self, HotkeyManager};
 use crate::monitors::{self, MonitorInfo};
 use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
 use crate::sound;
-use crate::storage::{Clip, Storage};
+use crate::storage::{Clip, CloudUpload, Storage, UploadStatus};
 use crate::timeline::{Timeline, TimelineView, TrimEdge};
 use crate::voice::{self, VoiceConfig, VoiceSink, VoiceStatus};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,7 +25,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub struct AppState {
   pub settings: Mutex<Settings>,
   pub capture: Mutex<Option<CaptureEngine>>,
-  pub storage: Mutex<Option<Storage>>,
+  /// Shared with the cloud managers so they read the same library handle.
+  pub storage: Arc<Mutex<Option<Storage>>>,
   pub hotkey: Mutex<Option<HotkeyManager>>,
   pub exporting: AtomicBool,
   /// True while the startup capture thread is still waiting for its first
@@ -39,6 +43,10 @@ pub struct AppState {
   /// The voice recogniser, when hands-free clipping is on. `None` means off,
   /// which is also how the UI tells "disabled" apart from "failed".
   pub voice: Mutex<Option<Arc<voice::VoiceHandle>>>,
+  /// `None` until the app has initialised, and when the library is unavailable.
+  pub drive: Mutex<Option<Arc<AccountManager>>>,
+  /// The single background upload worker.
+  pub uploads: Mutex<Option<Arc<UploadManager>>>,
 }
 
 pub struct EditorSession {
@@ -52,7 +60,7 @@ impl AppState {
     Self {
       settings: Mutex::new(Settings::default()),
       capture: Mutex::new(None),
-      storage: Mutex::new(None),
+      storage: Arc::new(Mutex::new(None)),
       hotkey: Mutex::new(None),
       exporting: AtomicBool::new(false),
       capture_starting: AtomicBool::new(false),
@@ -62,6 +70,8 @@ impl AppState {
       editor: Mutex::new(None),
       editor_cancel: Arc::new(AtomicBool::new(false)),
       voice: Mutex::new(None),
+      drive: Mutex::new(None),
+      uploads: Mutex::new(None),
     }
   }
 }
@@ -102,6 +112,33 @@ pub struct ClipListItem {
   pub frame_rate: u32,
   pub thumbnail: Option<String>,
   pub exists: bool,
+  /// The active account's upload state for this clip, when there is one.
+  pub upload: Option<ClipUploadStatus>,
+}
+
+/// The small amount of upload state a clip card needs. It is derived from the
+/// `cloud_uploads` row so the UI never has to ask Google anything.
+#[derive(Clone, Serialize)]
+pub struct ClipUploadStatus {
+  pub status: String,
+  pub percent: u32,
+  pub error: Option<String>,
+  pub remote_file_id: Option<String>,
+}
+
+impl ClipUploadStatus {
+  fn from_row(row: &CloudUpload) -> Self {
+    Self {
+      status: row.status.as_str().to_string(),
+      percent: if row.total_bytes == 0 {
+        0
+      } else {
+        (row.uploaded_bytes.saturating_mul(100) / row.total_bytes).min(100) as u32
+      },
+      error: row.error.clone(),
+      remote_file_id: row.remote_file_id.clone(),
+    }
+  }
 }
 
 #[derive(Clone, Serialize)]
@@ -569,6 +606,7 @@ pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<Save
     Ok(saved) => {
       if let Ok(clip) = clip_from_result(state, saved) {
         let _ = app.emit("clip-saved", &clip);
+        maybe_auto_upload(state, &clip);
       }
       // Only after the file and its library row exist.
       confirm_saved(state);
@@ -637,6 +675,7 @@ pub fn perform_stop_manual(app: &AppHandle) -> Result<SaveResult, String> {
     Ok(saved) => {
       if let Ok(clip) = clip_from_result(state, saved) {
         let _ = app.emit("clip-saved", &clip);
+        maybe_auto_upload(state, &clip);
       }
       // Only after the file and its library row exist.
       confirm_saved(state);
@@ -924,6 +963,7 @@ pub fn editor_export(
       add_save_result(state.inner(), &saved)?;
       let clip = clip_from_result(state.inner(), &saved)?;
       let _ = app.emit("clip-saved", &clip);
+      maybe_auto_upload(state.inner(), &clip);
       // The edited file is registered at this point, so the cue is honest.
       confirm_saved(state.inner());
       Ok(clip)
@@ -1214,7 +1254,36 @@ pub fn list_clips(
     .as_mut()
     .ok_or_else(|| "The clip library is not available.".to_string())?;
   let clips = storage.list_clips(search, sort).map_err(|e| e.to_string())?;
-  Ok(clips.iter().map(clip_to_item).collect())
+  // One query for the whole grid instead of one per card.
+  let uploads = active_uploads(state.inner(), storage);
+  Ok(
+    clips
+      .iter()
+      .map(|clip| clip_to_item_with(clip, uploads.get(&clip.id)))
+      .collect(),
+  )
+}
+
+/// The upload rows for the connected account, keyed by clip id. A missing or
+/// disconnected account simply means no badges.
+fn active_uploads(state: &AppState, storage: &Storage) -> HashMap<String, CloudUpload> {
+  let account_id = match state.drive.lock() {
+    Ok(drive) => drive.as_ref().and_then(|drive| drive.active()),
+    Err(_) => None,
+  };
+  let Some(account_id) = account_id else {
+    return HashMap::new();
+  };
+  match storage.list_uploads(&account_id.id) {
+    Ok(rows) => rows
+      .into_iter()
+      .map(|row| (row.clip_id.clone(), row))
+      .collect(),
+    Err(error) => {
+      log::warn!("could not read Drive upload state: {error}");
+      HashMap::new()
+    }
+  }
 }
 
 #[tauri::command]
@@ -1282,6 +1351,15 @@ pub fn delete_clip(state: State<'_, AppState>, id: String) -> Result<(), String>
   if let Some(thumbnail) = &clip.thumbnail {
     let _ = std::fs::remove_file(thumbnail);
   }
+  // Stop a transfer for this clip before its file disappears. This only stops
+  // local work; any partial remote upload is left for the worker to reconcile.
+  if let (Ok(drive), Ok(uploads)) = (state.drive.lock(), state.uploads.lock()) {
+    if let (Some(drive), Some(uploads)) = (drive.as_ref(), uploads.as_ref()) {
+      if let Some(account) = drive.active() {
+        let _ = uploads.cancel(&id, &account.id);
+      }
+    }
+  }
   let mut storage = state.storage.lock().unwrap();
   let storage = storage
     .as_mut()
@@ -1289,6 +1367,277 @@ pub fn delete_clip(state: State<'_, AppState>, id: String) -> Result<(), String>
   storage
     .remove_clip_record(&id)
     .map_err(|e| format!("The file was deleted, but the library entry could not be removed: {e}"))?;
+  Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Google Drive
+//
+// Every command resolves the account and the clip path on the Rust side. The
+// frontend only ever passes a clip id, never a path, a token or a session URL.
+// ---------------------------------------------------------------------------
+
+fn drive_manager(state: &AppState) -> Result<Arc<AccountManager>, String> {
+  state
+    .drive
+    .lock()
+    .map_err(|_| "Google Drive state is unavailable.".to_string())?
+    .clone()
+    .ok_or_else(|| "Google Drive is not available in this session.".to_string())
+}
+
+fn upload_manager(state: &AppState) -> Result<Arc<UploadManager>, String> {
+  state
+    .uploads
+    .lock()
+    .map_err(|_| "The upload queue is unavailable.".to_string())?
+    .clone()
+    .ok_or_else(|| "The upload queue is not running.".to_string())
+}
+
+fn auto_upload_enabled(state: &AppState) -> bool {
+  state
+    .settings
+    .lock()
+    .map(|settings| settings.drive_auto_upload)
+    .unwrap_or(false)
+}
+
+/// Emit the new account state so an open Settings view updates without polling.
+fn emit_drive_status(app: &AppHandle, state: &AppState) {
+  if let Ok(drive) = state.drive.lock() {
+    if let Some(drive) = drive.as_ref() {
+      let _ = app.emit("drive-status", drive.status(auto_upload_enabled(state)));
+    }
+  }
+}
+
+#[tauri::command]
+pub fn get_google_drive_status(state: State<'_, AppState>) -> DriveStatus {
+  let auto_upload = auto_upload_enabled(state.inner());
+  match state.drive.lock() {
+    Ok(drive) => match drive.as_ref() {
+      Some(drive) => drive.status(auto_upload),
+      None => unavailable_status(auto_upload),
+    },
+    Err(_) => unavailable_status(auto_upload),
+  }
+}
+
+fn unavailable_status(auto_upload: bool) -> DriveStatus {
+  DriveStatus {
+    state: "not_configured".into(),
+    email: None,
+    folder_id: None,
+    folder_url: None,
+    auto_upload,
+    setup_hint: Some(
+      "The clip library is unavailable, so Google Drive is disabled for this session.".into(),
+    ),
+    error: None,
+    active_uploads: 0,
+    failed_uploads: 0,
+  }
+}
+
+#[tauri::command]
+pub async fn connect_google_drive(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<DriveStatus, String> {
+  let drive = drive_manager(state.inner())?;
+  // The browser wait can last a couple of minutes; it must not run on the
+  // command thread that the webview is waiting on.
+  let result = tauri::async_runtime::spawn_blocking(move || drive.connect())
+    .await
+    .map_err(|error| error.to_string())?;
+  emit_drive_status(&app, state.inner());
+  result
+}
+
+#[tauri::command]
+pub fn cancel_google_drive_connect(state: State<'_, AppState>) -> Result<(), String> {
+  drive_manager(state.inner())?.cancel_connect();
+  Ok(())
+}
+
+#[tauri::command]
+pub async fn disconnect_google_drive(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let drive = drive_manager(state.inner())?;
+  // Stop any transfer before the credential disappears. This only stops local
+  // work: nothing is deleted from Google Drive.
+  if let Ok(uploads) = state.uploads.lock() {
+    if let Some(uploads) = uploads.as_ref() {
+      uploads.cancel_all();
+    }
+  }
+  let result = tauri::async_runtime::spawn_blocking(move || drive.disconnect())
+    .await
+    .map_err(|error| error.to_string())?;
+  emit_drive_status(&app, state.inner());
+  result
+}
+
+/// Validate the clip and the account, then hand the job to the worker. The
+/// returned status is what the card should show immediately.
+fn queue_upload(state: &AppState, clip_id: &str, retry: bool) -> Result<ClipUploadStatus, String> {
+  let drive = drive_manager(state)?;
+  let account = drive
+    .active()
+    .ok_or_else(|| "Connect Google Drive first.".to_string())?;
+  if account.needs_reauth {
+    return Err("Google Drive access expired. Connect the account again.".into());
+  }
+  let uploads = upload_manager(state)?;
+
+  // The library lock is only held while the row is written. The worker reads
+  // it afterwards, and the enqueue must not wait behind this guard.
+  let status = {
+    let mut guard = state.storage.lock().unwrap();
+    let storage = guard
+      .as_mut()
+      .ok_or_else(|| "The clip library is not available.".to_string())?;
+    // The path comes from the library, never from the frontend.
+    let clip = storage
+      .get_clip(clip_id)
+      .map_err(|e| e.to_string())?
+      .ok_or_else(|| "That clip is no longer in the library.".to_string())?;
+    if !clip.path.exists() {
+      return Err("The clip file is missing.".into());
+    }
+
+    let mut row = storage
+      .get_upload(clip_id, &account.id)
+      .map_err(|e| e.to_string())?
+      .unwrap_or_else(|| CloudUpload::new(clip_id, &account.id, 0));
+    if row.status == UploadStatus::Uploaded && !retry {
+      return Ok(ClipUploadStatus::from_row(&row));
+    }
+    if matches!(
+      row.status,
+      UploadStatus::Failed | UploadStatus::Cancelled | UploadStatus::Uploaded
+    ) {
+      row.status = UploadStatus::Queued;
+      row.error = None;
+      row.attempts = 0;
+    }
+    storage
+      .upsert_upload(&row)
+      .map_err(|e| format!("The upload could not be queued: {e}"))?;
+    ClipUploadStatus::from_row(&row)
+  };
+  uploads.enqueue(clip_id, &account.id)?;
+  Ok(status)
+}
+
+#[tauri::command]
+pub fn upload_clip_to_google_drive(
+  state: State<'_, AppState>,
+  clip_id: String,
+) -> Result<ClipUploadStatus, String> {
+  queue_upload(state.inner(), &clip_id, false)
+}
+
+/// Automatic upload is best effort. A missing account, a revoked token or a
+/// stopped worker must never turn a successful local save into an error, delay
+/// the confirmation cue, or block the capture buffer.
+fn maybe_auto_upload(state: &AppState, clip: &ClipListItem) {
+  if !auto_upload_enabled(state) {
+    return;
+  }
+  let ready = state
+    .drive
+    .lock()
+    .map(|drive| {
+      drive
+        .as_ref()
+        .and_then(|drive| drive.active())
+        .map(|account| !account.needs_reauth)
+        .unwrap_or(false)
+    })
+    .unwrap_or(false);
+  if !ready {
+    return;
+  }
+  if let Err(error) = queue_upload(state, &clip.id, false) {
+    log::warn!("automatic Drive upload for {} was not queued: {error}", clip.id);
+  }
+}
+
+#[tauri::command]
+pub fn retry_drive_upload(
+  state: State<'_, AppState>,
+  clip_id: String,
+) -> Result<ClipUploadStatus, String> {
+  queue_upload(state.inner(), &clip_id, true)
+}
+
+#[tauri::command]
+pub fn cancel_drive_upload(state: State<'_, AppState>, clip_id: String) -> Result<(), String> {
+  let account = drive_manager(state.inner())?
+    .active()
+    .ok_or_else(|| "Google Drive is not connected.".to_string())?;
+  upload_manager(state.inner())?.cancel(&clip_id, &account.id)
+}
+
+#[tauri::command]
+pub fn get_clip_upload_status(
+  state: State<'_, AppState>,
+  clip_id: String,
+) -> Result<Option<ClipUploadStatus>, String> {
+  let account = match drive_manager(state.inner())?.active() {
+    Some(account) => account,
+    None => return Ok(None),
+  };
+  let storage = state.storage.lock().unwrap();
+  let storage = storage
+    .as_ref()
+    .ok_or_else(|| "The clip library is not available.".to_string())?;
+  let row = storage
+    .get_upload(&clip_id, &account.id)
+    .map_err(|e| e.to_string())?;
+  Ok(row.as_ref().map(ClipUploadStatus::from_row))
+}
+
+#[tauri::command]
+pub fn open_google_drive(state: State<'_, AppState>, clip_id: Option<String>) -> Result<(), String> {
+  let drive = drive_manager(state.inner())?;
+  let url = match clip_id {
+    Some(clip_id) => {
+      let account = drive
+        .active()
+        .ok_or_else(|| "Google Drive is not connected.".to_string())?;
+      let storage = state.storage.lock().unwrap();
+      let storage = storage
+        .as_ref()
+        .ok_or_else(|| "The clip library is not available.".to_string())?;
+      let row = storage
+        .get_upload(&clip_id, &account.id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "This clip has not been uploaded to Google Drive.".to_string())?;
+      let remote = row
+        .remote_file_id
+        .ok_or_else(|| "This clip has not been uploaded to Google Drive.".to_string())?;
+      format!("https://drive.google.com/file/d/{remote}/view")
+    }
+    None => {
+      let status = drive.status(auto_upload_enabled(state.inner()));
+      status
+        .folder_url
+        .ok_or_else(|| "The ClipVault folder is not ready yet.".to_string())?
+    }
+  };
+  // The URL is built here from a validated id, never passed in by the webview.
+  if !url.starts_with("https://drive.google.com/") {
+    return Err("Refusing to open an unexpected address.".into());
+  }
+  std::process::Command::new("explorer")
+    .arg(&url)
+    .spawn()
+    .map_err(|e| format!("Could not open the browser: {e}"))?;
   Ok(())
 }
 
@@ -1604,6 +1953,10 @@ fn clip_from_result(state: &AppState, result: &SaveResult) -> Result<ClipListIte
 }
 
 fn clip_to_item(clip: &Clip) -> ClipListItem {
+  clip_to_item_with(clip, None)
+}
+
+fn clip_to_item_with(clip: &Clip, upload: Option<&CloudUpload>) -> ClipListItem {
   let exists = clip.path.exists();
   let size = if exists {
     clip.path
@@ -1641,6 +1994,7 @@ fn clip_to_item(clip: &Clip) -> ClipListItem {
     frame_rate: clip.frame_rate,
     thumbnail,
     exists,
+    upload: upload.map(ClipUploadStatus::from_row),
   }
 }
 

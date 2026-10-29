@@ -390,7 +390,7 @@ export default function App() {
               </div>
             </div>
           ) : null}
-          <p className="sidebar-footnote">Local capture · No cloud uploads</p>
+          <p className="sidebar-footnote">Local capture · Cloud optional</p>
         </div>
       </aside>
 
