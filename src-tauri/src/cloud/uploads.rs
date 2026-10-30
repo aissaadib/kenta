@@ -551,7 +551,8 @@ impl Worker {
         return Recovery::Stop(format!("Google returned an unexpected response ({message})."))
       }
       DriveError::NotFound | DriveError::SessionExpired => {}
-      DriveError::Network(_) | DriveError::Server(_) | DriveError::RateLimited { .. } => {}
+      _ if error.is_retryable() => {}
+      _ => return Recovery::Stop(error.user_message()),
     }
 
     *attempts += 1;
