@@ -285,17 +285,19 @@ function DriveSection({ autoUpload, onAutoUploadChange, onNotify }: DriveSection
         {state === "disconnected" ? (
           <Row
             label="Account"
-            hint="Opens your browser. ClipVault only sees the ClipVault folder it creates, never the rest of your Drive."
+            hint="Opens your browser. Kenta only sees the Kenta folder it creates, never the rest of your Drive."
           >
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={connect}
-              disabled={busy !== null}
-            >
-              {busy === "connect" ? <Loader2 size={13} className="spin" /> : <Cloud size={13} />}
-              Connect Google Drive
-            </button>
+            <div className="drive-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={connect}
+                disabled={busy !== null}
+              >
+                {busy === "connect" ? <Loader2 size={13} className="spin" /> : <Cloud size={13} />}
+                Connect Google Drive
+              </button>
+            </div>
           </Row>
         ) : null}
 
@@ -364,15 +366,17 @@ function DriveSection({ autoUpload, onAutoUploadChange, onNotify }: DriveSection
 
         {state === "reauth_required" ? (
           <Row label="Reconnect">
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={connect}
-              disabled={busy !== null}
-            >
-              {busy === "connect" ? <Loader2 size={13} className="spin" /> : null}
-              Connect again
-            </button>
+            <div className="drive-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={connect}
+                disabled={busy !== null}
+              >
+                {busy === "connect" ? <Loader2 size={13} className="spin" /> : null}
+                Connect again
+              </button>
+            </div>
           </Row>
         ) : null}
 
@@ -697,7 +701,7 @@ function SettingsViewImpl({
       if (info.available) {
         onNotify("success", "FFmpeg found", info.version ?? info.path);
       } else {
-        onNotify("error", "FFmpeg not found", "Install FFmpeg or place ffmpeg.exe next to ClipVault.exe.");
+        onNotify("error", "FFmpeg not found", "Install FFmpeg or place ffmpeg.exe next to Kenta.exe.");
       }
     } catch (reason) {
       onNotify("error", "Could not check FFmpeg", String(reason));
@@ -741,9 +745,9 @@ function SettingsViewImpl({
           <div className="notice-copy">
             <strong>FFmpeg was not found</strong>
             <span>
-              ClipVault needs FFmpeg to capture and finalise clips. Install it and make sure{" "}
+              Kenta needs FFmpeg to capture and finalise clips. Install it and make sure{" "}
               <span className="mono">ffmpeg.exe</span> is on your PATH, or place it next to{" "}
-              <span className="mono">ClipVault.exe</span>.
+              <span className="mono">Kenta.exe</span>.
             </span>
           </div>
           <div className="notice-actions">
@@ -1006,14 +1010,14 @@ function SettingsViewImpl({
               className="input"
               value={draft.voice_wake_phrase}
               maxLength={60}
-              placeholder="ClipVault"
+              placeholder="Kenta"
               aria-label="Wake phrase"
               onChange={(event) => update("voice_wake_phrase", event.target.value)}
             />
           </Row>
           <Row
             label="Clip command"
-            hint={`Spoken right after the wake phrase: “${draft.voice_wake_phrase.trim() || "ClipVault"}”, ${
+            hint={`Spoken right after the wake phrase: “${draft.voice_wake_phrase.trim() || "Kenta"}”, ${
               draft.voice_clip_command.trim() || "clip that"
             }.`}
           >
@@ -1117,7 +1121,7 @@ function SettingsViewImpl({
         <header>
           <Keyboard size={16} className="settings-icon" />
           <h2>Global shortcuts</h2>
-          <p>Work while ClipVault is in the background.</p>
+          <p>Work while Kenta is in the background.</p>
         </header>
         <div className="settings-body">
           <Row label="Save replay">
@@ -1143,7 +1147,7 @@ function SettingsViewImpl({
             <Info size={14} />
             <span>
               Shortcuts are registered with Windows. If another app already owns a combination,
-              ClipVault will tell you and keep the previous binding.
+              Kenta will tell you and keep the previous binding.
             </span>
           </div>
         </div>
@@ -1302,10 +1306,10 @@ function SettingsViewImpl({
                   selectedEncoder
                     ? selectedEncoder.available
                       ? selectedEncoder.hardware
-                        ? "Hardware encoder detected. ClipVault falls back to CPU x264 if it fails."
+                        ? "Hardware encoder detected. Kenta falls back to CPU x264 if it fails."
                         : "CPU encoder. Works everywhere but uses more CPU."
-                      : "This encoder is not available on this PC; ClipVault will use CPU x264."
-                    : "ClipVault will verify the encoder when capture starts."
+                      : "This encoder is not available on this PC; Kenta will use CPU x264."
+                    : "Kenta will verify the encoder when capture starts."
                 }
               >
                 <span className="select-wrap select-full">
@@ -1361,20 +1365,20 @@ function SettingsViewImpl({
             <header>
               <Cpu size={16} className="settings-icon" />
               <h2>Startup, tray &amp; tools</h2>
-              <p>How ClipVault starts and keeps running.</p>
+              <p>How Kenta starts and keeps running.</p>
             </header>
             <div className="settings-body">
               <Switch
                 checked={draft.start_at_startup}
                 onChange={(checked) => update("start_at_startup", checked)}
-                label="Launch ClipVault at sign-in"
-                description="Adds ClipVault to your Windows startup apps."
+                label="Launch Kenta at sign-in"
+                description="Adds Kenta to your Windows startup apps."
               />
               <Switch
                 checked={draft.minimize_to_tray}
                 onChange={(checked) => update("minimize_to_tray", checked)}
                 label="Keep running when the window closes"
-                description="The close button hides ClipVault to the system tray instead of quitting."
+                description="The close button hides Kenta to the system tray instead of quitting."
               />
               {saved.minimize_to_tray !== draft.minimize_to_tray ? (
                 <p className="field-hint">The close-button behaviour updates after saving.</p>
