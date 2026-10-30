@@ -25,7 +25,6 @@ pub const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 pub const REVOKE_ENDPOINT: &str = "https://oauth2.googleapis.com/revoke";
 pub const DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
-pub const SCOPES: &str = "openid email https://www.googleapis.com/auth/drive.file";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +101,7 @@ pub fn authorize_url(config: &OAuthConfig, redirect_uri: &str, state: &str, chal
     "{AUTH_ENDPOINT}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=consent&include_granted_scopes=true",
     form_encode(config.client_id()),
     form_encode(redirect_uri),
-    form_encode(SCOPES),
+    form_encode(&format!("openid email {DRIVE_FILE_SCOPE}")),
     form_encode(state),
     form_encode(challenge),
   )
