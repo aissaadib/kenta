@@ -1,6 +1,6 @@
 //! FFmpeg/FFprobe discovery and small, testable helpers.
 //!
-//! ClipVault never invokes a shell. Every child process is started with an
+//! Kenta never invokes a shell. Every child process is started with an
 //! argument array so user-controlled values (device names, file paths) cannot
 //! be interpreted as shell syntax.
 
@@ -11,11 +11,11 @@ use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
 
 /// Resolve an FFmpeg-family executable. Priority:
-/// 1. `CLIPVAULT_FFMPEG` / `CLIPVAULT_FFPROBE` override.
-/// 2. A copy shipped next to ClipVault.exe.
+/// 1. `KENTA_FFMPEG` / `KENTA_FFPROBE` override.
+/// 2. A copy shipped next to Kenta.exe.
 /// 3. The executable name on PATH.
 pub fn tool_path(name: &str) -> PathBuf {
-  let override_key = format!("CLIPVAULT_{}", name.to_ascii_uppercase());
+  let override_key = format!("KENTA_{}", name.to_ascii_uppercase());
   if let Ok(value) = std::env::var(&override_key) {
     let candidate = PathBuf::from(value);
     if candidate.is_file() {
@@ -51,14 +51,14 @@ pub fn run_ffmpeg(args: &[String]) -> AppResult<Output> {
     .stderr(Stdio::piped());
   let child = command.spawn().map_err(|e| {
     AppError::Ffmpeg(format!(
-      "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe."
+      "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to Kenta.exe."
     ))
   })?;
   // Exports are short, but a crash mid-export must not leave a muxer running.
   crate::process::contain(&child);
   child.wait_with_output().map_err(|e| {
     AppError::Ffmpeg(format!(
-      "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe."
+      "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to Kenta.exe."
     ))
   })
 }

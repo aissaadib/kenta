@@ -1,6 +1,6 @@
 //! Windows process containment.
 //!
-//! ClipVault runs FFmpeg as a child process. Without a Job Object, Windows
+//! Kenta runs FFmpeg as a child process. Without a Job Object, Windows
 //! leaves that child running when the parent exits abruptly (a crash, a forced
 //! termination, or an installer replacing the executable). Each leaked encoder
 //! keeps hundreds of megabytes of NVENC/GDI surfaces alive and keeps writing
@@ -8,7 +8,7 @@
 //!
 //! Every long-lived child is assigned to a job created with
 //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The job handle is held for the whole
-//! lifetime of ClipVault, so the operating system terminates the children as
+//! lifetime of Kenta, so the operating system terminates the children as
 //! soon as this process exits, however it exits.
 
 use std::os::windows::io::AsRawHandle;
@@ -67,7 +67,7 @@ pub fn contain(child: &Child) {
 
 /// Stop a child process from opening a console window.
 ///
-/// ClipVault is built as a GUI subsystem executable, so it has no console of
+/// Kenta is built as a GUI subsystem executable, so it has no console of
 /// its own. When it launches a console program such as `ffmpeg.exe`, Windows
 /// creates a console host for that child and shows it as a separate window on
 /// the desktop. Passing `CREATE_NO_WINDOW` gives the child the same hidden

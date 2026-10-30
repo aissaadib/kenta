@@ -630,7 +630,7 @@ pub fn perform_stop_manual(app: &AppHandle) -> Result<SaveResult, String> {
       let mut capture = state.capture.lock().unwrap();
       let engine = capture
         .as_mut()
-        .ok_or_else(|| "ClipVault is not recording.".to_string())?;
+        .ok_or_else(|| "Kenta is not recording.".to_string())?;
       engine.finish_manual_recording().map_err(|e| e.to_string())?
     };
     let exported = export_plan(&plan).map_err(|e| e.to_string());
@@ -1107,7 +1107,7 @@ pub fn build_capture_config(settings: &Settings) -> Result<(CaptureConfig, Vec<S
         match fallback {
           Some(_) => {
             warnings.push(format!(
-              "{} is not available on this PC. ClipVault will use the CPU x264 encoder.",
+              "{} is not available on this PC. Kenta will use the CPU x264 encoder.",
               capture::encoder_display(&encoder)
             ));
             encoder = "libx264".into();
@@ -1122,7 +1122,7 @@ pub fn build_capture_config(settings: &Settings) -> Result<(CaptureConfig, Vec<S
     }
     Err(error) => {
       warnings.push(format!(
-        "Could not check encoder support ({error}). ClipVault will try the selected encoder."
+        "Could not check encoder support ({error}). Kenta will try the selected encoder."
       ));
     }
   }
@@ -1214,7 +1214,7 @@ pub fn build_capture_config(settings: &Settings) -> Result<(CaptureConfig, Vec<S
   Ok((
     CaptureConfig {
       output_dir: settings.output_dir_or_default(),
-      temp_dir: std::env::temp_dir().join("clipvault_buffer"),
+      temp_dir: std::env::temp_dir().join("kenta_buffer"),
       width: settings.resolution_width,
       height: settings.resolution_height,
       frame_rate: settings.frame_rate,
@@ -1485,6 +1485,9 @@ pub async fn disconnect_google_drive(
 /// returned status is what the card should show immediately.
 fn queue_upload(state: &AppState, clip_id: &str, retry: bool) -> Result<ClipUploadStatus, String> {
   let drive = drive_manager(state)?;
+  if !drive.configured() {
+    return Err("Google Drive is not configured on this build. See the setup note in Settings.".into());
+  }
   let account = drive
     .active()
     .ok_or_else(|| "Connect Google Drive first.".to_string())?;
@@ -1627,7 +1630,7 @@ pub fn open_google_drive(state: State<'_, AppState>, clip_id: Option<String>) ->
       let status = drive.status(auto_upload_enabled(state.inner()));
       status
         .folder_url
-        .ok_or_else(|| "The ClipVault folder is not ready yet.".to_string())?
+        .ok_or_else(|| "The Kenta folder is not ready yet.".to_string())?
     }
   };
   // The URL is built here from a validated id, never passed in by the webview.
@@ -1831,7 +1834,7 @@ fn run_thumbnail(source: &Path, target: &Path, seek: &str) -> Result<(), String>
 }
 
 pub fn thumbnail_cache_dir() -> PathBuf {
-  std::env::temp_dir().join("clipvault_thumbs")
+  std::env::temp_dir().join("kenta_thumbs")
 }
 
 pub fn allow_clip_scope(app: &AppHandle, dir: &Path) {

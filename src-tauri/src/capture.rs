@@ -41,8 +41,8 @@ pub struct CaptureConfig {
 impl Default for CaptureConfig {
   fn default() -> Self {
     Self {
-      output_dir: std::env::temp_dir().join("clipvault_output"),
-      temp_dir: std::env::temp_dir().join("clipvault_buffer"),
+      output_dir: std::env::temp_dir().join("kenta_output"),
+      temp_dir: std::env::temp_dir().join("kenta_buffer"),
       width: 1920,
       height: 1080,
       frame_rate: 60,
@@ -252,7 +252,7 @@ impl CaptureEngine {
         self.kill_child();
         if requested != "libx264" && ffmpeg::encoder_available("libx264") {
           self.warnings.push(format!(
-            "{} was unavailable, so ClipVault switched to the CPU x264 encoder.",
+            "{} was unavailable, so Kenta switched to the CPU x264 encoder.",
             encoder_display(&requested)
           ));
           self.fallback_reason = Some(first_error.to_string());
@@ -369,7 +369,7 @@ impl CaptureEngine {
   /// the buffer after a successful export.
   pub fn finish_manual_recording(&mut self) -> AppResult<ExportPlan> {
     if !matches!(self.state, CaptureState::Recording) {
-      return Err(AppError::Capture("ClipVault is not recording.".into()));
+      return Err(AppError::Capture("Kenta is not recording.".into()));
     }
     let start_elapsed = self.recording_start_elapsed;
     self.finalize_process();
@@ -466,7 +466,7 @@ impl CaptureEngine {
       .spawn()
       .map_err(|e| {
         AppError::Ffmpeg(format!(
-          "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to ClipVault.exe."
+          "FFmpeg could not be started ({e}). Install FFmpeg or place ffmpeg.exe next to Kenta.exe."
         ))
       })?;
     crate::process::contain(&child);
@@ -648,7 +648,7 @@ impl CaptureEngine {
       .chars()
       .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
       .collect();
-    let base = format!("ClipVault_{stamp}_{safe_source}");
+    let base = format!("Kenta_{stamp}_{safe_source}");
     let mut candidate = self.config.output_dir.join(format!("{base}.mp4"));
     let mut counter = 2;
     while candidate.exists() {
@@ -1100,7 +1100,7 @@ mod tests {
 
   #[test]
   fn save_replay_errors_when_empty() {
-    let td = std::env::temp_dir().join(format!("clipvault_test_{}", uuid::Uuid::new_v4()));
+    let td = std::env::temp_dir().join(format!("kenta_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&td);
     let mut engine = CaptureEngine::new(CaptureConfig {
       temp_dir: td.clone(),
@@ -1174,7 +1174,7 @@ mod tests {
     .unwrap();
     let joined = args.join(" ");
     assert!(joined.contains("-c:v libx264"));
-    assert!(joined.contains("-preset fast"));
+    assert!(joined.contains("-preset medium"));
     assert!(joined.contains("audio=Microphone (USB)"));
     assert!(joined.contains("-map 1:a:0"));
     assert!(joined.contains("-segment_list_flags +live"));

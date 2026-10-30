@@ -9,7 +9,7 @@ const SCHEMA_VERSION: u32 = 3;
 
 pub const DEFAULT_SAVE_HOTKEY: &str = "Ctrl+Shift+S";
 pub const DEFAULT_RECORD_HOTKEY: &str = "Ctrl+Shift+R";
-pub const DEFAULT_WAKE_PHRASE: &str = "ClipVault";
+pub const DEFAULT_WAKE_PHRASE: &str = "Kenta";
 pub const DEFAULT_CLIP_COMMAND: &str = "clip that";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ pub struct Settings {
   pub confirmation_sound_volume: u8,
   /// Hands-free clipping. Off by default because it opens the microphone.
   pub voice_enabled: bool,
-  /// Spoken first, for example "ClipVault".
+  /// Spoken first, for example "Kenta".
   pub voice_wake_phrase: String,
   /// Spoken after the wake phrase, for example "clip that".
   pub voice_clip_command: String,
@@ -168,7 +168,7 @@ impl SettingsStore {
 
   fn settings_path() -> AppResult<PathBuf> {
     let base = config_dir().ok_or_else(|| AppError::Settings("no config dir".into()))?;
-    Ok(base.join("ClipVault").join(SETTINGS_FILE_NAME))
+    Ok(base.join("Kenta").join(SETTINGS_FILE_NAME))
   }
 
   pub fn path(&self) -> &Path {
@@ -188,7 +188,7 @@ pub fn default_output_dir() -> AppResult<PathBuf> {
   let base = dirs::download_dir()
     .or_else(|| dirs::video_dir())
     .ok_or_else(|| AppError::Settings("no download/video dir".into()))?;
-  Ok(base.join("ClipVault"))
+  Ok(base.join("Kenta"))
 }
 
 fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
@@ -545,7 +545,7 @@ mod tests {
   fn voice_defaults_are_off_and_use_the_medal_phrases() {
     let settings = Settings::default();
     assert!(!settings.voice_enabled, "voice opens the microphone");
-    assert_eq!(settings.voice_wake_phrase, "ClipVault");
+    assert_eq!(settings.voice_wake_phrase, "Kenta");
     assert_eq!(settings.voice_clip_command, "clip that");
     assert_eq!(settings.voice_clip_seconds, 30);
     assert_eq!(settings.voice_min_confidence, 60);
@@ -591,7 +591,7 @@ mod tests {
   #[test]
   fn a_command_that_sounds_like_the_wake_phrase_is_rejected() {
     let mut settings = Settings::default();
-    settings.voice_clip_command = "clip-vault!".into();
+    settings.voice_clip_command = "Kenta!".into();
     assert!(validate(&settings).is_err(), "punctuation must not hide a clash");
 
     let mut warnings = Vec::new();
@@ -603,11 +603,11 @@ mod tests {
   #[test]
   fn phrases_are_stored_without_surrounding_whitespace() {
     let mut settings = Settings::default();
-    settings.voice_wake_phrase = "  Hey ClipVault  ".into();
+    settings.voice_wake_phrase = "  Hey Kenta  ".into();
     settings.voice_clip_command = "  save it  ".into();
     let mut warnings = Vec::new();
     reconcile(&mut settings, &mut warnings);
-    assert_eq!(settings.voice_wake_phrase, "Hey ClipVault");
+    assert_eq!(settings.voice_wake_phrase, "Hey Kenta");
     assert_eq!(settings.voice_clip_command, "save it");
     assert!(warnings.is_empty());
   }

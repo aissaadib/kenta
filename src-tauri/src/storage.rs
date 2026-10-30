@@ -158,7 +158,7 @@ const CLOUD_SCHEMA: &str = "
 impl Storage {
   pub fn open() -> AppResult<Self> {
     let base = video_dir().ok_or_else(|| AppError::Storage("no video dir".into()))?;
-    let app_dir = base.join("ClipVault");
+    let app_dir = base.join("Kenta");
     fs_create_dir_all(&app_dir)?;
     let db_path = app_dir.join("library.db");
     let conn = Connection::open_with_flags(&db_path, OpenFlags::default())?;
