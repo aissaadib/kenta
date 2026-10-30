@@ -10,7 +10,7 @@ checked against measurements rather than assumptions.
 ## 1. What a saved clip contains
 
 Probe of the only clip in the library
-(`C:\Users\aissa\Desktop\New folder\ClipVault_2026-10-26_22-26-08_replay.mp4`):
+(`C:\Users\aissa\Desktop\New folder\Kenta_2026-10-26_22-26-08_replay.mp4`):
 
 ```
 duration=20.000000  size=74623417  format=mov,mp4,m4a,3gp,3g2,mj2
@@ -19,7 +19,7 @@ stream 0  video  h264  h264_nvenc  1920x1080
 ```
 
 One video stream, zero audio streams. That is expected for this machine:
-`%APPDATA%\ClipVault\settings.json` has `mic_enabled=false` and
+`%APPDATA%\Kenta\settings.json` has `mic_enabled=false` and
 `desktop_audio_enabled=false`.
 
 ## 2. What the pipeline does when audio is enabled
@@ -56,7 +56,7 @@ clips must be presented honestly as `Mixed Audio`.
 | en-US engine data | `C:\Windows\Speech\Engines\SR\en-US` present (`l1033.*`, `t1033.*`, `srloc.dll` token) |
 | `SpeechRecognitionEngine.InstalledRecognizers` | reports 0 (SAPI enumerates tokens differently from the managed wrapper) |
 | culture-specific engine creation | succeeds (`engine_culture=en-US`) |
-| TTS -> wave-file recognition of "ClipVault, clip that" | recognized as `clip vault clip that`, confidence 0.9427 |
+| TTS -> wave-file recognition of "Kenta, clip that" | recognized as `clip vault clip that`, confidence 0.9427 |
 | TTS played through speakers, recognized from the default mic | no match (no acoustic loopback: output is not audible to the default capture device here) |
 | PC-audio loopback device | absent, so system-audio capture cannot be exercised on this machine |
 

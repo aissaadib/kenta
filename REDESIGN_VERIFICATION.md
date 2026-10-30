@@ -66,7 +66,7 @@ four columns.
 - By the end of verification every library row pointed at a clip file that no
   longer existed on disk; the files had already been removed before this pass.
   The rows (names, sizes, durations) were exported to
-  `%APPDATA%\ClipVault\missing-clips-*.json` and pruned, so the library opens on
+  `%APPDATA%\Kenta\missing-clips-*.json` and pruned, so the library opens on
   its empty state. A fresh recording was made, opened in the editor and deleted to confirm the
   editor still fits at the live window size (stage 379x252, lane bottom 556 of
   663 CSS pixels).

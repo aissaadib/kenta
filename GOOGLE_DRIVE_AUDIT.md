@@ -50,7 +50,7 @@ No cloud call is made from the capture loop.
 ## Storage
 
 `Storage` owns one `rusqlite::Connection` opened in WAL mode at
-`%USERPROFILE%\Videos\ClipVault\library.db`. The schema is created with
+`%USERPROFILE%\Videos\Kenta\library.db`. The schema is created with
 `CREATE TABLE IF NOT EXISTS` in `init_schema`, so a new additive table can be
 added there without touching `clips`. The library keeps working if a migration
 statement fails, as long as the failure is scoped to the new tables — the
@@ -59,7 +59,7 @@ migration will therefore run as its own `execute_batch` after the existing one.
 ## Settings
 
 `Settings` is a flat serde struct with `#[serde(default)]`, persisted to
-`%APPDATA%\ClipVault\settings.json` and validated in `validate`. New fields are
+`%APPDATA%\Kenta\settings.json` and validated in `validate`. New fields are
 safe for old files. The automatic-upload preference is a boolean here, default
 false, so it survives restarts and does not need a second settings file.
 

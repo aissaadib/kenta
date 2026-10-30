@@ -1,4 +1,4 @@
-ClipVault performance audit
+Kenta performance audit
 ===========================
 
 Branch: perf/final-audit (from dd47afc)
@@ -29,7 +29,7 @@ Method
     for both the before and after runs.
   - Navigation, preview, editor, save and recording were driven through the
     running UI over CDP, measuring DOM and next-paint times in the page.
-  - Memory is the whole process tree (clipvault + WebView2 children), with
+  - Memory is the whole process tree (kenta + WebView2 children), with
     FFmpeg reported separately, because the encoder dominates the total.
   - Voice CPU was sampled at 1 s intervals as a percentage of one core.
   - Every change was kept only after the same benchmark was repeated.
@@ -188,7 +188,7 @@ Method
   - Buffer stop via UI: Idle + "Buffer is stopped" in 550 ms; restart
     reached Buffering in 2.55 s; one FFmpeg throughout.
   - Exit during startup (window closed 1.1 s after launch, before the
-    engine existed): process exited in 3.17 s, no clipvault.exe, no
+    engine existed): process exited in 3.17 s, no kenta.exe, no
     ffmpeg.exe, no leftover temp session. This exercises the new
     shutdown wait; without it the FFmpeg child would have been orphaned.
   - Settings save still works: voice off -> on, "Settings saved" each time,

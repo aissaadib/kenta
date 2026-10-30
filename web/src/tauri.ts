@@ -85,7 +85,7 @@ export interface Settings {
   confirmation_sound_volume: number;
   /** Hands-free clipping. Off by default because it opens the microphone. */
   voice_enabled: boolean;
-  /** Spoken first, for example "ClipVault". */
+  /** Spoken first, for example "Kenta". */
   voice_wake_phrase: string;
   /** Spoken after the wake phrase, for example "clip that". */
   voice_clip_command: string;
@@ -413,7 +413,7 @@ export function getClipUploadStatus(clipId: string): Promise<ClipUploadStatus | 
   return invoke("get_clip_upload_status", { clipId });
 }
 
-/** Opens the ClipVault folder, or one remote file, in the browser. */
+/** Opens the Kenta folder, or one remote file, in the browser. */
 export function openGoogleDrive(clipId?: string): Promise<void> {
   return invoke("open_google_drive", { clipId: clipId ?? null });
 }

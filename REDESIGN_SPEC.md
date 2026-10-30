@@ -1,4 +1,4 @@
-# ClipVault — “Replay Studio” UI Redesign Specification
+# Kenta — “Replay Studio” UI Redesign Specification
 
 **Status:** ready for implementation  
 **Scope:** UI and window chrome only. No capture, replay-buffer, voice, editor, storage, or settings behavior changes.  
@@ -289,7 +289,7 @@ Remove the top-bar Settings icon button. Navigation lives in the sidebar; the Ca
 ### 3.2 Sidebar
 
 ```text
-[mark] ClipVault
+[mark] Kenta
        REPLAY STUDIO
 ────────────────────
 [icon] Capture
@@ -303,7 +303,7 @@ LOCAL CAPTURE · NO CLOUD UPLOADS
 
 - `.brand`: mark `30×30`, radius `7px`, flat `--accent`, no gradient or shadow. Wordmark `15px/650`. “REPLAY STUDIO” `9.5px/700`, `0.14em`, `--faint`.
 - `.nav`: gap `2px`. `.nav-item`: height `40px`, padding `0 10px`, radius `7px`, single line, icon `17px`, label `13px/600`.
-- Remove nav captions (“Replay buffer”, “Your library”, “Tune ClipVault”) from the `NAV` array and the DOM. They are decorative subtitles.
+- Remove nav captions (“Replay buffer”, “Your library”, “Tune Kenta”) from the `NAV` array and the DOM. They are decorative subtitles.
 - Remove the `.nav-icon` tile background. Icons sit directly on the row.
 - Active: `background: rgba(245, 255, 46, 0.07)`, `color: var(--text)`, `box-shadow: inset 2px 0 0 var(--accent)`, icon `--accent`.
 - Hover: `background: rgba(255, 255, 255, 0.035)`.
@@ -342,7 +342,7 @@ Footnote: keep `LOCAL CAPTURE · NO CLOUD UPLOADS` at `9.5px/700`, `0.08em`, `--
 |---|---|---|
 | Capture | Capture | Replay buffer status and manual recording. |
 | Clips | Clips | Everything you have saved, in one place. |
-| Settings | Settings | Make ClipVault fit your setup. |
+| Settings | Settings | Make Kenta fit your setup. |
 | Editor | Editor | Cut this clip without touching the original. |
 
 - Editor top bar left adds a `32×32` back icon button before the title. Keep `aria-label="Back to the library"` and `title="Back to the library"` so the existing editor regression script still finds it. `onClick={closeEditor}`.
@@ -480,7 +480,7 @@ Add to `web/src/format.ts`:
 export function formatClipTitle(clip: { display_name: string | null; name: string }): string {
   const raw = (clip.display_name || clip.name).trim();
   const match = raw.match(
-    /^ClipVault[_-](\d{4})-(\d{2})-(\d{2})[_-](\d{2})-(\d{2})-(\d{2})(?:_(?:replay|recording))?(?:_edited)?$/i,
+    /^Kenta[_-](\d{4})-(\d{2})-(\d{2})[_-](\d{2})-(\d{2})-(\d{2})(?:_(?:replay|recording))?(?:_edited)?$/i,
   );
   if (!match) return raw;
   const [, year, month, day, hour, minute, second] = match;
@@ -618,7 +618,7 @@ Audio             Microphone and desktop sound are mixed into the clip.
 
 ...
 
-Global shortcuts  Work while ClipVault is in the background.
+Global shortcuts  Work while Kenta is in the background.
 ──────────────────────────────────────────────
 Save replay        [ F9 ] [Change]
 
@@ -714,9 +714,9 @@ Keep descriptions to one line:
 | Audio | Microphone and desktop sound are mixed into the clip. |
 | Save confirmation | A short chime when a clip is on disk. |
 | Voice clipping | Turn a spoken phrase into a saved clip. |
-| Global shortcuts | Work while ClipVault is in the background. |
+| Global shortcuts | Work while Kenta is in the background. |
 | Capture | Resolution, frame rate, and encoder. |
-| Startup, tray & tools | How ClipVault starts and keeps running. |
+| Startup, tray & tools | How Kenta starts and keeps running. |
 
 Remove hints that repeat the label. Keep consequence hints such as “Changing the window does not stop the buffer.” and “The close-button behaviour updates after saving.”
 
