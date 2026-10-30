@@ -392,6 +392,9 @@ impl Storage {
     Ok(account)
   }
 
+  /// Only the account tests inspect every stored account; the application
+  /// reads the active one through `cloud_state`.
+  #[cfg(test)]
   pub fn list_cloud_accounts(&self) -> AppResult<Vec<CloudAccount>> {
     let mut statement = self
       .conn
@@ -514,9 +517,10 @@ impl Storage {
     Ok(uploads)
   }
 
-  /// Used after a restart or an ambiguous network failure: the remote file id
-  /// already persisted is authoritative, so a retry never creates a second
-  /// copy of the same clip.
+  /// Used by the storage tests to check the persisted remote id. The uploader
+  /// itself reconciles through the `kentaClipId` app property before starting
+  /// a session, so it never needs a second copy of the same clip.
+  #[cfg(test)]
   pub fn find_upload_by_remote(&self, remote_file_id: &str) -> AppResult<Option<CloudUpload>> {
     let mut statement = self.conn.prepare(&format!(
       "SELECT {} FROM cloud_uploads WHERE remote_file_id = ?1 LIMIT 1",
