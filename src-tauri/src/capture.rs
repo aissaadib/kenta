@@ -1459,7 +1459,7 @@ mod tests {
     assert_eq!(capture_preset_for("libx264", "quality"), "faster");
     assert_eq!(capture_preset_for("h264_nvenc", "performance"), "p1");
     assert_eq!(capture_preset_for("h264_nvenc", "balanced"), "p4");
-    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p5");
+    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p6");
     assert_eq!(capture_preset_for("h264_qsv", "balanced"), "fast");
   }
 
