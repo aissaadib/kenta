@@ -1456,10 +1456,10 @@ mod tests {
   fn capture_presets_favor_real_time_encoding() {
     assert_eq!(capture_preset_for("libx264", "performance"), "ultrafast");
     assert_eq!(capture_preset_for("libx264", "balanced"), "veryfast");
-    assert_eq!(capture_preset_for("libx264", "quality"), "faster");
+    assert_eq!(capture_preset_for("libx264", "quality"), "medium");
     assert_eq!(capture_preset_for("h264_nvenc", "performance"), "p1");
     assert_eq!(capture_preset_for("h264_nvenc", "balanced"), "p4");
-    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p6");
+    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p7");
     assert_eq!(capture_preset_for("h264_qsv", "balanced"), "fast");
   }
 
