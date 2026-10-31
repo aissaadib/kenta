@@ -935,7 +935,7 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
 fn bits_per_pixel(quality: &str) -> f64 {
   match quality {
     "performance" => 0.07,
-    "quality" => 0.16,
+    "quality" => 0.18,
     _ => 0.10,
   }
 }
