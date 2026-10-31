@@ -1,7 +1,7 @@
 //! Global shortcuts through the Windows `RegisterHotKey` API.
 //!
 //! Unlike a polling loop, `RegisterHotKey` is event driven, works while
-//! ClipVault is unfocused, lets Windows report conflicts with other programs,
+//! Kenta is unfocused, lets Windows report conflicts with other programs,
 //! and consumes no CPU when idle. A dedicated thread owns the registrations and
 //! pumps the thread message queue; the Tauri command thread only sends commands.
 

@@ -34,6 +34,7 @@ import {
   openGoogleDrive,
   openOutputDir,
   previewConfirmationSound,
+  recommendedCaptureBitrate,
   selectOutputDir,
   voiceStatus,
   voiceTest,
@@ -80,6 +81,7 @@ const PRESETS = [
 ];
 
 const ADVANCED_KEYS: (keyof Settings)[] = [
+  "monitor_index",
   "monitor_offset_x",
   "monitor_offset_y",
   "resolution_width",
@@ -285,17 +287,19 @@ function DriveSection({ autoUpload, onAutoUploadChange, onNotify }: DriveSection
         {state === "disconnected" ? (
           <Row
             label="Account"
-            hint="Opens your browser. ClipVault only sees the ClipVault folder it creates, never the rest of your Drive."
+            hint="Opens your browser. Kenta only sees the Kenta folder it creates, never the rest of your Drive."
           >
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={connect}
-              disabled={busy !== null}
-            >
-              {busy === "connect" ? <Loader2 size={13} className="spin" /> : <Cloud size={13} />}
-              Connect Google Drive
-            </button>
+            <div className="drive-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={connect}
+                disabled={busy !== null}
+              >
+                {busy === "connect" ? <Loader2 size={13} className="spin" /> : <Cloud size={13} />}
+                Connect Google Drive
+              </button>
+            </div>
           </Row>
         ) : null}
 
@@ -364,15 +368,17 @@ function DriveSection({ autoUpload, onAutoUploadChange, onNotify }: DriveSection
 
         {state === "reauth_required" ? (
           <Row label="Reconnect">
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={connect}
-              disabled={busy !== null}
-            >
-              {busy === "connect" ? <Loader2 size={13} className="spin" /> : null}
-              Connect again
-            </button>
+            <div className="drive-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={connect}
+                disabled={busy !== null}
+              >
+                {busy === "connect" ? <Loader2 size={13} className="spin" /> : null}
+                Connect again
+              </button>
+            </div>
           </Row>
         ) : null}
 
@@ -421,6 +427,7 @@ interface NumericFieldProps {
   max: number;
   suffix?: string;
   hint?: string;
+  action?: ReactNode;
   onChange: (value: number) => void;
   onValidationChange?: (valid: boolean) => void;
 }
@@ -432,6 +439,7 @@ function NumericField({
   max,
   suffix,
   hint,
+  action,
   onChange,
   onValidationChange,
 }: NumericFieldProps) {
@@ -506,6 +514,7 @@ function NumericField({
         ) : hint ? (
           <span className="field-hint">{hint}</span>
         ) : null}
+        {action}
       </div>
     </div>
   );
@@ -595,6 +604,10 @@ function SettingsViewImpl({
   );
 
   const selectedMonitor = useMemo(() => {
+    if (draft.monitor_index !== null) {
+      const byIndex = monitors.find((monitor) => monitor.index === draft.monitor_index);
+      if (byIndex) return byIndex;
+    }
     if (draft.monitor_offset_x === null || draft.monitor_offset_y === null) {
       return monitors.find((monitor) => monitor.primary) ?? monitors[0] ?? null;
     }
@@ -604,7 +617,7 @@ function SettingsViewImpl({
           monitor.x === draft.monitor_offset_x && monitor.y === draft.monitor_offset_y,
       ) ?? null
     );
-  }, [draft.monitor_offset_x, draft.monitor_offset_y, monitors]);
+  }, [draft.monitor_index, draft.monitor_offset_x, draft.monitor_offset_y, monitors]);
 
   const hotkeyConflict =
     draft.hotkey_save_replay.trim().length > 0 &&
@@ -680,13 +693,50 @@ function SettingsViewImpl({
   const handleSelectMonitor = (index: number) => {
     const monitor = monitors.find((item) => item.index === index);
     if (!monitor) return;
+    // A 60 fps capture on a 120 Hz display is the main reason gameplay looks
+    // choppy. Match the display when it is a high-refresh screen.
+    const refresh = monitor.refresh_rate_hz ?? 0;
+    const nextFrameRate =
+      refresh >= 100
+        ? FPS_OPTIONS.includes(refresh)
+          ? refresh
+          : Math.min(240, refresh)
+        : draft.frame_rate;
     onChange({
       ...draft,
       monitor_offset_x: monitor.x,
       monitor_offset_y: monitor.y,
+      monitor_index: monitor.index,
       resolution_width: monitor.width,
       resolution_height: monitor.height,
+      frame_rate: nextFrameRate,
     });
+    if (nextFrameRate !== draft.frame_rate) {
+      onNotify(
+        "info",
+        "Matched your display",
+        `Frame rate set to ${nextFrameRate} fps for this ${refresh} Hz display.`,
+      );
+    }
+  };
+
+  const handleRecommendedBitrate = async () => {
+    try {
+      const kbps = await recommendedCaptureBitrate(
+        draft.resolution_width,
+        draft.resolution_height,
+        draft.frame_rate,
+        draft.quality_preset,
+      );
+      update("bitrate_kbps", kbps);
+      onNotify(
+        "info",
+        "Recommended bitrate applied",
+        `${kbps.toLocaleString()} kbps keeps motion clean at ${draft.frame_rate} fps.`,
+      );
+    } catch (reason) {
+      onNotify("error", "Could not calculate a bitrate", String(reason));
+    }
   };
 
   const handleRecheckFfmpeg = async () => {
@@ -697,7 +747,7 @@ function SettingsViewImpl({
       if (info.available) {
         onNotify("success", "FFmpeg found", info.version ?? info.path);
       } else {
-        onNotify("error", "FFmpeg not found", "Install FFmpeg or place ffmpeg.exe next to ClipVault.exe.");
+        onNotify("error", "FFmpeg not found", "Install FFmpeg or place ffmpeg.exe next to Kenta.exe.");
       }
     } catch (reason) {
       onNotify("error", "Could not check FFmpeg", String(reason));
@@ -741,9 +791,9 @@ function SettingsViewImpl({
           <div className="notice-copy">
             <strong>FFmpeg was not found</strong>
             <span>
-              ClipVault needs FFmpeg to capture and finalise clips. Install it and make sure{" "}
+              Kenta needs FFmpeg to capture and finalise clips. Install it and make sure{" "}
               <span className="mono">ffmpeg.exe</span> is on your PATH, or place it next to{" "}
-              <span className="mono">ClipVault.exe</span>.
+              <span className="mono">Kenta.exe</span>.
             </span>
           </div>
           <div className="notice-actions">
@@ -1006,14 +1056,14 @@ function SettingsViewImpl({
               className="input"
               value={draft.voice_wake_phrase}
               maxLength={60}
-              placeholder="ClipVault"
+              placeholder="Kenta"
               aria-label="Wake phrase"
               onChange={(event) => update("voice_wake_phrase", event.target.value)}
             />
           </Row>
           <Row
             label="Clip command"
-            hint={`Spoken right after the wake phrase: “${draft.voice_wake_phrase.trim() || "ClipVault"}”, ${
+            hint={`Spoken right after the wake phrase: “${draft.voice_wake_phrase.trim() || "Kenta"}”, ${
               draft.voice_clip_command.trim() || "clip that"
             }.`}
           >
@@ -1117,7 +1167,7 @@ function SettingsViewImpl({
         <header>
           <Keyboard size={16} className="settings-icon" />
           <h2>Global shortcuts</h2>
-          <p>Work while ClipVault is in the background.</p>
+          <p>Work while Kenta is in the background.</p>
         </header>
         <div className="settings-body">
           <Row label="Save replay">
@@ -1143,7 +1193,7 @@ function SettingsViewImpl({
             <Info size={14} />
             <span>
               Shortcuts are registered with Windows. If another app already owns a combination,
-              ClipVault will tell you and keep the previous binding.
+              Kenta will tell you and keep the previous binding.
             </span>
           </div>
         </div>
@@ -1199,6 +1249,7 @@ function SettingsViewImpl({
                     {monitors.map((monitor) => (
                       <option key={monitor.index} value={monitor.index}>
                         Display {monitor.index + 1} · {monitor.width}×{monitor.height}
+                        {monitor.refresh_rate_hz ? ` - ${monitor.refresh_rate_hz} Hz` : ""}
                         {monitor.primary ? " (primary)" : ""}
                       </option>
                     ))}
@@ -1267,7 +1318,14 @@ function SettingsViewImpl({
                 </div>
               </Row>
 
-              <Row label="Frame rate">
+              <Row
+                label="Frame rate"
+                hint={
+                  draft.frame_rate >= 100
+                    ? "High frame rate needs a fast encoder. Use a hardware encoder or the Performance preset."
+                    : "Match your display refresh rate (120 or 144 Hz) for smooth gameplay. 60 fps looks choppy on a 120 Hz screen."
+                }
+              >
                 <span className="select-wrap select-full">
                   <select
                     aria-label="Frame rate"
@@ -1291,7 +1349,18 @@ function SettingsViewImpl({
                 min={500}
                 max={100_000}
                 suffix="kbps"
-                hint="8,000 kbps is a balanced 1080p60 setting."
+                hint="Higher bitrate keeps fast motion clean. Use the recommendation for your size and frame rate."
+                action={
+                  <div className="field-action">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-small"
+                      onClick={handleRecommendedBitrate}
+                    >
+                      Use recommended
+                    </button>
+                  </div>
+                }
                 onChange={(value) => update("bitrate_kbps", value)}
                 onValidationChange={(valid) => setFieldValidity("bitrate", valid)}
               />
@@ -1302,10 +1371,10 @@ function SettingsViewImpl({
                   selectedEncoder
                     ? selectedEncoder.available
                       ? selectedEncoder.hardware
-                        ? "Hardware encoder detected. ClipVault falls back to CPU x264 if it fails."
+                        ? "Hardware encoder detected. Kenta falls back to CPU x264 if it fails."
                         : "CPU encoder. Works everywhere but uses more CPU."
-                      : "This encoder is not available on this PC; ClipVault will use CPU x264."
-                    : "ClipVault will verify the encoder when capture starts."
+                      : "This encoder is not available on this PC; Kenta will use CPU x264."
+                    : "Kenta will verify the encoder when capture starts."
                 }
               >
                 <span className="select-wrap select-full">
@@ -1361,20 +1430,20 @@ function SettingsViewImpl({
             <header>
               <Cpu size={16} className="settings-icon" />
               <h2>Startup, tray &amp; tools</h2>
-              <p>How ClipVault starts and keeps running.</p>
+              <p>How Kenta starts and keeps running.</p>
             </header>
             <div className="settings-body">
               <Switch
                 checked={draft.start_at_startup}
                 onChange={(checked) => update("start_at_startup", checked)}
-                label="Launch ClipVault at sign-in"
-                description="Adds ClipVault to your Windows startup apps."
+                label="Launch Kenta at sign-in"
+                description="Adds Kenta to your Windows startup apps."
               />
               <Switch
                 checked={draft.minimize_to_tray}
                 onChange={(checked) => update("minimize_to_tray", checked)}
                 label="Keep running when the window closes"
-                description="The close button hides ClipVault to the system tray instead of quitting."
+                description="The close button hides Kenta to the system tray instead of quitting."
               />
               {saved.minimize_to_tray !== draft.minimize_to_tray ? (
                 <p className="field-hint">The close-button behaviour updates after saving.</p>

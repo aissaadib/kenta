@@ -1,4 +1,4 @@
-//! Google Drive v3 client, limited to what ClipVault needs: find or create its
+//! Google Drive v3 client, limited to what Kenta needs: find or create its
 //! own folder, start a resumable upload, send chunks, and read back metadata.
 //!
 //! All requests go through [`HttpTransport`] so protocol tests can script
@@ -16,7 +16,7 @@ pub const VIDEO_MIME: &str = "video/mp4";
 /// Non-final chunks must be a multiple of 256 KiB; 8 MiB keeps the request count
 /// low while staying far below the 5 GiB single-request ceiling.
 pub const CHUNK_SIZE: usize = 8 * 1024 * 1024;
-pub const FOLDER_NAME: &str = "ClipVault";
+pub const FOLDER_NAME: &str = "Kenta";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
@@ -121,7 +121,6 @@ pub enum DriveError {
   SessionExpired,
   Network(String),
   Protocol(String),
-  Cancelled,
 }
 
 impl DriveError {
@@ -136,14 +135,13 @@ impl DriveError {
     match self {
       Self::Unauthorized => "Google Drive access expired.".into(),
       Self::Forbidden(reason) => format!("Google Drive refused the upload ({reason})."),
-      Self::NotFound => "The ClipVault folder no longer exists in Google Drive.".into(),
+      Self::NotFound => "The Kenta folder no longer exists in Google Drive.".into(),
       Self::QuotaExceeded(reason) => format!("Google Drive storage is full ({reason})."),
       Self::RateLimited { .. } => "Google Drive is rate limiting uploads. Retrying shortly.".into(),
       Self::Server(status) => format!("Google Drive is temporarily unavailable (HTTP {status})."),
       Self::SessionExpired => "The upload session expired; restarting the upload.".into(),
       Self::Network(message) => format!("The network connection failed ({message})."),
       Self::Protocol(message) => format!("Google returned an unexpected response ({message})."),
-      Self::Cancelled => "Upload cancelled.".into(),
     }
   }
 }
@@ -205,9 +203,9 @@ pub struct UploadMetadata {
 impl UploadMetadata {
   pub fn app_properties(&self) -> BTreeMap<String, String> {
     BTreeMap::from([
-      ("clipvaultClipId".to_string(), self.clip_id.clone()),
-      ("clipvaultAccount".to_string(), self.account_id.clone()),
-      ("clipvaultChecksum".to_string(), self.checksum.clone()),
+      ("kentaClipId".to_string(), self.clip_id.clone()),
+      ("kentaAccount".to_string(), self.account_id.clone()),
+      ("kentaChecksum".to_string(), self.checksum.clone()),
     ])
   }
 
@@ -278,7 +276,7 @@ impl<'a> DriveClient<'a> {
 
   pub fn find_folder(&self) -> Result<Option<String>, DriveError> {
     let query = format!(
-      "name = '{FOLDER_NAME}' and mimeType = '{FOLDER_MIME}' and trashed = false and appProperties has {{ key='clipvault' and value='folder' }}"
+      "name = '{FOLDER_NAME}' and mimeType = '{FOLDER_MIME}' and trashed = false and appProperties has {{ key='kenta' and value='folder' }}"
     );
     let url = format!(
       "{DRIVE_API}?q={}&fields=files(id,name,trashed)&pageSize=10&spaces=drive",
@@ -295,7 +293,7 @@ impl<'a> DriveClient<'a> {
   }
 
   pub fn create_folder(&self) -> Result<String, DriveError> {
-    let properties = BTreeMap::from([("clipvault".to_string(), "folder".to_string())]);
+    let properties = BTreeMap::from([("kenta".to_string(), "folder".to_string())]);
     let body = FileBody {
       name: FOLDER_NAME,
       mime_type: Some(FOLDER_MIME),
@@ -320,7 +318,7 @@ impl<'a> DriveClient<'a> {
   /// response or a restart.
   pub fn find_uploaded_file(&self, clip_id: &str) -> Result<Option<DriveFile>, DriveError> {
     let query = format!(
-      "appProperties has {{ key='clipvaultClipId' and value='{}' }} and trashed = false",
+      "appProperties has {{ key='kentaClipId' and value='{}' }} and trashed = false",
       clip_id.replace('\'', "")
     );
     let url = format!(
@@ -360,7 +358,7 @@ impl<'a> DriveClient<'a> {
     let owned_by_this_clip = files.iter().any(|file| {
       file
         .get("appProperties")
-        .and_then(|properties| properties.get("clipvaultClipId"))
+        .and_then(|properties| properties.get("kentaClipId"))
         .and_then(|value| value.as_str())
         == Some(clip_id)
     });
@@ -661,15 +659,15 @@ mod tests {
     let body: serde_json::Value = serde_json::from_slice(requests[2].body.as_deref().unwrap()).unwrap();
     assert_eq!(body["name"], FOLDER_NAME);
     assert_eq!(body["mimeType"], FOLDER_MIME);
-    assert_eq!(body["appProperties"]["clipvault"], "folder");
+    assert_eq!(body["appProperties"]["kenta"], "folder");
   }
 
   #[test]
-  fn an_existing_clipvault_folder_is_found_before_creating_one() {
+  fn an_existing_kenta_folder_is_found_before_creating_one() {
     let http = Scripted::new(vec![response(
       200,
       &[],
-      r#"{"files":[{"id":"folder-9","name":"ClipVault","trashed":false}]}"#,
+      r#"{"files":[{"id":"folder-9","name":"Kenta","trashed":false}]}"#,
     )]);
     let client = DriveClient::new(&http, "token");
     assert_eq!(client.ensure_folder(None).unwrap(), "folder-9");
@@ -699,9 +697,9 @@ mod tests {
     let body: serde_json::Value = serde_json::from_slice(request.body.as_deref().unwrap()).unwrap();
     assert_eq!(body["mimeType"], VIDEO_MIME);
     assert_eq!(body["parents"][0], "folder-1");
-    assert_eq!(body["appProperties"]["clipvaultClipId"], "clip-1");
-    assert_eq!(body["appProperties"]["clipvaultAccount"], "google-1");
-    assert_eq!(body["appProperties"]["clipvaultChecksum"], "abc");
+    assert_eq!(body["appProperties"]["kentaClipId"], "clip-1");
+    assert_eq!(body["appProperties"]["kentaAccount"], "google-1");
+    assert_eq!(body["appProperties"]["kentaChecksum"], "abc");
   }
 
   #[test]
@@ -797,13 +795,13 @@ mod tests {
     let http = Scripted::new(vec![response(
       200,
       &[],
-      r#"{"files":[{"id":"drive-1","name":"clip.mp4","size":"10","appProperties":{"clipvaultClipId":"clip-1"}}]}"#,
+      r#"{"files":[{"id":"drive-1","name":"clip.mp4","size":"10","appProperties":{"kentaClipId":"clip-1"}}]}"#,
     )]);
     let client = DriveClient::new(&http, "token");
     let found = client.find_uploaded_file("clip-1").unwrap().unwrap();
     assert_eq!(found.id, "drive-1");
-    assert_eq!(found.app_property("clipvaultClipId"), Some("clip-1"));
-    assert!(http.requests()[0].url.contains("clipvaultClipId"));
+    assert_eq!(found.app_property("kentaClipId"), Some("clip-1"));
+    assert!(http.requests()[0].url.contains("kentaClipId"));
   }
 
   #[test]
@@ -811,7 +809,7 @@ mod tests {
     let http = Scripted::new(vec![response(
       200,
       &[],
-      r#"{"files":[{"id":"other","name":"clip.mp4","appProperties":{"clipvaultClipId":"clip-2"}}]}"#,
+      r#"{"files":[{"id":"other","name":"clip.mp4","appProperties":{"kentaClipId":"clip-2"}}]}"#,
     )]);
     let client = DriveClient::new(&http, "token");
     let name = client.available_name("folder-1", "clip.mp4", "clip-1").unwrap();
@@ -823,7 +821,7 @@ mod tests {
     let http = Scripted::new(vec![response(
       200,
       &[],
-      r#"{"files":[{"id":"mine","name":"clip.mp4","appProperties":{"clipvaultClipId":"clip-1"}}]}"#,
+      r#"{"files":[{"id":"mine","name":"clip.mp4","appProperties":{"kentaClipId":"clip-1"}}]}"#,
     )]);
     let client = DriveClient::new(&http, "token");
     assert_eq!(

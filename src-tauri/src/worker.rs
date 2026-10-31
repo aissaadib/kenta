@@ -20,7 +20,7 @@ pub fn start(app: AppHandle) {
 
 fn start_hotkey_worker(app: AppHandle) {
   thread::Builder::new()
-    .name("clipvault-hotkeys".into())
+    .name("kenta-hotkeys".into())
     .spawn(move || loop {
       let event = {
         let state = app.state::<AppState>();
@@ -49,7 +49,7 @@ fn start_hotkey_worker(app: AppHandle) {
 
 fn start_status_emitter(app: AppHandle) {
   thread::Builder::new()
-    .name("clipvault-status".into())
+    .name("kenta-status".into())
     .spawn(move || loop {
       thread::sleep(STATUS_INTERVAL);
       let state = app.state::<AppState>();

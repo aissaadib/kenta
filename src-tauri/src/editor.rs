@@ -1005,21 +1005,21 @@ mod tests {
 
   #[test]
   fn keeps_the_original_file_name_and_never_reuses_a_path() {
-    let dir = std::env::temp_dir().join(format!("clipvault_edit_{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("kenta_edit_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    let original = dir.join("ClipVault_replay.mp4");
+    let original = dir.join("Kenta_replay.mp4");
     std::fs::write(&original, b"x").unwrap();
     let first = edited_output_path(&original, "edited");
     assert_eq!(
       first.file_name().unwrap().to_string_lossy(),
-      "ClipVault_replay_edited.mp4"
+      "Kenta_replay_edited.mp4"
     );
     assert_ne!(first, original);
     std::fs::write(&first, b"x").unwrap();
     let second = edited_output_path(&original, "edited");
     assert_eq!(
       second.file_name().unwrap().to_string_lossy(),
-      "ClipVault_replay_edited_1.mp4"
+      "Kenta_replay_edited_1.mp4"
     );
     let _ = std::fs::remove_dir_all(&dir);
   }
@@ -1062,7 +1062,7 @@ mod tests {
 
   fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-      "clipvault_edit_{tag}_{}",
+      "kenta_edit_{tag}_{}",
       uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&dir).unwrap();

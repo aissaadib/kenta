@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ClipVault",
+  "productName": "Kenta",
   "version": "0.1.0",
-  "identifier": "com.clipvault.app",
+  "identifier": "com.kenta.app",
   "build": {
     "frontendDist": "../web/dist",
     "beforeDevCommand": "cd web && npm run dev",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "ClipVault",
+        "title": "Kenta",
         "width": 1000,
         "height": 700,
         "theme": "Dark",

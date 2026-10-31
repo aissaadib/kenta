@@ -1,7 +1,7 @@
 //! Where the Google OAuth desktop client id comes from.
 //!
 //! A desktop OAuth client is a public client: the id is not a secret and the
-//! optional client secret is not treated as confidential. ClipVault never
+//! optional client secret is not treated as confidential. Kenta never
 //! bundles either one in the repository or in the installer. The id is read
 //! from the environment (development) or from `google-oauth.json` in the app
 //! config folder / next to the executable (packaged builds).
@@ -13,8 +13,8 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-pub const ENV_CLIENT_ID: &str = "CLIPVAULT_GOOGLE_CLIENT_ID";
-pub const ENV_CLIENT_SECRET: &str = "CLIPVAULT_GOOGLE_CLIENT_SECRET";
+pub const ENV_CLIENT_ID: &str = "KENTA_GOOGLE_CLIENT_ID";
+pub const ENV_CLIENT_SECRET: &str = "KENTA_GOOGLE_CLIENT_SECRET";
 pub const CONFIG_FILE_NAME: &str = "google-oauth.json";
 const CLIENT_ID_SUFFIX: &str = ".apps.googleusercontent.com";
 
@@ -114,7 +114,7 @@ pub fn load() -> Result<OAuthConfig, ConfigError> {
 pub fn candidate_paths() -> Vec<PathBuf> {
   let mut paths = Vec::new();
   if let Some(base) = dirs::config_dir() {
-    paths.push(base.join("ClipVault").join(CONFIG_FILE_NAME));
+    paths.push(base.join("Kenta").join(CONFIG_FILE_NAME));
   }
   if let Ok(exe) = std::env::current_exe() {
     if let Some(dir) = exe.parent() {

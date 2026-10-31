@@ -7,7 +7,10 @@ use windows_sys::Win32::System::Registry::{
 };
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const VALUE_NAME: &str = "ClipVault";
+const VALUE_NAME: &str = "Kenta";
+/// Value written by the previous release. It is removed on launch so Windows
+/// never tries to start an executable that no longer exists.
+const LEGACY_VALUE_NAME: &str = "ClipVault";
 
 fn wide(value: &str) -> Vec<u16> {
   value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -33,12 +36,11 @@ fn open_run_key() -> AppResult<HKEY> {
   Ok(key)
 }
 
-pub fn set_enabled(enabled: bool) -> AppResult<()> {
-  let key = open_run_key()?;
+pub fn set_enabled(enabled: bool) -> AppResult<()> {  let key = open_run_key()?;
   let name = wide(VALUE_NAME);
   if enabled {
     let exe = std::env::current_exe()
-      .map_err(|e| AppError::Settings(format!("Could not locate ClipVault.exe: {e}")))?;
+      .map_err(|e| AppError::Settings(format!("Could not locate Kenta.exe: {e}")))?;
     let command = format!("\"{}\"", exe.display());
     let data = wide(&command);
     let bytes = std::mem::size_of_val(data.as_slice()) as u32;
@@ -73,4 +75,17 @@ pub fn set_enabled(enabled: bool) -> AppResult<()> {
     }
   }
   Ok(())
+}
+
+/// Remove the startup value left by the previous release. Best effort: a
+/// missing key or value is already the desired state.
+pub fn remove_legacy() {
+  let Ok(key) = open_run_key() else {
+    return;
+  };
+  let name = wide(LEGACY_VALUE_NAME);
+  unsafe {
+    RegDeleteValueW(key, name.as_ptr());
+    RegCloseKey(key);
+  }
 }

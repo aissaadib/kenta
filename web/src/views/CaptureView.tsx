@@ -68,7 +68,7 @@ function stateLine(status: CaptureStatus): string {
     case "recording":
       return "Recording a full clip. Stop to save it.";
     case "saving":
-      return "ClipVault is finalising your clip.";
+      return "Kenta is finalising your clip.";
     case "error":
       return status.message ?? "Capture stopped unexpectedly.";
     default:

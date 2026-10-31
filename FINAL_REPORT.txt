@@ -1,4 +1,4 @@
-CLIPVAULT - FINAL ENGINEERING REPORT
+KENTA - FINAL ENGINEERING REPORT
 Repository: C:\Users\aissa\Desktop\kenta
 Initial snapshot branch: main (local only; not pushed, 2026-10-26)
 Initial report date: 2026-10-26; final status addendum: 2026-10-27
@@ -6,7 +6,7 @@ Initial report date: 2026-10-26; final status addendum: 2026-10-27
 ============================================================
 1. SUMMARY
 ============================================================
-ClipVault now runs on a Rust-owned capture engine with a real FFmpeg
+Kenta now runs on a Rust-owned capture engine with a real FFmpeg
 segment buffer, working replay saves, manual recordings that finalize into
 validated MP4 files, a persistent SQLite library, and a React interface
 that reports actual backend state.
@@ -18,7 +18,7 @@ architecture, settings, and clip data were preserved.
 
 Commits in this pass (local main):
   52bf2bc  Rewrite capture backend for reliable replay, recording, and settings
-  5e94fcc  Rebuild the ClipVault interface around real backend state
+  5e94fcc  Rebuild the Kenta interface around real backend state
   (docs)   Document setup, data locations, and verified behavior
 
 ============================================================
@@ -61,7 +61,7 @@ Capture engine (src-tauri/src/capture.rs)
   produce warnings instead of broken commands.
 
 FFmpeg helpers (src-tauri/src/ffmpeg.rs)
-- Discovery via CLIPVAULT_FFMPEG/CLIPVAULT_FFPROBE, next to the exe, then
+- Discovery via KENTA_FFMPEG/KENTA_FFPROBE, next to the exe, then
   PATH. No shell is used; all child processes receive argument arrays.
 - Encoder availability parsing, dshow device parsing, duration probing,
   and concat-path escaping with unit tests.
@@ -117,7 +117,7 @@ Static checks (all run on 2026-10-26):
 Runtime checks against the release binary:
 - Replay buffer starts automatically and reports live buffered seconds.
 - Replay saved through the real global shortcut Ctrl+Shift+S
-  (ClipVault_2026-10-26_17-26-03_replay.mp4, 11.5 MB).
+  (Kenta_2026-10-26_17-26-03_replay.mp4, 11.5 MB).
 - Manual recording produced a 29.68 s, 1920x1080, 60 fps MP4 and restarted
   the buffer afterward.
 - Global shortcuts Ctrl+Shift+F9 and Ctrl+Shift+R were also verified with
@@ -245,18 +245,18 @@ buffer format, or memory strategy. No claim about Medal internals is made here.
 8.2 DIAGNOSIS (measurements on this machine)
 ------------------------------------------------------------
 Contaminated baseline (before any fix):
-- 7 orphaned ClipVault FFmpeg processes whose parent ClipVault processes were
+- 7 orphaned Kenta FFmpeg processes whose parent Kenta processes were
   already gone. They held 1,412 MB working set / 4,338 MB private and were
   still writing into the replay buffer.
-- 11 stale session directories / 2,334 MB in %TEMP%\clipvault_buffer.
+- 11 stale session directories / 2,334 MB in %TEMP%\kenta_buffer.
 - Root cause: FFmpeg was spawned as a plain child with no Windows Job Object.
-  When ClipVault crashed or was force-terminated, Windows left the encoder
+  When Kenta crashed or was force-terminated, Windows left the encoder
   running indefinitely. Duplicate launches created additional encoders and
   hotkey conflicts.
 - Folder size: the workspace was 8,476 MB, but only 0.3 MB was web/dist and
   7.77 MB the recorded installer. target/debug alone was 6,252 MB and
   target/release 2,095 MB. The 8 GB was development build cache, not the app.
-- Memory attribution: ClipVault + WebView2 = about 397 MB working set at
+- Memory attribution: Kenta + WebView2 = about 397 MB working set at
   steady state; FFmpeg adds about 331 MB working set / 516-522 MB private.
   The user's "~400 MB" observation therefore matches the app+UI group exactly;
   the encoder is the additional cost.
@@ -274,7 +274,7 @@ Contaminated baseline (before any fix):
   display environment does not expose a usable Desktop Duplication output to
   FFmpeg. Switching backends would break capture on this machine, so gdigrab
   was kept. (Inference: the failure is environment/driver-specific, not a
-  ClipVault defect.)
+  Kenta defect.)
 - `-zerolatency` made NVENC initialization fail; `-surfaces 4` produced no
   measurable change.
 - `ffmpeg -encoders` costs 34 ms per spawn; dshow device enumeration costs
@@ -285,7 +285,7 @@ Contaminated baseline (before any fix):
 Reliability
 - src-tauri/src/process.rs: creates a Windows Job Object with
   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and assigns every capture/export FFmpeg
-  child to it. Force-killing ClipVault now kills FFmpeg with it.
+  child to it. Force-killing Kenta now kills FFmpeg with it.
 - src-tauri/src/instance.rs: named-mutex single-instance guard. A second launch
   focuses the existing window and exits instead of starting a second encoder.
 - capture::cleanup_stale_sessions: removes every pre-existing session directory
@@ -365,11 +365,11 @@ Reading the numbers honestly:
 - cargo check: pass. npm run lint: pass. npm run build: pass.
 - cargo tauri build: pass; MSI produced (one non-fatal MinGW duplicate-manifest
   linker warning remains).
-- Force-kill test: killed ClipVault with Stop-Process -Force; FFmpeg count went
+- Force-kill test: killed Kenta with Stop-Process -Force; FFmpeg count went
   from 1 to 0 within 4 s. Repeated on the MSI-extracted payload: same result.
 - Stale-session test: created a fake session directory; startup removed it and
   left only the new session.
-- Single-instance test: second launch exited in 18 ms; exactly 1 ClipVault and
+- Single-instance test: second launch exited in 18 ms; exactly 1 Kenta and
   1 FFmpeg remained.
 - Replay export: 60 s buffer, saved 53.5 MB MP4 in 1,111 ms.
 - Recording: started via UI, stopped after ~7 s, 6.8 MB MP4, stop took 4,116 ms,
@@ -383,7 +383,7 @@ Reading the numbers honestly:
   in 2.7 s with 1 FFmpeg and 1 session.
 - Clip library: 10 clips and 10 thumbnails loaded, 0 broken images; in-app
   preview reached readyState 4 and played.
-- MSI payload: administrative extract (msiexec /a) contains only clipvault.exe
+- MSI payload: administrative extract (msiexec /a) contains only kenta.exe
   and WebView2Loader.dll; the extracted exe launched, captured, and was
   force-kill-contained.
 
@@ -425,14 +425,14 @@ Reading the numbers honestly:
     feat(process): contain FFmpeg in a kill-on-close Job Object
     feat(capture): assign the replay encoder to the containment job
     feat(export): contain export and thumbnail FFmpeg children
-    feat(instance): enforce a single ClipVault instance
+    feat(instance): enforce a single Kenta instance
     fix(buffer): reclaim stale replay sessions at startup
     perf(capture): skip unchanged segment-list reads
     perf(ffmpeg): cache encoder enumeration
     docs: record the performance and reliability audit
 - Pushed to origin/main after the commits were created.
-- Built artifacts are not tracked: target/release/clipvault.exe (8.0 MiB) and
-  target/release/bundle/msi/ClipVault_0.1.0_x64_en-US.msi (3.97 MiB).
+- Built artifacts are not tracked: target/release/kenta.exe (8.0 MiB) and
+  target/release/bundle/msi/Kenta_0.1.0_x64_en-US.msi (3.97 MiB).
 
 
 ============================================================
@@ -442,17 +442,17 @@ Reading the numbers honestly:
 9.1 THE VISIBLE TERMINAL
 ------------------------------------------------------------
 Symptom
-  A console window stayed on the desktop for as long as ClipVault was
+  A console window stayed on the desktop for as long as Kenta was
   running, and short-lived probes flashed one during startup and while
   opening the clip library.
 
 Cause
-  ClipVault itself has no console: main.rs sets windows_subsystem =
+  Kenta itself has no console: main.rs sets windows_subsystem =
   "windows" for release builds. But ffmpeg.exe and ffprobe.exe are
   console programs, and Windows gives a console child of a GUI process
   a fresh console host with a visible window. Process inspection
   confirmed it: conhost.exe (PID 24200) was a direct child of the FFmpeg
-  process (PID 22908) that ClipVault had started.
+  process (PID 22908) that Kenta had started.
 
 Fix
   src-tauri/src/process.rs gained hide_console(&mut Command), which sets
@@ -581,7 +581,7 @@ Pushed: origin/feature/editor-voice-sound only; main untouched
 Three features, committed and verified separately:
 
   1. A saved-clip editor that opens one clip from the library.
-  2. Hands-free voice clipping: "ClipVault, clip that".
+  2. Hands-free voice clipping: "Kenta, clip that".
   3. A short confirmation chime after a clip is actually saved.
 
 The existing hidden-console fix, the 500 ms capture-status tick, the
@@ -670,7 +670,7 @@ Status and test
   and never saves a clip.
 
 Defaults and language
-  Off by default. Wake "ClipVault", command "clip that", 30 s clip, 60%
+  Off by default. Wake "Kenta", command "clip that", 30 s clip, 60%
   confidence, 5 s cooldown. The recogniser language follows the UI
   language and falls back to en-US with a visible note; if no recogniser
   exists the state is "unavailable" with the reason.
@@ -744,7 +744,7 @@ Editor, end to end (WebView2 via CDP)
 
 Voice, end to end
   Saving settings starts the engine: Starting... then Ready - en-US, with
-  'Voice clipping listening in en-US for "ClipVault" + "clip that"' in the
+  'Voice clipping listening in en-US for "Kenta" + "clip that"' in the
   log. One live run produced a real 30 second clip at 21:04:27 with the
   chime at 70%. Test showed Listening... and then the timeout message.
   Turning voice off saved, showed Off, and stopped listening. No focus
@@ -863,7 +863,7 @@ Known limitations retained from verification
 Output-folder housekeeping
   The final report supplied for this pass states that the output folder
   contained no MP4 files, while the original replay ZIP
-  ClipVault_2026-10-26_22-26-08_replay.zip remained untouched. The report
+  Kenta_2026-10-26_22-26-08_replay.zip remained untouched. The report
   states that the editor preserved the original clip's SHA-256 and mtime
   during export verification, and that the missing MP4 was not attributed
   to the new editor/voice/chime implementation. The ZIP was not restored

@@ -1,4 +1,4 @@
-//! Hands-free clipping: "ClipVault, clip that".
+//! Hands-free clipping: "Kenta, clip that".
 //!
 //! Recognition uses the speech engine Windows already ships (SAPI5, in
 //! process). Nothing is uploaded and nothing is recorded: the recogniser
@@ -42,7 +42,7 @@ pub const STATE_UNAVAILABLE: &str = "unavailable";
 pub const STATE_BUFFER_NOT_READY: &str = "buffer-not-ready";
 
 /// How long a bare wake phrase keeps the command armed. Long enough to say
-/// "ClipVault" and then think, short enough that a stray "clip that" from a
+/// "Kenta" and then think, short enough that a stray "clip that" from a
 /// video half a minute later does not save anything.
 const ARM_WINDOW: Duration = Duration::from_secs(6);
 
@@ -61,7 +61,7 @@ const RECOGNIZERS_CATEGORY: &str = r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speec
 /// Reduce a phrase to the words a recogniser would report: camel case split,
 /// lower case, punctuation treated as a word break, whitespace collapsed.
 ///
-/// "ClipVault" and "clip vault" must be the same phrase, because the engine
+/// "HeyKenta" and "hey kenta" must be the same phrase, because the engine
 /// hears the first as the second.
 pub fn normalize_phrase(input: &str) -> String {
   let mut spaced = String::with_capacity(input.len() + 8);
@@ -69,7 +69,7 @@ pub fn normalize_phrase(input: &str) -> String {
   for character in input.chars() {
     if let Some(previous) = previous {
       // A lower-case letter or digit followed by an upper-case one starts a
-      // new word: "ClipVault" is said as two words.
+      // new word: "Kenta" is said as two words.
       if (previous.is_lowercase() || previous.is_ascii_digit()) && character.is_uppercase() {
         spaced.push(' ');
       }
@@ -96,10 +96,10 @@ pub fn normalize_phrase(input: &str) -> String {
 
 /// What was heard, indexed so a phrase can only match whole words.
 ///
-/// Comparing token lists alone would miss "ClipVault" arriving as "clip vault";
-/// comparing one long string alone would let "hat" match inside "that". This
-/// keeps both: the characters are joined, and a match must start and end on a
-/// word boundary.
+/// Comparing token lists alone would miss a wake phrase written "HeyKenta" but
+/// heard as "hey kenta"; comparing one long string alone would let "hat" match
+/// inside "that". This keeps both: the characters are joined, and a match must
+/// start and end on a word boundary.
 pub struct Transcript {
   characters: Vec<char>,
   starts: Vec<usize>,
@@ -260,12 +260,12 @@ impl Matcher {
     let wake = transcript.find(&self.wake);
     let command = transcript.find(&self.command);
     match (wake, command) {
-      // "ClipVault, clip that" in one breath.
+      // "Kenta, clip that" in one breath.
       (Some((wake_at, _)), Some((command_at, _))) if wake_at < command_at => {
         self.armed_until = None;
         Decision::Trigger
       }
-      // "ClipVault" on its own.
+      // "Kenta" on its own.
       (Some(_), None) => {
         self.armed_until = Some(now + ARM_WINDOW);
         Decision::Armed
@@ -484,7 +484,7 @@ impl VoiceHandle {
 
     let worker = Arc::clone(&shared);
     let spawned = std::thread::Builder::new()
-      .name("clipvault-voice".into())
+      .name("kenta-voice".into())
       .spawn(move || run(worker, sink, config, input, exited_tx));
 
     let handle = Self {
@@ -987,7 +987,7 @@ unsafe fn choose_recognizer() -> Result<RecognizerChoice, String> {
     (
       index,
       Some(format!(
-        "Windows has no {ui_tag} speech recogniser, so ClipVault is listening in {}. Add your language in Windows Settings → Time & language → Speech.",
+        "Windows has no {ui_tag} speech recogniser, so Kenta is listening in {}. Add your language in Windows Settings → Time & language → Speech.",
         locale_tag(tokens[index].lcid)
       )),
     )
@@ -996,7 +996,7 @@ unsafe fn choose_recognizer() -> Result<RecognizerChoice, String> {
     (
       0,
       Some(format!(
-        "Windows has no {ui_tag} speech recogniser, so ClipVault is listening in {fallback}."
+        "Windows has no {ui_tag} speech recogniser, so Kenta is listening in {fallback}."
       )),
     )
   };
@@ -1012,7 +1012,7 @@ fn grammar_path() -> PathBuf {
   static SEQUENCE: AtomicU32 = AtomicU32::new(0);
   let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
   std::env::temp_dir().join(format!(
-    "clipvault-voice-{}-{sequence}.grxml",
+    "kenta-voice-{}-{sequence}.grxml",
     std::process::id()
   ))
 }
@@ -1134,16 +1134,16 @@ mod tests {
 
   #[test]
   fn camel_case_is_split_into_spoken_words() {
-    assert_eq!(normalize_phrase("ClipVault"), "clip vault");
-    assert_eq!(normalize_phrase("HeyClipVault"), "hey clip vault");
-    assert_eq!(normalize_phrase("clipvault"), "clipvault");
+    assert_eq!(normalize_phrase("HeyKenta"), "hey kenta");
+    assert_eq!(normalize_phrase("Kenta"), "kenta");
+    assert_eq!(normalize_phrase("kenta"), "kenta");
   }
 
   #[test]
   fn punctuation_and_whitespace_become_word_breaks() {
-    assert_eq!(normalize_phrase("  ClipVault,   clip-that!  "), "clip vault clip that");
+    assert_eq!(normalize_phrase("  Kenta,   clip-that!  "), "kenta clip that");
     assert_eq!(normalize_phrase("clip.that"), "clip that");
-    assert_eq!(normalize_phrase("ClipVault's"), "clip vault s");
+    assert_eq!(normalize_phrase("Kenta's"), "kenta s");
   }
 
   #[test]
@@ -1156,12 +1156,12 @@ mod tests {
 
   #[test]
   fn a_phrase_matches_the_words_it_was_heard_as() {
-    let heard = Transcript::new("Clip vault, clip that");
-    assert_eq!(heard.find("ClipVault"), Some((0, 2)));
-    assert_eq!(heard.find("clip that"), Some((2, 4)));
-    assert_eq!(heard.find("clip"), Some((0, 1)));
-    assert_eq!(heard.find("that"), Some((3, 4)));
-    assert_eq!(heard.find("clip vault clip that"), Some((0, 4)));
+    let heard = Transcript::new("Kenta, clip that");
+    assert_eq!(heard.find("kenta"), Some((0, 1)));
+    assert_eq!(heard.find("clip that"), Some((1, 3)));
+    assert_eq!(heard.find("clip"), Some((1, 2)));
+    assert_eq!(heard.find("that"), Some((2, 3)));
+    assert_eq!(heard.find("kenta clip that"), Some((0, 3)));
   }
 
   #[test]
@@ -1171,8 +1171,8 @@ mod tests {
     assert_eq!(heard.find("at"), None);
     assert_eq!(heard.find("th"), None);
 
-    let heard = Transcript::new("clipvault");
-    assert_eq!(heard.find("clipvault"), Some((0, 1)));
+    let heard = Transcript::new("kenta");
+    assert_eq!(heard.find("kenta"), Some((0, 1)));
     assert_eq!(heard.find("clip"), None, "half a word is not a word");
   }
 
@@ -1185,7 +1185,7 @@ mod tests {
 
   #[test]
   fn an_empty_phrase_never_matches() {
-    let heard = Transcript::new("clip vault clip that");
+    let heard = Transcript::new("kenta clip that");
     assert_eq!(heard.find(""), None);
     assert_eq!(heard.find("   "), None);
     assert!(Transcript::new("").is_empty());
@@ -1196,12 +1196,12 @@ mod tests {
 
   #[test]
   fn the_grammar_accepts_wake_command_and_wake_then_command() {
-    let xml = grammar_xml("ClipVault", "clip that", "en-US");
+    let xml = grammar_xml("Kenta", "clip that", "en-US");
     assert!(xml.contains(r#"xml:lang="en-US""#));
     assert!(xml.contains(r#"root="voice""#));
     assert!(xml.contains(r#"<rule id="voice" scope="public">"#));
-    // The wake phrase is spoken as two words, not one.
-    assert!(xml.contains("<rule id=\"wake\"><one-of><item>clip vault</item></one-of></rule>"));
+    // The wake phrase is normalized before it reaches the grammar.
+    assert!(xml.contains("<rule id=\"wake\"><one-of><item>kenta</item></one-of></rule>"));
     assert!(xml.contains("<rule id=\"command\"><one-of><item>clip that</item></one-of></rule>"));
     assert!(xml.contains(r##"<ruleref uri="#wake"/><ruleref uri="#command"/>"##));
     // Three alternatives in the root rule, one item per phrase rule.
@@ -1222,7 +1222,7 @@ mod tests {
   #[test]
   fn xml_escaping_still_applies_to_the_language_tag() {
     // The tag is the one string the builder does not normalise.
-    let xml = grammar_xml("ClipVault", "clip that", "en&US");
+    let xml = grammar_xml("Kenta", "clip that", "en&US");
     assert!(xml.contains("en&amp;US"));
   }
 
@@ -1237,7 +1237,7 @@ mod tests {
   // -- matcher ------------------------------------------------------------
 
   fn matcher() -> Matcher {
-    Matcher::new("ClipVault", "clip that", 60)
+    Matcher::new("Kenta", "clip that", 60)
   }
 
   #[test]
@@ -1245,7 +1245,7 @@ mod tests {
     let now = Instant::now();
     let mut matcher = matcher();
     assert_eq!(
-      matcher.decide("ClipVault, clip that", 0.94, now),
+      matcher.decide("Kenta, clip that", 0.94, now),
       Decision::Trigger
     );
     assert!(!matcher.armed(now));
@@ -1255,7 +1255,7 @@ mod tests {
   fn the_wake_phrase_arms_the_command() {
     let now = Instant::now();
     let mut matcher = matcher();
-    assert_eq!(matcher.decide("ClipVault", 0.9, now), Decision::Armed);
+    assert_eq!(matcher.decide("Kenta", 0.9, now), Decision::Armed);
     assert!(matcher.armed(now));
     assert_eq!(
       matcher.decide("clip that", 0.9, now + Duration::from_secs(2)),
@@ -1276,7 +1276,7 @@ mod tests {
   fn arming_expires() {
     let now = Instant::now();
     let mut matcher = matcher();
-    matcher.decide("ClipVault", 0.9, now);
+    matcher.decide("Kenta", 0.9, now);
     assert_eq!(
       matcher.decide("clip that", 0.9, now + ARM_WINDOW + Duration::from_millis(1)),
       Decision::Ignore
@@ -1289,7 +1289,7 @@ mod tests {
     let now = Instant::now();
     let mut matcher = matcher();
     assert_eq!(
-      matcher.decide("clip that, ClipVault", 0.95, now),
+      matcher.decide("clip that, Kenta", 0.95, now),
       Decision::Ignore
     );
   }
@@ -1298,9 +1298,9 @@ mod tests {
   fn weak_recognitions_neither_trigger_nor_arm() {
     let now = Instant::now();
     let mut matcher = matcher();
-    assert_eq!(matcher.decide("ClipVault, clip that", 0.59, now), Decision::Ignore);
+    assert_eq!(matcher.decide("Kenta, clip that", 0.59, now), Decision::Ignore);
     assert!(!matcher.armed(now), "a weak guess must not arm the command");
-    assert_eq!(matcher.decide("ClipVault", 0.2, now), Decision::Ignore);
+    assert_eq!(matcher.decide("Kenta", 0.2, now), Decision::Ignore);
     assert!(!matcher.armed(now));
   }
 
@@ -1309,7 +1309,7 @@ mod tests {
     let now = Instant::now();
     let mut matcher = matcher();
     assert_eq!(
-      matcher.decide("ClipVault, clip that", 0.60, now),
+      matcher.decide("Kenta, clip that", 0.60, now),
       Decision::Trigger
     );
   }
@@ -1318,7 +1318,7 @@ mod tests {
   fn a_nonsense_confidence_is_ignored() {
     let now = Instant::now();
     let mut matcher = matcher();
-    assert_eq!(matcher.decide("ClipVault, clip that", f32::NAN, now), Decision::Ignore);
+    assert_eq!(matcher.decide("Kenta, clip that", f32::NAN, now), Decision::Ignore);
   }
 
   #[test]
@@ -1340,7 +1340,7 @@ mod tests {
     );
     // The old defaults mean nothing now.
     assert_eq!(
-      Matcher::new("Hey Jarvis", "save that", 50).decide("ClipVault, clip that", 0.99, now),
+      Matcher::new("Hey Jarvis", "save that", 50).decide("Kenta, clip that", 0.99, now),
       Decision::Ignore
     );
   }
@@ -1349,7 +1349,7 @@ mod tests {
   fn disarming_drops_a_pending_command() {
     let now = Instant::now();
     let mut matcher = matcher();
-    matcher.decide("ClipVault", 0.9, now);
+    matcher.decide("Kenta", 0.9, now);
     assert!(matcher.armed(now));
     // A trigger consumes the armed state; the same words cannot fire twice.
     assert_eq!(matcher.decide("clip that", 0.9, now), Decision::Trigger);
@@ -1376,7 +1376,7 @@ mod tests {
 
   fn config() -> VoiceConfig {
     VoiceConfig {
-      wake_phrase: "ClipVault".into(),
+      wake_phrase: "Kenta".into(),
       clip_command: "clip that".into(),
       clip_seconds: 30,
       min_confidence: 60,
@@ -1386,7 +1386,7 @@ mod tests {
 
   #[test]
   fn a_successful_test_says_so() {
-    let outcome = describe_test("ClipVault, clip that", 94, true, &config());
+    let outcome = describe_test("Kenta, clip that", 94, true, &config());
     assert_eq!(outcome.status, "heard");
     assert!(outcome.matched);
     assert!(outcome.message.contains("would save a clip"));
@@ -1394,7 +1394,7 @@ mod tests {
 
   #[test]
   fn a_weak_test_names_the_threshold() {
-    let outcome = describe_test("ClipVault, clip that", 41, false, &config());
+    let outcome = describe_test("Kenta, clip that", 41, false, &config());
     assert!(!outcome.matched);
     assert!(outcome.message.contains("below the 60% confidence threshold"));
   }
@@ -1404,7 +1404,7 @@ mod tests {
     let no_wake = describe_test("clip that", 90, false, &config());
     assert!(no_wake.message.contains("not the wake phrase"));
 
-    let no_command = describe_test("ClipVault", 90, false, &config());
+    let no_command = describe_test("Kenta", 90, false, &config());
     assert!(no_command.message.contains("not the clip command"));
   }
 
@@ -1449,7 +1449,7 @@ mod tests {
     }
   }
 
-  /// SAPI speaking "ClipVault, clip that" into a WAV, with a short leading
+  /// SAPI speaking "Kenta, clip that" into a WAV, with a short leading
   /// pause so a caller can register a test before the first word is decoded.
   ///
   /// The fixture is produced with PowerShell's System.Speech and ffmpeg
@@ -1457,11 +1457,11 @@ mod tests {
   /// under test is the SAPI code in this module.
   fn fixture(name: &str) -> PathBuf {
     let raw = std::env::temp_dir().join(format!(
-      "clipvault-voice-{name}-{}.wav",
+      "kenta-voice-{name}-{}.wav",
       std::process::id()
     ));
     let padded = std::env::temp_dir().join(format!(
-      "clipvault-voice-{name}-padded-{}.wav",
+      "kenta-voice-{name}-padded-{}.wav",
       std::process::id()
     ));
     let _ = std::fs::remove_file(&raw);
@@ -1474,7 +1474,7 @@ mod tests {
          [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, \
          [System.Speech.AudioFormat.AudioChannel]::Mono); \
        $s.SetOutputToWaveFile('{}', $f); \
-       $s.Speak('ClipVault, clip that'); \
+       $s.Speak('Kenta, clip that'); \
        $s.Dispose()",
       raw.display()
     );
@@ -1487,7 +1487,7 @@ mod tests {
       .unwrap_or(false);
     assert!(spoken, "the test WAV could not be synthesised");
 
-    // ffmpeg is a hard requirement of ClipVault, so it is available here.
+    // ffmpeg is a hard requirement of Kenta, so it is available here.
     let mut pad = std::process::Command::new("ffmpeg");
     pad.args(["-y", "-loglevel", "error", "-i"])
       .arg(&raw)

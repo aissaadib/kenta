@@ -1,7 +1,7 @@
 //! Google OAuth 2.0 for installed applications.
 //!
 //! Flow: PKCE (S256) + loopback redirect. The system browser performs consent;
-//! ClipVault never renders a Google password form. The temporary listener binds
+//! Kenta never renders a Google password form. The temporary listener binds
 //! to 127.0.0.1 on an ephemeral port, validates `state` exactly, and closes
 //! after success, denial, cancellation or timeout.
 //!
@@ -15,7 +15,9 @@ use rand::RngCore;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
-use std::net::{IpAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
+#[cfg(test)]
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -23,12 +25,10 @@ pub const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 pub const REVOKE_ENDPOINT: &str = "https://oauth2.googleapis.com/revoke";
 pub const DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
-pub const SCOPES: &str = "openid email https://www.googleapis.com/auth/drive.file";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OAuthError {
-  Config(String),
   Denied,
   StateMismatch,
   Cancelled,
@@ -45,7 +45,6 @@ impl OAuthError {
   /// Safe to show in the UI: no tokens, no authorization codes, no headers.
   pub fn user_message(&self) -> String {
     match self {
-      Self::Config(message) => message.clone(),
       Self::Denied => "Google Drive access was not granted.".into(),
       Self::StateMismatch => {
         "The Google sign-in response did not match this request. Try connecting again.".into()
@@ -102,7 +101,7 @@ pub fn authorize_url(config: &OAuthConfig, redirect_uri: &str, state: &str, chal
     "{AUTH_ENDPOINT}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=consent&include_granted_scopes=true",
     form_encode(config.client_id()),
     form_encode(redirect_uri),
-    form_encode(SCOPES),
+    form_encode(&format!("openid email {DRIVE_FILE_SCOPE}")),
     form_encode(state),
     form_encode(challenge),
   )
@@ -445,14 +444,14 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) -> Option<Resu
   }
   let callback = parse_callback(&request_line);
   if callback.is_empty() {
-    let _ = respond(&mut stream, 404, "Not found", "This page is not part of the ClipVault sign-in.");
+    let _ = respond(&mut stream, 404, "Not found", "This page is not part of the Kenta sign-in.");
     return None;
   }
   let result = validate_callback(&callback, expected_state);
   let (status, title, body) = match &result {
-    Ok(_) => (200, "ClipVault is connected", "You can close this tab and return to ClipVault."),
-    Err(OAuthError::Denied) => (200, "Access was not granted", "ClipVault was not connected. You can close this tab."),
-    Err(_) => (400, "Sign-in failed", "ClipVault could not verify this response. Close this tab and try again."),
+    Ok(_) => (200, "Kenta is connected", "You can close this tab and return to Kenta."),
+    Err(OAuthError::Denied) => (200, "Access was not granted", "Kenta was not connected. You can close this tab."),
+    Err(_) => (400, "Sign-in failed", "Kenta could not verify this response. Close this tab and try again."),
   };
   let _ = respond(&mut stream, status, title, body);
   Some(result)
@@ -517,7 +516,6 @@ pub struct ConnectedAccount {
   pub email: Option<String>,
   pub access_token: String,
   pub expires_in: u64,
-  pub refresh_token: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -595,7 +593,6 @@ pub fn connect_with(
     email: identity.email,
     access_token: tokens.access_token,
     expires_in: tokens.expires_in,
-    refresh_token,
   })
 }
 
@@ -820,7 +817,7 @@ mod tests {
       // must skip it instead of failing.
       let _ = send_request(&redirect, "/favicon.ico");
       let body = send_request(&redirect, "/?code=the-code&state=the-state");
-      assert!(body.contains("ClipVault is connected"), "{body}");
+      assert!(body.contains("Kenta is connected"), "{body}");
     });
     let code = loopback
       .wait("the-state", Duration::from_secs(5), &cancel)

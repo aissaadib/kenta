@@ -43,7 +43,7 @@ const NAV: { key: View; label: string; icon: ReactNode }[] = [
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
   capture: { title: "Capture", subtitle: "Replay buffer status and manual recording." },
   clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
-  settings: { title: "Settings", subtitle: "Make ClipVault fit your setup." },
+  settings: { title: "Settings", subtitle: "Make Kenta fit your setup." },
 };
 
 export default function App() {
@@ -136,7 +136,7 @@ export default function App() {
           );
         }),
         listen<string>("app-error", (event) => {
-          addToast("error", "ClipVault could not finish that action", event.payload);
+          addToast("error", "Kenta could not finish that action", event.payload);
         }),
       ]);
       if (disposed) {
@@ -318,7 +318,7 @@ export default function App() {
       <div className="boot-screen">
         <span className="brand-mark"><Clapperboard size={22} /></span>
         <Loader2 size={22} className="spin" />
-        <span>Opening ClipVault…</span>
+        <span>Opening Kenta…</span>
       </div>
     );
   }
@@ -327,7 +327,7 @@ export default function App() {
     return (
       <div className="boot-screen boot-error">
         <span className="brand-mark brand-mark-error"><AlertTriangle size={22} /></span>
-        <strong>ClipVault could not start</strong>
+        <strong>Kenta could not start</strong>
         <p>{fatalError ?? "The capture service did not respond."}</p>
         <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
           Try again
@@ -342,7 +342,7 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark"><Clapperboard size={18} /></span>
           <span className="brand-copy">
-            <strong>ClipVault</strong>
+            <strong>Kenta</strong>
             <span>Replay studio</span>
           </span>
         </div>

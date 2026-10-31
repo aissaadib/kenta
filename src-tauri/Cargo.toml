@@ -1,5 +1,5 @@
 [package]
-name = "clipvault"
+name = "kenta"
 version = "0.1.0"
 description = "Lightweight gaming replay buffer and clip manager"
 authors = ["you"]

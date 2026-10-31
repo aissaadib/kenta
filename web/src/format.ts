@@ -68,7 +68,7 @@ export function formatRelative(iso: string): string {
 }
 
 const GENERATED_CLIP_NAME =
-  /^ClipVault[_-](\d{4})-(\d{2})-(\d{2})[_-](\d{2})-(\d{2})-(\d{2})(?:_(?:replay|recording))?(?:_edited)?$/i;
+  /^Kenta[_-](\d{4})-(\d{2})-(\d{2})[_-](\d{2})-(\d{2})-(\d{2})(?:_(?:replay|recording))?(?:_edited)?$/i;
 
 /** True when the stored name is the generated timestamp, not a custom name. */
 export function isGeneratedClipName(name: string): boolean {

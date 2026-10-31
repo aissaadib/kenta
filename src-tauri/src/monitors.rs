@@ -2,7 +2,8 @@ use serde::Serialize;
 use std::mem::size_of;
 use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
 use windows_sys::Win32::Graphics::Gdi::{
-  EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+  EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, DEVMODEW, ENUM_CURRENT_SETTINGS,
+  HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -14,6 +15,21 @@ pub struct MonitorInfo {
   pub width: u32,
   pub height: u32,
   pub primary: bool,
+  /// Current refresh rate in Hz, when Windows reports it. Used to recommend a
+  /// frame rate that matches the display instead of a fixed 60 fps.
+  pub refresh_rate_hz: Option<u32>,
+}
+
+/// Current refresh rate for a monitor device such as `\\.\DISPLAY1`.
+fn refresh_rate(device: &[u16]) -> Option<u32> {
+  let mut mode: DEVMODEW = unsafe { std::mem::zeroed() };
+  mode.dmSize = size_of::<DEVMODEW>() as u16;
+  let ok = unsafe { EnumDisplaySettingsW(device.as_ptr(), ENUM_CURRENT_SETTINGS, &mut mode) };
+  if ok != 0 && mode.dmDisplayFrequency > 1 {
+    Some(mode.dmDisplayFrequency)
+  } else {
+    None
+  }
 }
 
 unsafe extern "system" fn collect_monitor(
@@ -23,18 +39,20 @@ unsafe extern "system" fn collect_monitor(
   data: LPARAM,
 ) -> BOOL {
   let monitors = unsafe { &mut *(data as *mut Vec<MonitorInfo>) };
-  let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
-  info.cbSize = size_of::<MONITORINFO>() as u32;
-  let ok = unsafe { GetMonitorInfoW(monitor, &mut info) };
+  let mut info: MONITORINFOEXW = unsafe { std::mem::zeroed() };
+  info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+  let ok = unsafe { GetMonitorInfoW(monitor, &mut info as *mut _ as *mut _) };
   if ok != 0 {
+    let rect = info.monitorInfo.rcMonitor;
     monitors.push(MonitorInfo {
       index: 0,
-      x: info.rcMonitor.left,
-      y: info.rcMonitor.top,
-      width: (info.rcMonitor.right - info.rcMonitor.left).max(1) as u32,
-      height: (info.rcMonitor.bottom - info.rcMonitor.top).max(1) as u32,
+      x: rect.left,
+      y: rect.top,
+      width: (rect.right - rect.left).max(1) as u32,
+      height: (rect.bottom - rect.top).max(1) as u32,
       // MONITORINFOF_PRIMARY is 0x1; some windows-sys versions do not export it.
-      primary: info.dwFlags & 1 != 0,
+      primary: info.monitorInfo.dwFlags & 1 != 0,
+      refresh_rate_hz: refresh_rate(&info.szDevice),
     });
   }
   TRUE
@@ -66,6 +84,7 @@ pub fn enumerate() -> Vec<MonitorInfo> {
       width,
       height,
       primary: true,
+      refresh_rate_hz: refresh_rate(&[0u16]),
     });
   }
   monitors

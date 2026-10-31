@@ -253,7 +253,7 @@ impl AccountManager {
       let drive = DriveClient::new(self.drive_http.as_ref(), &account.access_token);
       let folder = drive.ensure_folder(None).ok();
       let folder_error = if folder.is_none() {
-        Some("Google Drive is connected, but the ClipVault folder could not be created yet.".to_string())
+        Some("Google Drive is connected, but the Kenta folder could not be created yet.".to_string())
       } else {
         None
       };
@@ -382,7 +382,7 @@ impl AccountManager {
     }
   }
 
-  /// The ClipVault folder for the active account, creating it if necessary.
+  /// The Kenta folder for the active account, creating it if necessary.
   pub fn ensure_folder(&self) -> Result<String, DriveError> {
     let token = self.access_token(false)?;
     let active = self
@@ -423,6 +423,9 @@ impl AccountManager {
     }
   }
 
+  /// Only the account tests need the handle; the application state already
+  /// shares the same `Arc`.
+  #[cfg(test)]
   pub fn storage(&self) -> Arc<Mutex<Option<Storage>>> {
     Arc::clone(&self.storage)
   }

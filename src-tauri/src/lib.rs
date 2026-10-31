@@ -8,6 +8,7 @@ mod errors;
 mod ffmpeg;
 mod hotkey;
 mod instance;
+mod migrate;
 mod monitors;
 mod process;
 mod settings;
@@ -86,7 +87,7 @@ pub fn run() {
   if !instance::acquire() {
     return;
   }
-  // Any FFmpeg child is tied to this process. If ClipVault crashes or is
+  // Any FFmpeg child is tied to this process. If Kenta crashes or is
   // force-terminated, Windows closes the job and the encoder exits with it.
   process::init();
 
@@ -117,6 +118,7 @@ pub fn run() {
       commands::rename_clip,
       commands::enumerate_audio_devices,
       commands::enumerate_video_encoders,
+      commands::recommended_capture_bitrate,
       commands::enumerate_monitors,
       commands::check_ffmpeg,
       commands::generate_thumbnail,
@@ -165,7 +167,7 @@ pub fn run() {
       }
     })
     .build(tauri::generate_context!())
-    .expect("error while building the ClipVault application")
+    .expect("error while building the Kenta application")
     .run(|app, event| {
       if let RunEvent::Exit = event {
         shutdown(app);
@@ -174,6 +176,9 @@ pub fn run() {
 }
 
 fn initialise(handle: &AppHandle) -> Result<(), AppError> {
+  // The previous release used a different folder name. Move its data before
+  // anything reads settings or opens the library.
+  migrate::run();
   let (settings, mut warnings) = commands::initial_settings();
 
   {
@@ -194,7 +199,7 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
           .map_err(|_| AppError::Storage("library lock poisoned".into()))? = Some(storage);
       }
       Err(error) => warnings.push(format!(
-        "The clip library could not be opened ({error}). Saving clips will be unavailable until ClipVault is restarted."
+        "The clip library could not be opened ({error}). Saving clips will be unavailable until Kenta is restarted."
       )),
     }
   }
@@ -237,6 +242,7 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
 
   // Keep the registry in sync with the persisted preference (for example after
   // the executable has been moved to a new folder).
+  autostart::remove_legacy();
   if settings.start_at_startup {
     if let Err(error) = autostart::set_enabled(true) {
       warnings.push(error.to_string());
@@ -314,7 +320,7 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
     state.capture_starting.store(true, Ordering::SeqCst);
     let app = handle.clone();
     std::thread::Builder::new()
-      .name("clipvault-capture-start".into())
+      .name("kenta-capture-start".into())
       .spawn(move || {
         let state = app.state::<AppState>();
         let mut engine = CaptureEngine::new(config);
@@ -341,12 +347,12 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
 }
 
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
-  let show = MenuItem::with_id(app, TRAY_SHOW, "Open ClipVault", true, None::<&str>)?;
+  let show = MenuItem::with_id(app, TRAY_SHOW, "Open Kenta", true, None::<&str>)?;
   let save = MenuItem::with_id(app, TRAY_SAVE, "Save replay", true, None::<&str>)?;
   let record = MenuItem::with_id(app, TRAY_RECORD, "Start / stop recording", true, None::<&str>)?;
   let folder = MenuItem::with_id(app, TRAY_FOLDER, "Open clips folder", true, None::<&str>)?;
   let separator = PredefinedMenuItem::separator(app)?;
-  let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit ClipVault", true, None::<&str>)?;
+  let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit Kenta", true, None::<&str>)?;
   let menu = Menu::with_items(
     app,
     &[&show, &save, &record, &folder, &separator, &quit],
@@ -355,7 +361,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
   let mut builder = TrayIconBuilder::new()
     .menu(&menu)
     .show_menu_on_left_click(false)
-    .tooltip("ClipVault")
+    .tooltip("Kenta")
     .on_menu_event(|app, event| match event.id().as_ref() {
       TRAY_SHOW => show_window(app),
       TRAY_SAVE => {

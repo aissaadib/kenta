@@ -2,7 +2,7 @@
 //!
 //! Access tokens stay in memory only. The long-lived refresh token is the one
 //! secret that must survive a restart, so it is written as a generic credential
-//! under `ClipVault/google-drive/<account id>` and never touches settings.json,
+//! under `Kenta/google-drive/<account id>` and never touches settings.json,
 //! SQLite, logs, or the webview.
 //!
 //! The trait exists so OAuth and upload tests can run against an in-memory
@@ -16,7 +16,7 @@ use windows_sys::Win32::Security::Credentials::{
   CRED_TYPE_GENERIC,
 };
 
-const TARGET_PREFIX: &str = "ClipVault/google-drive";
+const TARGET_PREFIX: &str = "Kenta/google-drive";
 
 pub trait TokenStore: Send + Sync {
   fn get(&self, account_id: &str) -> AppResult<Option<String>>;
@@ -60,7 +60,7 @@ fn last_error(context: &str) -> AppError {
 
 pub fn write(target: &str, secret: &str) -> AppResult<()> {
   let target = wide(target);
-  let user = wide("ClipVault");
+  let user = wide("Kenta");
   let mut blob = secret.as_bytes().to_vec();
   if blob.len() > 2560 {
     return Err(AppError::Cloud(
@@ -139,12 +139,6 @@ pub mod testing {
   }
 
   impl MemoryStore {
-    pub fn with(account_id: &str, token: &str) -> Self {
-      let store = Self::default();
-      store.set(account_id, token).unwrap();
-      store
-    }
-
     pub fn contains(&self, account_id: &str) -> bool {
       self
         .values
@@ -180,14 +174,14 @@ mod tests {
   use super::*;
 
   #[test]
-  fn target_names_are_scoped_to_clipvault_and_the_account() {
-    assert_eq!(target_for("abc"), "ClipVault/google-drive/abc");
+  fn target_names_are_scoped_to_kenta_and_the_account() {
+    assert_eq!(target_for("abc"), "Kenta/google-drive/abc");
     assert_ne!(target_for("abc"), target_for("def"));
   }
 
   #[test]
   fn credential_manager_round_trip() {
-    let account = format!("clipvault-test-{}", uuid::Uuid::new_v4());
+    let account = format!("kenta-test-{}", uuid::Uuid::new_v4());
     let target = target_for(&account);
     write(&target, "refresh-token-value").unwrap();
     assert_eq!(read(&target).unwrap().as_deref(), Some("refresh-token-value"));

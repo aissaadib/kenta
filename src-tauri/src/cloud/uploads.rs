@@ -6,7 +6,7 @@
 //!
 //! The database row is the source of truth for status. A restart re-enqueues
 //! unfinished rows and reconciles them against Google through the
-//! `clipvaultClipId` app property, so an interrupted upload never produces a
+//! `kentaClipId` app property, so an interrupted upload never produces a
 //! second remote file.
 
 use crate::cloud::account::AccountManager;
@@ -370,7 +370,7 @@ impl Worker {
     };
     if let Some(file) = existing {
       let same_checksum = file
-        .app_property("clipvaultChecksum")
+        .app_property("kentaChecksum")
         .map(|stored| stored == checksum)
         .unwrap_or(true);
       if same_checksum && file.size_bytes() == Some(total) {
@@ -537,7 +537,6 @@ impl Worker {
     metadata: &UploadMetadata,
   ) -> Recovery {
     match &error {
-      DriveError::Cancelled => return Recovery::Cancelled,
       DriveError::Unauthorized => {
         self.account.mark_needs_reauth(&row.account_id);
         return Recovery::Stop("Google Drive access expired. Connect the account again.".into());
@@ -552,7 +551,8 @@ impl Worker {
         return Recovery::Stop(format!("Google returned an unexpected response ({message})."))
       }
       DriveError::NotFound | DriveError::SessionExpired => {}
-      DriveError::Network(_) | DriveError::Server(_) | DriveError::RateLimited { .. } => {}
+      _ if error.is_retryable() => {}
+      _ => return Recovery::Stop(error.user_message()),
     }
 
     *attempts += 1;
@@ -938,7 +938,7 @@ mod tests {
     retry: RetryPolicy,
   ) -> Harness {
     let path = std::env::temp_dir().join(format!(
-      "clipvault-upload-test-{}.mp4",
+      "kenta-upload-test-{}.mp4",
       uuid::Uuid::new_v4()
     ));
     std::fs::write(&path, bytes).unwrap();
@@ -1053,7 +1053,7 @@ mod tests {
   #[test]
   fn an_existing_remote_copy_prevents_a_second_upload() {
     let script = Arc::new(Script::new(vec![json(
-      r#"{"files":[{"id":"drive-1","name":"clip.mp4","size":"10","mimeType":"video/mp4","appProperties":{"clipvaultClipId":"clip-1"}}]}"#,
+      r#"{"files":[{"id":"drive-1","name":"clip.mp4","size":"10","mimeType":"video/mp4","appProperties":{"kentaClipId":"clip-1"}}]}"#,
     )]));
     let harness = harness(script.clone(), &[7u8; 10], 4);
     harness.manager.enqueue(CLIP, ACCOUNT).unwrap();
