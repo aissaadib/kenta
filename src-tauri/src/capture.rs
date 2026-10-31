@@ -906,12 +906,14 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
   match encoder {
     "libx264" | "libx265" => match quality {
       "performance" => "ultrafast",
-      "quality" => "faster",
+      "quality" => "medium",
       _ => "veryfast",
     },
     "h264_nvenc" | "hevc_nvenc" => match quality {
       "performance" => "p1",
-      "quality" => "p5",
+      // p7 is slower than p6 and still keeps up with a 120 Hz display, so the
+      // high quality tier gets the best NVENC preset that remains real-time.
+      "quality" => "p7",
       _ => "p4",
     },
     "h264_amf" | "hevc_amf" => match quality {
@@ -933,8 +935,18 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
 fn bits_per_pixel(quality: &str) -> f64 {
   match quality {
     "performance" => 0.07,
-    "quality" => 0.14,
+    "quality" => 0.18,
     _ => 0.10,
+  }
+}
+
+/// NVENC constant-quality target for each tier. Lower is better quality. The
+/// quality tier gets real detail instead of the old one-size-fits-all 23.
+pub fn quality_cq(quality: &str) -> u32 {
+  match quality {
+    "performance" => 25,
+    "quality" => 17,
+    _ => 22,
   }
 }
 
@@ -1075,7 +1087,7 @@ pub fn build_segment_args(
       args.push("-rc".into());
       args.push("vbr".into());
       args.push("-cq".into());
-      args.push("23".into());
+      args.push(quality_cq(&config.quality_preset).to_string());
     }
     "h264_amf" | "hevc_amf" => {
       args.push("-quality".into());
@@ -1444,10 +1456,10 @@ mod tests {
   fn capture_presets_favor_real_time_encoding() {
     assert_eq!(capture_preset_for("libx264", "performance"), "ultrafast");
     assert_eq!(capture_preset_for("libx264", "balanced"), "veryfast");
-    assert_eq!(capture_preset_for("libx264", "quality"), "faster");
+    assert_eq!(capture_preset_for("libx264", "quality"), "medium");
     assert_eq!(capture_preset_for("h264_nvenc", "performance"), "p1");
     assert_eq!(capture_preset_for("h264_nvenc", "balanced"), "p4");
-    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p5");
+    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p7");
     assert_eq!(capture_preset_for("h264_qsv", "balanced"), "fast");
   }
 
