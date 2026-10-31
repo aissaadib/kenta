@@ -72,7 +72,7 @@ impl Default for Settings {
       frame_rate: 60,
       bitrate_kbps: 12000,
       encoder: "libx264".to_string(),
-      quality_preset: "balanced".to_string(),
+      quality_preset: "quality".to_string(),
       mic_enabled: false,
       mic_device: None,
       // Loopback capture is not available on every Windows PC. Starting with
@@ -233,7 +233,7 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
     settings.quality_preset.as_str(),
     "performance" | "balanced" | "quality"
   ) {
-    settings.quality_preset = "balanced".into();
+    settings.quality_preset = "quality".into();
   }
   if settings.encoder.trim().is_empty() {
     settings.encoder = "libx264".into();
