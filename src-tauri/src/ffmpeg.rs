@@ -180,10 +180,17 @@ pub fn video_encoders() -> AppResult<Vec<EncoderInfo>> {
   Ok(list)
 }
 
-/// Drop the cached encoder list so the next call re-queries FFmpeg. Used by
-/// the explicit "recheck FFmpeg" action in Settings.
+/// Cached result of `ffmpeg -filters`, populated on first use. Capture probes
+/// this to decide whether Windows Graphics Capture is available.
+static FILTER_CACHE: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Drop the cached encoder and filter lists so the next call re-queries FFmpeg.
+/// Used by the explicit "recheck FFmpeg" action in Settings.
 pub fn invalidate_encoder_cache() {
   if let Ok(mut cache) = ENCODER_CACHE.lock() {
+    *cache = None;
+  }
+  if let Ok(mut cache) = FILTER_CACHE.lock() {
     *cache = None;
   }
 }
@@ -191,6 +198,58 @@ pub fn invalidate_encoder_cache() {
 pub fn encoder_available(name: &str) -> bool {
   video_encoders()
     .map(|list| list.iter().any(|e| e.name == name && e.available))
+    .unwrap_or(false)
+}
+
+/// Parse `ffmpeg -filters` output into filter names. Rows look like
+/// ` .. gfxcapture        |->V       Capture graphics/screen content...`.
+pub fn parse_filters(stdout: &str) -> Vec<String> {
+  stdout
+    .lines()
+    .filter_map(|line| {
+      let trimmed = line.trim_start();
+      if trimmed.starts_with("Filters:") || trimmed.starts_with("T..") {
+        return None;
+      }
+      let mut fields = trimmed.split_whitespace();
+      let _flags = fields.next()?;
+      let name = fields.next()?;
+      if name.starts_with("---") {
+        return None;
+      }
+      Some(name.to_string())
+    })
+    .collect()
+}
+
+fn filters() -> AppResult<Vec<String>> {
+  if let Ok(cache) = FILTER_CACHE.lock() {
+    if let Some(list) = cache.as_ref() {
+      return Ok(list.clone());
+    }
+  }
+  let mut command = Command::new(ffmpeg());
+  crate::process::hide_console(&mut command);
+  let output = command
+    .args(["-hide_banner", "-filters"])
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .output()
+    .map_err(|e| AppError::Ffmpeg(format!("FFmpeg not found: {e}")))?;
+  if !output.status.success() {
+    return Err(AppError::Ffmpeg("FFmpeg could not list filters".into()));
+  }
+  let list = parse_filters(&String::from_utf8_lossy(&output.stdout));
+  if let Ok(mut cache) = FILTER_CACHE.lock() {
+    *cache = Some(list.clone());
+  }
+  Ok(list)
+}
+
+pub fn filter_available(name: &str) -> bool {
+  filters()
+    .map(|list| list.iter().any(|f| f == name))
     .unwrap_or(false)
 }
 
