@@ -709,17 +709,10 @@ impl CaptureEngine {
 
 }
 
-/// Execute a previously planned export. This is intentionally a free function
-/// so the capture mutex can be released while FFmpeg concatenates segments.
-pub fn export_plan(plan: &ExportPlan) -> AppResult<SaveResult> {
-  let mut content = String::new();
-  for segment in &plan.segments {
-    content.push_str(&format!("file '{}'\n", escape_concat_path(&segment.path)));
-  }
-  std::fs::write(&plan.list_path, content)
-    .map_err(|e| AppError::Capture(format!("Could not prepare the clip: {e}")))?;
-
-  let args: Vec<String> = vec![
+/// Build the concat arguments for a save. Kept separate so the stream mapping
+/// is covered by a unit test: FFmpeg otherwise keeps only one audio stream.
+pub fn build_concat_args(plan: &ExportPlan) -> Vec<String> {
+  vec![
     "-hide_banner".into(),
     "-loglevel".into(),
     "error".into(),
@@ -732,12 +725,29 @@ pub fn export_plan(plan: &ExportPlan) -> AppResult<SaveResult> {
     "0".into(),
     "-i".into(),
     plan.list_path.to_string_lossy().to_string(),
+    // Without an explicit map FFmpeg keeps only one stream per type, which
+    // silently dropped the microphone or PC audio track from every save.
+    "-map".into(),
+    "0".into(),
     "-c".into(),
     "copy".into(),
     "-movflags".into(),
     "+faststart".into(),
     plan.output_path.to_string_lossy().to_string(),
-  ];
+  ]
+}
+
+/// Execute a previously planned export. This is intentionally a free function
+/// so the capture mutex can be released while FFmpeg concatenates segments.
+pub fn export_plan(plan: &ExportPlan) -> AppResult<SaveResult> {
+  let mut content = String::new();
+  for segment in &plan.segments {
+    content.push_str(&format!("file '{}'\n", escape_concat_path(&segment.path)));
+  }
+  std::fs::write(&plan.list_path, content)
+    .map_err(|e| AppError::Capture(format!("Could not prepare the clip: {e}")))?;
+
+  let args = build_concat_args(plan);
   let output = ffmpeg::run_ffmpeg(&args).map_err(|e| {
     let _ = std::fs::remove_file(&plan.output_path);
     let _ = std::fs::remove_file(&plan.list_path);
@@ -1505,5 +1515,22 @@ mod tests {
     assert_eq!(resolve_backend(&config), CaptureBackend::Gdi);
     config.capture_backend = CaptureBackend::Gfx;
     assert_eq!(resolve_backend(&config), CaptureBackend::Gfx);
+  }
+
+  #[test]
+  fn export_maps_every_stream_so_both_audio_tracks_survive() {
+    let plan = ExportPlan {
+      segments: Vec::new(),
+      output_path: PathBuf::from("C:/out/clip.mp4"),
+      list_path: PathBuf::from("C:/temp/list.txt"),
+      source: "replay".into(),
+      has_audio: true,
+      width: 1920,
+      height: 1080,
+      frame_rate: 120,
+    };
+    let joined = build_concat_args(&plan).join(" ");
+    assert!(joined.contains("-map 0"));
+    assert!(joined.contains("-c copy"));
   }
 }
