@@ -34,6 +34,7 @@ import {
   openGoogleDrive,
   openOutputDir,
   previewConfirmationSound,
+  recommendedCaptureBitrate,
   selectOutputDir,
   voiceStatus,
   voiceTest,
@@ -425,6 +426,7 @@ interface NumericFieldProps {
   max: number;
   suffix?: string;
   hint?: string;
+  action?: ReactNode;
   onChange: (value: number) => void;
   onValidationChange?: (valid: boolean) => void;
 }
@@ -436,6 +438,7 @@ function NumericField({
   max,
   suffix,
   hint,
+  action,
   onChange,
   onValidationChange,
 }: NumericFieldProps) {
@@ -510,6 +513,7 @@ function NumericField({
         ) : hint ? (
           <span className="field-hint">{hint}</span>
         ) : null}
+        {action}
       </div>
     </div>
   );
@@ -599,6 +603,10 @@ function SettingsViewImpl({
   );
 
   const selectedMonitor = useMemo(() => {
+    if (draft.monitor_index !== null) {
+      const byIndex = monitors.find((monitor) => monitor.index === draft.monitor_index);
+      if (byIndex) return byIndex;
+    }
     if (draft.monitor_offset_x === null || draft.monitor_offset_y === null) {
       return monitors.find((monitor) => monitor.primary) ?? monitors[0] ?? null;
     }
@@ -608,7 +616,7 @@ function SettingsViewImpl({
           monitor.x === draft.monitor_offset_x && monitor.y === draft.monitor_offset_y,
       ) ?? null
     );
-  }, [draft.monitor_offset_x, draft.monitor_offset_y, monitors]);
+  }, [draft.monitor_index, draft.monitor_offset_x, draft.monitor_offset_y, monitors]);
 
   const hotkeyConflict =
     draft.hotkey_save_replay.trim().length > 0 &&
@@ -684,13 +692,50 @@ function SettingsViewImpl({
   const handleSelectMonitor = (index: number) => {
     const monitor = monitors.find((item) => item.index === index);
     if (!monitor) return;
+    // A 60 fps capture on a 120 Hz display is the main reason gameplay looks
+    // choppy. Match the display when it is a high-refresh screen.
+    const refresh = monitor.refresh_rate_hz ?? 0;
+    const nextFrameRate =
+      refresh >= 100
+        ? FPS_OPTIONS.includes(refresh)
+          ? refresh
+          : Math.min(240, refresh)
+        : draft.frame_rate;
     onChange({
       ...draft,
       monitor_offset_x: monitor.x,
       monitor_offset_y: monitor.y,
+      monitor_index: monitor.index,
       resolution_width: monitor.width,
       resolution_height: monitor.height,
+      frame_rate: nextFrameRate,
     });
+    if (nextFrameRate !== draft.frame_rate) {
+      onNotify(
+        "info",
+        "Matched your display",
+        `Frame rate set to ${nextFrameRate} fps for this ${refresh} Hz display.`,
+      );
+    }
+  };
+
+  const handleRecommendedBitrate = async () => {
+    try {
+      const kbps = await recommendedCaptureBitrate(
+        draft.resolution_width,
+        draft.resolution_height,
+        draft.frame_rate,
+        draft.quality_preset,
+      );
+      update("bitrate_kbps", kbps);
+      onNotify(
+        "info",
+        "Recommended bitrate applied",
+        `${kbps.toLocaleString()} kbps keeps motion clean at ${draft.frame_rate} fps.`,
+      );
+    } catch (reason) {
+      onNotify("error", "Could not calculate a bitrate", String(reason));
+    }
   };
 
   const handleRecheckFfmpeg = async () => {
@@ -1203,6 +1248,7 @@ function SettingsViewImpl({
                     {monitors.map((monitor) => (
                       <option key={monitor.index} value={monitor.index}>
                         Display {monitor.index + 1} · {monitor.width}×{monitor.height}
+                        {monitor.refresh_rate_hz ? ` - ${monitor.refresh_rate_hz} Hz` : ""}
                         {monitor.primary ? " (primary)" : ""}
                       </option>
                     ))}
@@ -1271,7 +1317,14 @@ function SettingsViewImpl({
                 </div>
               </Row>
 
-              <Row label="Frame rate">
+              <Row
+                label="Frame rate"
+                hint={
+                  draft.frame_rate >= 100
+                    ? "High frame rate needs a fast encoder. Use a hardware encoder or the Performance preset."
+                    : "Match your display refresh rate (120 or 144 Hz) for smooth gameplay. 60 fps looks choppy on a 120 Hz screen."
+                }
+              >
                 <span className="select-wrap select-full">
                   <select
                     aria-label="Frame rate"
@@ -1295,7 +1348,16 @@ function SettingsViewImpl({
                 min={500}
                 max={100_000}
                 suffix="kbps"
-                hint="8,000 kbps is a balanced 1080p60 setting."
+                hint="Higher bitrate keeps fast motion clean. Use the recommendation for your size and frame rate."
+                action={
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-small"
+                    onClick={handleRecommendedBitrate}
+                  >
+                    Use recommended
+                  </button>
+                }
                 onChange={(value) => update("bitrate_kbps", value)}
                 onValidationChange={(valid) => setFieldValidity("bitrate", valid)}
               />
