@@ -945,7 +945,7 @@ fn bits_per_pixel(quality: &str) -> f64 {
 pub fn quality_cq(quality: &str) -> u32 {
   match quality {
     "performance" => 25,
-    "quality" => 19,
+    "quality" => 17,
     _ => 22,
   }
 }
