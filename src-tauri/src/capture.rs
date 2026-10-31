@@ -15,6 +15,17 @@ use std::time::{Duration, Instant};
 /// the end of the exported clip is one segment.
 pub const SEGMENT_SECONDS: u32 = 2;
 
+/// Which Windows screen-capture path FFmpeg should use.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CaptureBackend {
+  /// Prefer the fast Windows Graphics Capture filter, fall back to GDI.
+  Auto,
+  /// `gfxcapture` through Windows Graphics Capture.
+  Gfx,
+  /// `gdigrab`, the compatibility path used by older FFmpeg builds.
+  Gdi,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureConfig {
   pub output_dir: PathBuf,
@@ -36,6 +47,10 @@ pub struct CaptureConfig {
   pub capture_source: String,
   pub monitor_offset_x: Option<i32>,
   pub monitor_offset_y: Option<i32>,
+  /// Index in the monitor list, used by the Windows Graphics Capture filter.
+  pub monitor_index: Option<u32>,
+  /// Kept as GDI for deterministic unit tests; production selects `Auto`.
+  pub capture_backend: CaptureBackend,
 }
 
 impl Default for CaptureConfig {
@@ -46,7 +61,7 @@ impl Default for CaptureConfig {
       width: 1920,
       height: 1080,
       frame_rate: 60,
-      bitrate_kbps: 8000,
+      bitrate_kbps: 12000,
       encoder: "libx264".into(),
       quality_preset: "balanced".into(),
       replay_duration_seconds: 60,
@@ -59,6 +74,8 @@ impl Default for CaptureConfig {
       capture_source: "desktop".into(),
       monitor_offset_x: None,
       monitor_offset_y: None,
+      monitor_index: None,
+      capture_backend: CaptureBackend::Gdi,
     }
   }
 }
@@ -243,37 +260,66 @@ impl CaptureEngine {
     self.prepare_session()?;
 
     let requested = self.config.encoder.clone();
+    let preferred_backend = self.config.capture_backend;
     match self.spawn_and_wait(&requested) {
       Ok(()) => {
         self.encoder_in_use = requested;
-        Ok(())
+        return Ok(());
       }
       Err(first_error) => {
         self.kill_child();
-        if requested != "libx264" && ffmpeg::encoder_available("libx264") {
-          self.warnings.push(format!(
-            "{} was unavailable, so Kenta switched to the CPU x264 encoder.",
-            encoder_display(&requested)
-          ));
+        // Graphics Capture is the smooth path. If it cannot start, retry with
+        // the older GDI grabber before giving up on the encoder.
+        let used_gfx = preferred_backend != CaptureBackend::Gdi
+          && resolve_backend(&self.config) == CaptureBackend::Gfx;
+        if used_gfx {
+          self.warnings.push(
+            "Windows Graphics Capture could not start, so Kenta switched to the GDI capture path. Smoothness may be limited.".into(),
+          );
           self.fallback_reason = Some(first_error.to_string());
+          self.config.capture_backend = CaptureBackend::Gdi;
           self.reset_session()?;
-          match self.spawn_and_wait("libx264") {
+          match self.spawn_and_wait(&requested) {
             Ok(()) => {
-              self.encoder_in_use = "libx264".into();
-              Ok(())
+              self.encoder_in_use = requested;
+              return Ok(());
             }
-            Err(second) => {
+            Err(second_error) => {
               self.kill_child();
-              let message = format!("{} {}", first_error, second);
-              self.state = CaptureState::Error(message.clone());
-              Err(AppError::Capture(message))
+              return self.fallback_to_cpu(requested, format!("{first_error} {second_error}"));
             }
           }
-        } else {
-          self.state = CaptureState::Error(first_error.to_string());
-          Err(first_error)
+        }
+        self.fallback_to_cpu(requested, first_error.to_string())
+      }
+    }
+  }
+
+  /// Last-resort encoder fallback: the CPU x264 encoder almost always exists,
+  /// so a hardware/driver problem does not leave the user without capture.
+  fn fallback_to_cpu(&mut self, requested: String, first_error: String) -> AppResult<()> {
+    if requested != "libx264" && ffmpeg::encoder_available("libx264") {
+      self.warnings.push(format!(
+        "{} was unavailable, so Kenta switched to the CPU x264 encoder.",
+        encoder_display(&requested)
+      ));
+      self.fallback_reason = Some(first_error.clone());
+      self.reset_session()?;
+      match self.spawn_and_wait("libx264") {
+        Ok(()) => {
+          self.encoder_in_use = "libx264".into();
+          Ok(())
+        }
+        Err(second) => {
+          self.kill_child();
+          let message = format!("{first_error} {second}");
+          self.state = CaptureState::Error(message.clone());
+          Err(AppError::Capture(message))
         }
       }
+    } else {
+      self.state = CaptureState::Error(first_error.clone());
+      Err(AppError::Capture(first_error))
     }
   }
 
@@ -843,6 +889,70 @@ pub fn preset_for(encoder: &str, quality: &str) -> &'static str {
   }
 }
 
+/// Encoder preset for live capture. This is deliberately faster than the
+/// offline editor preset: a replay buffer must encode in real time, and a
+/// dropped frame is more visible than a slightly larger file.
+pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
+  match encoder {
+    "libx264" | "libx265" => match quality {
+      "performance" => "ultrafast",
+      "quality" => "faster",
+      _ => "veryfast",
+    },
+    "h264_nvenc" | "hevc_nvenc" => match quality {
+      "performance" => "p1",
+      "quality" => "p5",
+      _ => "p4",
+    },
+    "h264_amf" | "hevc_amf" => match quality {
+      "performance" => "speed",
+      "quality" => "quality",
+      _ => "balanced",
+    },
+    "h264_qsv" | "hevc_qsv" => match quality {
+      "performance" => "veryfast",
+      "quality" => "medium",
+      _ => "fast",
+    },
+    _ => "medium",
+  }
+}
+
+/// Bits per pixel of encoded video for each quality tier. Gameplay is harder
+/// than a static desktop, so these are higher than a generic screen recorder.
+fn bits_per_pixel(quality: &str) -> f64 {
+  match quality {
+    "performance" => 0.07,
+    "quality" => 0.14,
+    _ => 0.10,
+  }
+}
+
+/// A bitrate that keeps motion clean at the requested size and frame rate.
+/// This is a starting point, not a cap: users can still type any value.
+pub fn recommended_bitrate_kbps(width: u32, height: u32, frame_rate: u32, quality: &str) -> u32 {
+  let pixels_per_second = (width.max(16) as f64)
+    * (height.max(16) as f64)
+    * (frame_rate.max(1) as f64);
+  let kbps = (pixels_per_second * bits_per_pixel(quality) / 1000.0).round() as u32;
+  kbps.clamp(2_000, 100_000)
+}
+
+/// Resolve `Auto` once per capture attempt. The caller can force GDI after a
+/// failed Graphics Capture start.
+pub fn resolve_backend(config: &CaptureConfig) -> CaptureBackend {
+  match config.capture_backend {
+    CaptureBackend::Auto => {
+      if ffmpeg::filter_available("gfxcapture") {
+        CaptureBackend::Gfx
+      } else {
+        CaptureBackend::Gdi
+      }
+    }
+    forced => forced,
+  }
+}
+
 pub fn build_segment_args(
   config: &CaptureConfig,
   session_dir: &Path,
@@ -878,21 +988,41 @@ pub fn build_segment_args(
     "-loglevel".into(),
     "error".into(),
     "-y".into(),
-    "-f".into(),
-    "gdigrab".into(),
-    "-framerate".into(),
-    config.frame_rate.to_string(),
   ];
-  if let (Some(x), Some(y)) = (config.monitor_offset_x, config.monitor_offset_y) {
-    args.push("-offset_x".into());
-    args.push(x.to_string());
-    args.push("-offset_y".into());
-    args.push(y.to_string());
+  let backend = resolve_backend(config);
+  match backend {
+    CaptureBackend::Gfx => {
+      // Windows Graphics Capture delivers frames at the display refresh rate.
+      // The source is scaled to the requested output size instead of being
+      // cropped, which is what the resolution presets promise.
+      args.push("-f".into());
+      args.push("lavfi".into());
+      args.push("-i".into());
+      args.push(format!(
+        "gfxcapture=monitor_idx={}:max_framerate={}:capture_cursor=1:output_fmt=bgra:resize_mode=scale:width={}:height={}",
+        config.monitor_index.unwrap_or(0),
+        config.frame_rate,
+        config.width,
+        config.height
+      ));
+    }
+    CaptureBackend::Auto | CaptureBackend::Gdi => {
+      args.push("-f".into());
+      args.push("gdigrab".into());
+      args.push("-framerate".into());
+      args.push(config.frame_rate.to_string());
+      if let (Some(x), Some(y)) = (config.monitor_offset_x, config.monitor_offset_y) {
+        args.push("-offset_x".into());
+        args.push(x.to_string());
+        args.push("-offset_y".into());
+        args.push(y.to_string());
+      }
+      args.push("-video_size".into());
+      args.push(format!("{}x{}", config.width, config.height));
+      args.push("-i".into());
+      args.push("desktop".into());
+    }
   }
-  args.push("-video_size".into());
-  args.push(format!("{}x{}", config.width, config.height));
-  args.push("-i".into());
-  args.push("desktop".into());
   for (device, _) in &audio_sources {
     args.push("-f".into());
     args.push("dshow".into());
@@ -911,6 +1041,13 @@ pub fn build_segment_args(
     args.push(format!("title={title}"));
   }
 
+  if backend == CaptureBackend::Gfx {
+    // gfxcapture emits D3D11 textures. Download once to BGRA; the encoder then
+    // converts to its own pixel format.
+    args.push("-vf".into());
+    args.push("hwdownload,format=bgra".into());
+  }
+
   args.push("-c:v".into());
   args.push(encoder.to_string());
   args.push("-b:v".into());
@@ -918,7 +1055,7 @@ pub fn build_segment_args(
   match encoder {
     "h264_nvenc" | "hevc_nvenc" => {
       args.push("-preset".into());
-      args.push(preset_for(encoder, &config.quality_preset).into());
+      args.push(capture_preset_for(encoder, &config.quality_preset).into());
       args.push("-rc".into());
       args.push("vbr".into());
       args.push("-cq".into());
@@ -926,13 +1063,13 @@ pub fn build_segment_args(
     }
     "h264_amf" | "hevc_amf" => {
       args.push("-quality".into());
-      args.push(preset_for(encoder, &config.quality_preset).into());
+      args.push(capture_preset_for(encoder, &config.quality_preset).into());
       args.push("-rc".into());
       args.push("vbr_peak".into());
     }
     _ => {
       args.push("-preset".into());
-      args.push(preset_for(encoder, &config.quality_preset).into());
+      args.push(capture_preset_for(encoder, &config.quality_preset).into());
     }
   }
   args.push("-pix_fmt".into());
@@ -960,6 +1097,12 @@ pub fn build_segment_args(
     "expr:gte(t,n_forced*{})",
     config.segment_seconds
   ));
+  // Keep the final clip constant frame rate even if the capture source skips a
+  // frame. A CFR timeline plays smoothly in every player and editor.
+  args.push("-fps_mode".into());
+  args.push("cfr".into());
+  args.push("-r".into());
+  args.push(config.frame_rate.to_string());
   args.push("-f".into());
   args.push("segment".into());
   args.push("-segment_time".into());
@@ -989,7 +1132,7 @@ fn friendly_ffmpeg_error(details: &str, encoder: &str) -> String {
   if lower.contains("dshow") || lower.contains("audio") || lower.contains("device") {
     return "An audio device could not be opened. Choose a different device in Settings or turn audio off.".into();
   }
-  if lower.contains("error opening input") || lower.contains("gdigrab") {
+  if lower.contains("error opening input") || lower.contains("gdigrab") || lower.contains("gfxcapture") {
     return "Windows desktop capture could not start. Try a smaller resolution or a different monitor.".into();
   }
   let line = last_meaningful_line(details);
@@ -1174,11 +1317,12 @@ mod tests {
     .unwrap();
     let joined = args.join(" ");
     assert!(joined.contains("-c:v libx264"));
-    assert!(joined.contains("-preset medium"));
+    assert!(joined.contains("-preset veryfast"));
     assert!(joined.contains("audio=Microphone (USB)"));
     assert!(joined.contains("-map 1:a:0"));
     assert!(joined.contains("-segment_list_flags +live"));
     assert!(joined.contains("-force_key_frames expr:gte(t,n_forced*2)"));
+    assert!(joined.contains("-fps_mode cfr"));
   }
 
   #[test]
@@ -1196,7 +1340,7 @@ mod tests {
     .unwrap();
     let joined = args.join(" ");
     assert!(joined.contains("-c:v h264_nvenc"));
-    assert!(joined.contains("-preset p5"));
+    assert!(joined.contains("-preset p4"));
     assert!(!joined.contains("-c:a aac"));
   }
 
@@ -1276,5 +1420,90 @@ mod tests {
     assert_eq!(preset_for("libx264", "quality"), "slow");
     assert_eq!(preset_for("h264_nvenc", "quality"), "p7");
     assert_eq!(preset_for("h264_amf", "balanced"), "balanced");
+  }
+
+  #[test]
+  fn capture_presets_favor_real_time_encoding() {
+    assert_eq!(capture_preset_for("libx264", "performance"), "ultrafast");
+    assert_eq!(capture_preset_for("libx264", "balanced"), "veryfast");
+    assert_eq!(capture_preset_for("libx264", "quality"), "faster");
+    assert_eq!(capture_preset_for("h264_nvenc", "performance"), "p1");
+    assert_eq!(capture_preset_for("h264_nvenc", "balanced"), "p4");
+    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p5");
+    assert_eq!(capture_preset_for("h264_qsv", "balanced"), "fast");
+  }
+
+  #[test]
+  fn recommended_bitrate_scales_with_pixels_and_frame_rate() {
+    let hd60 = recommended_bitrate_kbps(1920, 1080, 60, "balanced");
+    let hd120 = recommended_bitrate_kbps(1920, 1080, 120, "balanced");
+    let perf = recommended_bitrate_kbps(1920, 1080, 120, "performance");
+    let quality = recommended_bitrate_kbps(1920, 1080, 120, "quality");
+    assert_eq!(hd60, 12_442);
+    assert_eq!(hd120, 24_883);
+    assert!(perf < hd120 && hd120 < quality);
+    // The clamp keeps absurd requests inside the settings range.
+    assert_eq!(recommended_bitrate_kbps(16, 16, 1, "performance"), 2_000);
+    assert_eq!(recommended_bitrate_kbps(7680, 4320, 240, "quality"), 100_000);
+  }
+
+  #[test]
+  fn gfx_backend_uses_graphics_capture_and_downloads_frames() {
+    let config = CaptureConfig {
+      capture_backend: CaptureBackend::Gfx,
+      monitor_index: Some(2),
+      width: 2560,
+      height: 1440,
+      frame_rate: 120,
+      ..Default::default()
+    };
+    let args = build_segment_args(
+      &config,
+      Path::new("C:/temp/session"),
+      Path::new("C:/temp/session/segments.csv"),
+      "h264_nvenc",
+    )
+    .unwrap();
+    let joined = args.join(" ");
+    assert!(joined.contains("-f lavfi"));
+    assert!(joined.contains("gfxcapture=monitor_idx=2"));
+    assert!(joined.contains("max_framerate=120"));
+    assert!(joined.contains("resize_mode=scale"));
+    assert!(joined.contains("width=2560:height=1440"));
+    assert!(joined.contains("hwdownload,format=bgra"));
+    assert!(joined.contains("-fps_mode cfr -r 120"));
+    assert!(!joined.contains("gdigrab"));
+  }
+
+  #[test]
+  fn gdi_backend_keeps_the_compatibility_grabber() {
+    let config = CaptureConfig {
+      capture_backend: CaptureBackend::Gdi,
+      monitor_offset_x: Some(1920),
+      monitor_offset_y: Some(0),
+      ..Default::default()
+    };
+    let args = build_segment_args(
+      &config,
+      Path::new("C:/temp/session"),
+      Path::new("C:/temp/session/segments.csv"),
+      "libx264",
+    )
+    .unwrap();
+    let joined = args.join(" ");
+    assert!(joined.contains("-f gdigrab"));
+    assert!(joined.contains("-offset_x 1920"));
+    assert!(joined.contains("-offset_y 0"));
+    assert!(!joined.contains("gfxcapture"));
+    assert!(!joined.contains("hwdownload"));
+  }
+
+  #[test]
+  fn forced_backends_bypass_detection() {
+    let mut config = CaptureConfig::default();
+    config.capture_backend = CaptureBackend::Gdi;
+    assert_eq!(resolve_backend(&config), CaptureBackend::Gdi);
+    config.capture_backend = CaptureBackend::Gfx;
+    assert_eq!(resolve_backend(&config), CaptureBackend::Gfx);
   }
 }

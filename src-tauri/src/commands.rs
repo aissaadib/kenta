@@ -1,6 +1,7 @@
 use crate::autostart;
 use crate::capture::{
-  self, export_plan, CaptureConfig, CaptureEngine, CaptureState, SaveResult, SEGMENT_SECONDS,
+  self, export_plan, CaptureBackend, CaptureConfig, CaptureEngine, CaptureState, SaveResult,
+  SEGMENT_SECONDS,
 };
 use crate::cloud::account::{AccountManager, DriveStatus};
 use crate::cloud::uploads::UploadManager;
@@ -1091,6 +1092,7 @@ fn capture_affecting_changed(previous: &Settings, next: &Settings) -> bool {
     || previous.capture_source != next.capture_source
     || previous.monitor_offset_x != next.monitor_offset_x
     || previous.monitor_offset_y != next.monitor_offset_y
+    || previous.monitor_index != next.monitor_index
 }
 
 pub fn build_capture_config(settings: &Settings) -> Result<(CaptureConfig, Vec<String>), String> {
@@ -1231,6 +1233,8 @@ pub fn build_capture_config(settings: &Settings) -> Result<(CaptureConfig, Vec<S
       capture_source: "desktop".into(),
       monitor_offset_x: settings.monitor_offset_x,
       monitor_offset_y: settings.monitor_offset_y,
+      monitor_index: settings.monitor_index,
+      capture_backend: CaptureBackend::Auto,
     },
     warnings,
   ))
@@ -1747,6 +1751,18 @@ pub fn enumerate_audio_devices() -> Result<Vec<AudioDevice>, String> {
 #[tauri::command]
 pub fn enumerate_video_encoders() -> Result<Vec<EncoderInfo>, String> {
   err_string(ffmpeg::video_encoders())
+}
+
+/// A motion-friendly starting bitrate for the Settings "use recommended"
+/// action. Kept in Rust so the capture engine and the UI agree on one formula.
+#[tauri::command]
+pub fn recommended_capture_bitrate(
+  width: u32,
+  height: u32,
+  frame_rate: u32,
+  quality_preset: String,
+) -> u32 {
+  capture::recommended_bitrate_kbps(width, height, frame_rate, &quality_preset)
 }
 
 #[tauri::command]

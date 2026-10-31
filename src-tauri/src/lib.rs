@@ -118,6 +118,7 @@ pub fn run() {
       commands::rename_clip,
       commands::enumerate_audio_devices,
       commands::enumerate_video_encoders,
+      commands::recommended_capture_bitrate,
       commands::enumerate_monitors,
       commands::check_ffmpeg,
       commands::generate_thumbnail,

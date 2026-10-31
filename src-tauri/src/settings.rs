@@ -36,6 +36,9 @@ pub struct Settings {
   pub minimize_to_tray: bool,
   pub monitor_offset_x: Option<i32>,
   pub monitor_offset_y: Option<i32>,
+  /// Index in the enumerated monitor list. Graphics Capture needs this to pick
+  /// the display; GDI uses the offsets above.
+  pub monitor_index: Option<u32>,
   /// A short chime after a clip is saved. Generated in memory, never bundled.
   pub confirmation_sound_enabled: bool,
   /// 0 is silent, 100 is the full (still deliberately quiet) level.
@@ -67,7 +70,7 @@ impl Default for Settings {
       resolution_width: 1920,
       resolution_height: 1080,
       frame_rate: 60,
-      bitrate_kbps: 8000,
+      bitrate_kbps: 12000,
       encoder: "libx264".to_string(),
       quality_preset: "balanced".to_string(),
       mic_enabled: false,
@@ -83,6 +86,7 @@ impl Default for Settings {
       minimize_to_tray: true,
       monitor_offset_x: None,
       monitor_offset_y: None,
+      monitor_index: None,
       confirmation_sound_enabled: true,
       confirmation_sound_volume: 70,
       voice_enabled: false,
