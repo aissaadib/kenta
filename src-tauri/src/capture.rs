@@ -906,7 +906,7 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
   match encoder {
     "libx264" | "libx265" => match quality {
       "performance" => "ultrafast",
-      "quality" => "faster",
+      "quality" => "medium",
       _ => "veryfast",
     },
     "h264_nvenc" | "hevc_nvenc" => match quality {
