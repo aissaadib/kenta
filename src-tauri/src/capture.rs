@@ -911,9 +911,9 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
     },
     "h264_nvenc" | "hevc_nvenc" => match quality {
       "performance" => "p1",
-      // p6 measured ~118 unique fps at 1080p120 with two audio devices, so it
-      // is the slowest NVENC preset that still keeps up with a 120 Hz display.
-      "quality" => "p6",
+      // p7 is slower than p6 and still keeps up with a 120 Hz display, so the
+      // high quality tier gets the best NVENC preset that remains real-time.
+      "quality" => "p7",
       _ => "p4",
     },
     "h264_amf" | "hevc_amf" => match quality {
