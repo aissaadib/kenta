@@ -911,7 +911,9 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
     },
     "h264_nvenc" | "hevc_nvenc" => match quality {
       "performance" => "p1",
-      "quality" => "p5",
+      // p6 measured ~118 unique fps at 1080p120 with two audio devices, so it
+      // is the slowest NVENC preset that still keeps up with a 120 Hz display.
+      "quality" => "p6",
       _ => "p4",
     },
     "h264_amf" | "hevc_amf" => match quality {
@@ -933,8 +935,18 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
 fn bits_per_pixel(quality: &str) -> f64 {
   match quality {
     "performance" => 0.07,
-    "quality" => 0.14,
+    "quality" => 0.16,
     _ => 0.10,
+  }
+}
+
+/// NVENC constant-quality target for each tier. Lower is better quality. The
+/// quality tier gets real detail instead of the old one-size-fits-all 23.
+pub fn quality_cq(quality: &str) -> u32 {
+  match quality {
+    "performance" => 25,
+    "quality" => 19,
+    _ => 22,
   }
 }
 
@@ -1075,7 +1087,7 @@ pub fn build_segment_args(
       args.push("-rc".into());
       args.push("vbr".into());
       args.push("-cq".into());
-      args.push("23".into());
+      args.push(quality_cq(&config.quality_preset).to_string());
     }
     "h264_amf" | "hevc_amf" => {
       args.push("-quality".into());
