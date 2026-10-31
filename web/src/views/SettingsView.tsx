@@ -81,6 +81,7 @@ const PRESETS = [
 ];
 
 const ADVANCED_KEYS: (keyof Settings)[] = [
+  "monitor_index",
   "monitor_offset_x",
   "monitor_offset_y",
   "resolution_width",
@@ -1350,13 +1351,15 @@ function SettingsViewImpl({
                 suffix="kbps"
                 hint="Higher bitrate keeps fast motion clean. Use the recommendation for your size and frame rate."
                 action={
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-small"
-                    onClick={handleRecommendedBitrate}
-                  >
-                    Use recommended
-                  </button>
+                  <div className="field-action">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-small"
+                      onClick={handleRecommendedBitrate}
+                    >
+                      Use recommended
+                    </button>
+                  </div>
                 }
                 onChange={(value) => update("bitrate_kbps", value)}
                 onValidationChange={(valid) => setFieldValidity("bitrate", valid)}

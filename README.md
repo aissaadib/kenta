@@ -15,6 +15,10 @@ source of truth. Google Drive upload is optional, one-way and off by default.
   detection and rollback when a binding cannot be registered.
 - **Capture controls** — monitor, resolution, frame rate, bitrate, encoder, and quality
   preset, all applied by restarting capture with validated settings.
+- **Smooth capture** — records through Windows Graphics Capture at the display's refresh
+  rate (with an automatic GDI fallback), forces a constant frame rate, and recommends a
+  bitrate for the chosen size and frame rate. A 120 Hz display can produce true 120 fps
+  clips instead of a choppy 60 fps copy.
 - **Audio** — microphone and desktop/loopback capture, device selection, sample rate, and
   clear warnings when a loopback device is unavailable.
 - **Clip library** — thumbnails, in-app video preview, search, sort, rename, delete, open

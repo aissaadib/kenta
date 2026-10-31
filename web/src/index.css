@@ -1633,6 +1633,12 @@ button.clip-upload:focus-visible {
   gap: 5px;
 }
 
+/* Compact inline action under a numeric field, e.g. "Use recommended". */
+.setting-control > .field-action {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
 .setting-control > .input,
 .setting-control > .select-wrap,
 .setting-control > .input-with-suffix,
