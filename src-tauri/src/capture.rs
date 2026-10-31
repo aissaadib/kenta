@@ -1036,6 +1036,12 @@ pub fn build_segment_args(
   for (device, _) in &audio_sources {
     args.push("-f".into());
     args.push("dshow".into());
+    // The default one-second dshow buffer makes FFmpeg block on audio. With
+    // two devices open that collapsed a 120 fps capture to ~57 unique fps,
+    // which CFR then padded with duplicates. A short buffer keeps video at
+    // the display rate.
+    args.push("-audio_buffer_size".into());
+    args.push("50".into());
     args.push("-i".into());
     args.push(format!("audio={device}"));
   }
@@ -1377,6 +1383,8 @@ mod tests {
     assert!(joined.contains("-map 2:a:0"));
     assert!(joined.contains("-metadata:s:a:0 title=Microphone"));
     assert!(joined.contains("-metadata:s:a:1 title=PC Audio"));
+    // A long dshow buffer starves the video pipeline when two devices are open.
+    assert_eq!(joined.matches("-audio_buffer_size 50").count(), 2);
   }
 
   #[test]
