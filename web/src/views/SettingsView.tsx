@@ -67,8 +67,8 @@ interface Props {
 
 const QUALITY_OPTIONS = [
   { value: "performance", label: "Performance — lighter CPU/GPU load" },
-  { value: "balanced", label: "Balanced — recommended" },
-  { value: "quality", label: "Quality — larger files, best detail" },
+  { value: "balanced", label: "Balanced" },
+  { value: "quality", label: "High quality — recommended" },
 ];
 
 const FPS_OPTIONS = [24, 30, 60, 120, 144, 240];
