@@ -9,7 +9,7 @@
 //! separate audio tracks are mixed at the end. That keeps every track's
 //! timeline positions independent of the others.
 
-use crate::capture::preset_for;
+use crate::capture::{preset_for, quality_cq};
 use crate::errors::{AppError, AppResult};
 use crate::ffmpeg;
 use crate::timeline::{Segment, Timeline, TrackKind};
@@ -526,7 +526,7 @@ pub fn build_export_args(request: &ExportRequest<'_>) -> Vec<String> {
     "h264_nvenc" | "hevc_nvenc" => {
       args.extend(["-preset".into(), preset_for(request.encoder, request.quality_preset).into()]);
       args.extend(["-rc".into(), "vbr".into()]);
-      args.extend(["-cq".into(), "23".into()]);
+      args.extend(["-cq".into(), quality_cq(request.quality_preset).to_string()]);
     }
     "h264_amf" | "hevc_amf" => {
       args.extend(["-quality".into(), preset_for(request.encoder, request.quality_preset).into()]);
