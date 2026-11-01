@@ -63,7 +63,7 @@ impl Default for CaptureConfig {
       frame_rate: 60,
       bitrate_kbps: 12000,
       encoder: "libx264".into(),
-      quality_preset: "balanced".into(),
+      quality_preset: "quality".into(),
       replay_duration_seconds: 60,
       segment_seconds: SEGMENT_SECONDS,
       mic_enabled: false,
