@@ -906,14 +906,17 @@ pub fn capture_preset_for(encoder: &str, quality: &str) -> &'static str {
   match encoder {
     "libx264" | "libx265" => match quality {
       "performance" => "ultrafast",
-      "quality" => "medium",
+      // x264 at 1080p120 already drops frames at `fast`; `faster` is the
+      // slowest CPU preset that keeps a real-time buffer smooth.
+      "quality" => "faster",
       _ => "veryfast",
     },
     "h264_nvenc" | "hevc_nvenc" => match quality {
       "performance" => "p1",
-      // p7 is slower than p6 and still keeps up with a 120 Hz display, so the
-      // high quality tier gets the best NVENC preset that remains real-time.
-      "quality" => "p7",
+      // p7 measured ~98 unique fps on real gameplay while p6 held ~118, so p6
+      // is the slowest NVENC preset that stays smooth at 120 Hz. The quality
+      // tier gets its detail from CQ and bitrate instead.
+      "quality" => "p6",
       _ => "p4",
     },
     "h264_amf" | "hevc_amf" => match quality {
@@ -1345,7 +1348,8 @@ mod tests {
     .unwrap();
     let joined = args.join(" ");
     assert!(joined.contains("-c:v libx264"));
-    assert!(joined.contains("-preset veryfast"));
+    // The default preset is now quality, so CPU capture uses `faster`.
+    assert!(joined.contains("-preset faster"));
     assert!(joined.contains("audio=Microphone (USB)"));
     assert!(joined.contains("-map 1:a:0"));
     assert!(joined.contains("-segment_list_flags +live"));
@@ -1368,7 +1372,9 @@ mod tests {
     .unwrap();
     let joined = args.join(" ");
     assert!(joined.contains("-c:v h264_nvenc"));
-    assert!(joined.contains("-preset p4"));
+    // Default quality: p6 is the fastest preset that holds 120 Hz, CQ 17.
+    assert!(joined.contains("-preset p6"));
+    assert!(joined.contains("-cq 17"));
     assert!(!joined.contains("-c:a aac"));
   }
 
@@ -1453,13 +1459,21 @@ mod tests {
   }
 
   #[test]
+  fn quality_cq_gets_better_as_the_tier_rises() {
+    assert_eq!(quality_cq("performance"), 25);
+    assert_eq!(quality_cq("balanced"), 22);
+    assert_eq!(quality_cq("quality"), 17);
+    assert!(quality_cq("quality") < quality_cq("balanced"));
+  }
+
+  #[test]
   fn capture_presets_favor_real_time_encoding() {
     assert_eq!(capture_preset_for("libx264", "performance"), "ultrafast");
     assert_eq!(capture_preset_for("libx264", "balanced"), "veryfast");
-    assert_eq!(capture_preset_for("libx264", "quality"), "medium");
+    assert_eq!(capture_preset_for("libx264", "quality"), "faster");
     assert_eq!(capture_preset_for("h264_nvenc", "performance"), "p1");
     assert_eq!(capture_preset_for("h264_nvenc", "balanced"), "p4");
-    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p7");
+    assert_eq!(capture_preset_for("h264_nvenc", "quality"), "p6");
     assert_eq!(capture_preset_for("h264_qsv", "balanced"), "fast");
   }
 
@@ -1471,6 +1485,7 @@ mod tests {
     let quality = recommended_bitrate_kbps(1920, 1080, 120, "quality");
     assert_eq!(hd60, 12_442);
     assert_eq!(hd120, 24_883);
+    assert_eq!(quality, 44_790);
     assert!(perf < hd120 && hd120 < quality);
     // The clamp keeps absurd requests inside the settings range.
     assert_eq!(recommended_bitrate_kbps(16, 16, 1, "performance"), 2_000);
