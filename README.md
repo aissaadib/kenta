@@ -1,86 +1,141 @@
 # Kenta
 
-A local-first Windows replay recorder built with Tauri 2, React 19, Rust, SQLite, and FFmpeg.
+A local-first replay recorder for Windows. Kenta keeps a rolling buffer of your
+desktop, saves the last few seconds when something happens, and indexes every
+clip in a local library.
 
-Kenta keeps a rolling replay buffer of your desktop, saves the last N seconds when
-something happens, and can also record longer manual sessions. Clips are written to a
-folder you choose and indexed in a local SQLite library. Local files are the
-source of truth. Google Drive upload is optional and one-way; when an account
-is connected, new clips are saved locally and copied to Drive by default.
+[**Download Kenta for Windows**](https://github.com/aissaadib/kenta/releases/latest)
 
-## Features
+## What it does
 
-- **Replay buffer** — configurable 5 s to 60 min window with 2-second segments.
-- **Manual recording** — start/stop from the app, tray menu, or global shortcut.
-- **Real global shortcuts** — registered through Windows `RegisterHotKey`, with conflict
-  detection and rollback when a binding cannot be registered.
-- **Capture controls** — monitor, resolution, frame rate, bitrate, encoder, and quality
-  preset, all applied by restarting capture with validated settings.
-- **Smooth capture** — records through Windows Graphics Capture at the display's refresh
-  rate (with an automatic GDI fallback), forces a constant frame rate, and recommends a
-  bitrate for the chosen size and frame rate. A 120 Hz display can produce true 120 fps
-  clips instead of a choppy 60 fps copy.
-- **Audio** — microphone and desktop/loopback capture, device selection, sample rate, and
-  clear warnings when a loopback device is unavailable.
-- **Clip library** — thumbnails, in-app video preview, search, sort, rename, delete, open
-  in player, and reveal in File Explorer. Missing files are reported instead of failing
-  silently.
-- **Settings** — explicit Save/Revert, dirty-state tracking, numeric validation, native
-  folder picker, launch-at-sign-in, and close-to-tray.
-- **Tray menu** — show the window, save a replay, toggle recording, open the clip folder,
-  or quit.
-- **Google Drive (optional)** — connect a Google account and save a clip directly to
-  Drive from its preview or menu. New clips are saved locally and copied to Drive by
-  default; opt out in Settings. Resumable uploads, retries and cancellation are handled
-  in the background; local saves never depend on the cloud.
+- Keeps a rolling replay buffer (5 seconds to 60 minutes).
+- Saves the buffer to an MP4 with one hotkey, the tray menu, or a voice command.
+- Records longer manual sessions when you want the whole thing.
+- Organises clips with thumbnails, search, sort, rename, preview, and delete.
+- Trims and exports clips in the built-in editor.
+- Optionally copies new clips to a Kenta folder in Google Drive.
+- Keeps the local file authoritative; a cloud failure never breaks a save.
+
+## Key capabilities
+
+- **Capture:** Windows Graphics Capture with a GDI fallback, constant frame
+  rate, monitor selection, resolution, bitrate, and encoder choice.
+- **Encoding:** NVIDIA NVENC when available, CPU x264 fallback when not. The
+  bundled FFmpeg includes both.
+- **Audio:** microphone and desktop loopback capture, with explicit warnings
+  when a device or loopback source is unavailable.
+- **Voice clipping:** optional Windows SAPI wake phrase (default "Kenta") and
+  command (default "clip that").
+- **Shortcuts:** global save and start/stop hotkeys registered through Windows.
+- **Clip library:** SQLite-backed, with thumbnails and missing-file reporting.
+- **Editor:** trim, reorder, mute tracks, and export a new clip while keeping
+  the original.
+- **Google Drive:** OAuth desktop flow, resumable uploads, retry, cancel, and
+  a direct "Save to Google Drive" action.
+- **Tray and startup:** close to tray and optional launch at sign-in.
+
+## Install
+
+1. Download `Kenta_0.1.0_x64-setup.exe` from
+   [Releases](https://github.com/aissaadib/kenta/releases).
+2. Run it. The installer is per-user and does not need administrator rights.
+3. Launch **Kenta** from the Start Menu.
+
+The build is currently **unsigned**, so Windows SmartScreen may warn. See
+[docs/INSTALL.md](docs/INSTALL.md) for the exact steps and the SHA-256
+verification command.
+
+No Rust, Node.js, Visual Studio, or separate FFmpeg install is required. The
+installer includes FFmpeg, FFprobe, and the WebView2 bootstrapper.
 
 ## Requirements
 
-- Windows 10 or 11.
-- A GPU encoder is optional. Kenta falls back to CPU x264 if a hardware encoder is
-  unavailable or fails at runtime.
-- FFmpeg and FFprobe are required. Kenta looks for them in this order:
-  1. `KENTA_FFMPEG` / `KENTA_FFPROBE` environment variables.
-  2. `ffmpeg.exe` / `ffprobe.exe` next to `kenta.exe`.
-  3. `ffmpeg` / `ffprobe` on `PATH`.
+- Windows 10 or Windows 11, 64-bit.
+- Microsoft Edge WebView2 (included with Windows 11 and current Windows 10;
+  the installer can download it).
+- Optional NVIDIA GPU for NVENC. Kenta falls back to CPU x264.
+- Optional desktop loopback device for desktop audio.
+- A Windows speech language pack for voice clipping.
 
-## Development
+## Google Drive
+
+Google Drive is optional and one-way. Kenta creates a **Kenta** folder and uses
+the `drive.file` scope, so it only sees files it created. It never deletes,
+overwrites, or downloads Drive files.
+
+New clips are saved locally and copied to Drive by default. You can turn that
+off in **Settings → Google Drive**, or upload a single clip from its preview or
+overflow menu. Disconnecting stops future uploads and leaves both local and
+remote files alone.
+
+The release bundles a Google Desktop OAuth client. If the Google Cloud project
+is still in **Testing** mode, only accounts added as test users can complete
+the consent screen. See [docs/GOOGLE_DRIVE.md](docs/GOOGLE_DRIVE.md).
+
+## Voice clipping
+
+Voice clipping is off by default because it opens the microphone. It uses the
+Windows SAPI speech engine and the language packs installed on your PC. If no
+supported language is installed, Kenta reports that recognition is unavailable
+instead of failing silently.
+
+## Local data and privacy
+
+Kenta has no telemetry, analytics, or account system. Clips, settings, and the
+SQLite library stay on your PC. Google credentials are stored in Windows
+Credential Manager, not in the repository or the database.
+
+- Settings: `%APPDATA%\Kenta\settings.json`
+- Library: `%USERPROFILE%\Videos\Kenta\library.db`
+- Clips: the folder chosen in Settings
+
+See [docs/PRIVACY.md](docs/PRIVACY.md) for details and removal instructions.
+
+## Known limitations
+
+- The installer is unsigned. SmartScreen warnings are expected until a trusted
+  code-signing certificate is configured.
+- There is no built-in auto-updater yet; install a newer release over the
+  existing one.
+- 120 fps capture depends on the display refresh rate, the selected encoder,
+  and the machine. It is not available on every PC.
+- Desktop audio needs a loopback device. Some Realtek configurations do not
+  expose one.
+- Very large uploads and abrupt network loss during an upload have not been
+  stress-tested.
+- Voice recognition quality depends on the installed Windows speech language.
+- The public Google OAuth client may require the Google Cloud project to be
+  published before non-test accounts can connect.
+
+## Build from source
 
 ```powershell
-# Frontend checks
 cd web
-npm install
+npm ci
 npm run lint
 npm run build
 
-# Rust checks
 cd ..\src-tauri
 cargo test --release --lib
-cargo check
-cargo build --release
+cargo tauri build
 ```
 
-Run the built app:
+Developer builds need Rust (GNU or MSVC toolchain), Node.js, and FFmpeg. The
+release build expects:
 
-```powershell
-.\src-tauri\target\release\kenta.exe
-```
+- `src-tauri/binaries/ffmpeg-x86_64-pc-windows-gnu.exe`
+- `src-tauri/binaries/ffprobe-x86_64-pc-windows-gnu.exe`
+- `google-oauth.json` in the repository root (public desktop client config)
 
-The frontend lives in `web/`; the Tauri/Rust backend lives in `src-tauri/`.
+See [docs/FFMPEG.md](docs/FFMPEG.md) and [docs/GOOGLE_DRIVE.md](docs/GOOGLE_DRIVE.md).
 
-## Data locations
+## License
 
-- Settings: `%APPDATA%\Kenta\settings.json`
-- Clip library: `%USERPROFILE%\Videos\Kenta\library.db` (SQLite, WAL mode)
-- Thumbnail cache: `%TEMP%\kenta_thumbs`
-- Replay segments: per-session folders under `%TEMP%\kenta_buffer`, cleaned on
-  shutdown (a recording interrupted by a crash is kept for recovery)
-- Clips: the output folder configured in Settings
+Kenta is MIT-licensed. FFmpeg is distributed under GPL-3.0. See
+[LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and
+[LICENSES/GPL-3.0.txt](LICENSES/GPL-3.0.txt).
 
-## Notes
+## Releases
 
-- Desktop audio requires a loopback device such as Stereo Mix or a virtual audio cable.
-  Without one, Kenta records video (and the microphone if enabled) and shows a
-  warning.
-- Debug Rust test binaries do not run in the current MinGW toolchain
-  (`STATUS_ENTRYPOINT_NOT_FOUND`); use `cargo test --release --lib`.
+Installer, checksums, and release notes:
+<https://github.com/aissaadib/kenta/releases>

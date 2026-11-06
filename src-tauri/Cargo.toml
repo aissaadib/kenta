@@ -1,10 +1,10 @@
 [package]
 name = "kenta"
 version = "0.1.0"
-description = "Lightweight gaming replay buffer and clip manager"
-authors = ["you"]
+description = "Local-first Windows replay recorder with an optional Google Drive backup"
+authors = ["HumanHEART"]
 license = "MIT"
-repository = ""
+repository = "https://github.com/aissaadib/kenta"
 edition = "2024"
 rust-version = "1.90"
 

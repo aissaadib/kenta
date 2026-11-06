@@ -4,6 +4,11 @@
 google-oauth.json
 google-oauth.local.json
 
-# Local runnable build kept outside git.
+# Local runnable build and build inputs kept outside git.
 .dist/
+src-tauri/target/
+web/dist/
+src-tauri/binaries/
+src-tauri/google-oauth.json
+src-tauri/resources/
 
