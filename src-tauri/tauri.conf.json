@@ -61,7 +61,7 @@
       "nsis": {
         "installMode": "currentUser",
         "languages": ["English"],
-        "displayLanguageSelector": false,
+        "displayLanguageSelector": true,
         "installerIcon": "icons/icon.ico",
         "startMenuFolder": "Kenta",
         "compression": "lzma"
