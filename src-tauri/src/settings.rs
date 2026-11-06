@@ -55,10 +55,10 @@ pub struct Settings {
   pub voice_min_confidence: u8,
   /// Seconds during which repeat triggers are ignored after a save.
   pub voice_cooldown_seconds: u32,
-  /// Save every new clip to the local library and to Google Drive. On by
-  /// default: a saved clip should exist in both places when an account is
-  /// connected. This never uploads the existing library, and the local save
-  /// still succeeds if the cloud copy fails.
+  /// Save every new clip to Google Drive as well as locally. Off by default:
+  /// connecting an account never silently uploads anything. Only clips saved
+  /// after the user turns this on are queued, and the local save still
+  /// succeeds even if the cloud copy fails.
   pub drive_auto_upload: bool,
 }
 
@@ -97,7 +97,7 @@ impl Default for Settings {
       voice_clip_seconds: 30,
       voice_min_confidence: 60,
       voice_cooldown_seconds: 5,
-      drive_auto_upload: true,
+      drive_auto_upload: false,
     }
   }
 }
@@ -532,11 +532,11 @@ mod tests {
   }
 
   #[test]
-  fn drive_auto_upload_is_on_by_default() {
+  fn drive_auto_upload_is_off_by_default() {
     let settings = Settings::default();
     assert!(
-      settings.drive_auto_upload,
-      "a default save should keep a local copy and a Drive copy"
+      !settings.drive_auto_upload,
+      "connecting an account must not silently upload the existing library"
     );
     // Turning it on must not mean uploading the existing library: only clips
     // saved after the setting is read go through maybe_auto_upload.
@@ -546,7 +546,7 @@ mod tests {
   #[test]
   fn older_settings_files_without_drive_auto_upload_use_the_new_default() {
     let settings: Settings = serde_json::from_str(r#"{"replay_duration_seconds": 90}"#).unwrap();
-    assert!(settings.drive_auto_upload);
+    assert!(!settings.drive_auto_upload);
   }
 
   #[test]
