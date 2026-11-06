@@ -43,10 +43,8 @@ pub struct Settings {
   pub confirmation_sound_enabled: bool,
   /// 0 is silent, 100 is the full (still deliberately quiet) level.
   pub confirmation_sound_volume: u8,
-  /// Which confirmation sound plays after a save: "chime", "beep", "ding", "none", "custom".
+  /// Which confirmation sound plays after a save: "chime", "beep", "ding", "none".
   pub confirmation_sound_kind: String,
-  /// Optional path to a user-provided MP3/WAV confirmation sound.
-  pub confirmation_sound_path: Option<String>,
   /// Hands-free clipping. Off by default because it opens the microphone.
   pub voice_enabled: bool,
   /// Spoken first, for example "Kenta".
@@ -63,12 +61,16 @@ pub struct Settings {
   pub voice_cooldown_seconds: u32,
   /// Show a small on-screen icon when a voice clip saves, on top of other windows.
   pub voice_show_overlay: bool,
-  /// Which icon the overlay shows: "bell", "save", "camera", "clip", "custom".
+  /// Which icon the overlay shows: "bell", "save", "camera", "clip".
   pub voice_overlay_icon: String,
-  /// Optional path to a user-provided image for the overlay icon.
-  pub voice_overlay_image_path: Option<String>,
-  /// URL the Music tab loads (default: YouTube Music).
-  pub music_url: String,
+  /// Theme accent color (hex).
+  pub theme_accent: String,
+  /// Theme background color (hex).
+  pub theme_background: String,
+  /// Theme card color (hex).
+  pub theme_card: String,
+  /// Theme text color (hex).
+  pub theme_text: String,
   /// Save every new clip to Google Drive as well as locally. Off by default:
   /// connecting an account never silently uploads anything. Only clips saved
   /// after the user turns this on are queued, and the local save still
@@ -106,7 +108,6 @@ impl Default for Settings {
       confirmation_sound_enabled: true,
       confirmation_sound_volume: 70,
       confirmation_sound_kind: "chime".to_string(),
-      confirmation_sound_path: None,
       voice_enabled: false,
       voice_wake_phrase: DEFAULT_WAKE_PHRASE.to_string(),
       voice_clip_command: DEFAULT_CLIP_COMMAND.to_string(),
@@ -116,8 +117,10 @@ impl Default for Settings {
       voice_cooldown_seconds: 5,
       voice_show_overlay: true,
       voice_overlay_icon: "bell".to_string(),
-      voice_overlay_image_path: None,
-      music_url: "https://music.youtube.com".to_string(),
+      theme_accent: "#f5ff2e".to_string(),
+      theme_background: "#0a0a0a".to_string(),
+      theme_card: "#1a1a1a".to_string(),
+      theme_text: "#e4e4e7".to_string(),
       drive_auto_upload: false,
     }
   }
@@ -273,25 +276,41 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
   }
   if !matches!(
     settings.confirmation_sound_kind.as_str(),
-    "chime" | "beep" | "ding" | "none" | "custom"
+    "chime" | "beep" | "ding" | "none"
   ) {
     settings.confirmation_sound_kind = "chime".into();
     warnings.push("The confirmation sound was reset to the default chime.".into());
   }
   if !matches!(
     settings.voice_overlay_icon.as_str(),
-    "bell" | "save" | "camera" | "clip" | "custom"
+    "bell" | "save" | "camera" | "clip"
   ) {
     settings.voice_overlay_icon = "bell".into();
     warnings.push("The overlay icon was reset to the default bell.".into());
   }
 
-  // Music URL must be an absolute http/https URL or empty to fall back to default.
-  if settings.music_url.trim().is_empty() {
-    settings.music_url = "https://music.youtube.com".into();
-  } else if !settings.music_url.starts_with("http://") && !settings.music_url.starts_with("https://") {
-    settings.music_url = "https://music.youtube.com".into();
-    warnings.push("The music URL was invalid and was reset to the default.".into());
+  // Theme colors must be valid hex colors (#RRGGBB).
+  let is_hex = |value: &str| {
+    value.len() == 7
+      && value.as_bytes()[0] == b'#'
+      && value.as_bytes()[1..].iter().all(|b| b.is_ascii_hexdigit())
+  };
+  for (field, value, default) in [
+    ("theme_accent", settings.theme_accent.clone(), "#f5ff2e"),
+    ("theme_background", settings.theme_background.clone(), "#0a0a0a"),
+    ("theme_card", settings.theme_card.clone(), "#1a1a1a"),
+    ("theme_text", settings.theme_text.clone(), "#e4e4e7"),
+  ] {
+    if !is_hex(&value) {
+      match field {
+        "theme_accent" => settings.theme_accent = default.into(),
+        "theme_background" => settings.theme_background = default.into(),
+        "theme_card" => settings.theme_card = default.into(),
+        "theme_text" => settings.theme_text = default.into(),
+        _ => {}
+      }
+      warnings.push(format!("The {field} color was invalid and was reset to the default."));
+    }
   }
 
   // Voice phrases are matched after normalisation, so two phrases that only
@@ -700,46 +719,56 @@ mod tests {
   }
 
   #[test]
-  fn custom_sound_kind_is_valid() {
+  fn custom_sound_kind_is_reset_to_chime() {
     let mut settings = Settings::default();
     settings.confirmation_sound_kind = "custom".into();
-    settings.confirmation_sound_path = Some("C:\\Sounds\\ding.mp3".into());
     let mut warnings = Vec::new();
     reconcile(&mut settings, &mut warnings);
-    assert_eq!(settings.confirmation_sound_kind, "custom");
-    assert_eq!(settings.confirmation_sound_path.as_deref(), Some("C:\\Sounds\\ding.mp3"));
+    assert_eq!(settings.confirmation_sound_kind, "chime");
     assert!(validate(&settings).is_ok());
   }
 
   #[test]
-  fn custom_overlay_icon_is_valid() {
+  fn custom_overlay_icon_is_reset_to_bell() {
     let mut settings = Settings::default();
     settings.voice_overlay_icon = "custom".into();
-    settings.voice_overlay_image_path = Some("C:\\Icons\\bell.png".into());
     let mut warnings = Vec::new();
     reconcile(&mut settings, &mut warnings);
-    assert_eq!(settings.voice_overlay_icon, "custom");
-    assert_eq!(settings.voice_overlay_image_path.as_deref(), Some("C:\\Icons\\bell.png"));
+    assert_eq!(settings.voice_overlay_icon, "bell");
     assert!(validate(&settings).is_ok());
   }
 
   #[test]
-  fn invalid_music_url_is_reset_to_default() {
+  fn invalid_theme_colors_are_reset_to_defaults() {
     let mut settings = Settings::default();
-    settings.music_url = "not-a-url".into();
+    settings.theme_accent = "not-a-color".into();
+    settings.theme_background = "also-bad".into();
+    settings.theme_card = "short".into();
+    settings.theme_text = "#GGGGGG".into();
     let mut warnings = Vec::new();
     reconcile(&mut settings, &mut warnings);
-    assert_eq!(settings.music_url, "https://music.youtube.com");
-    assert!(warnings.iter().any(|warning| warning.contains("music URL")));
+    assert_eq!(settings.theme_accent, "#f5ff2e");
+    assert_eq!(settings.theme_background, "#0a0a0a");
+    assert_eq!(settings.theme_card, "#1a1a1a");
+    assert_eq!(settings.theme_text, "#e4e4e7");
+    assert!(warnings.len() >= 4);
+    assert!(validate(&settings).is_ok());
   }
 
   #[test]
-  fn empty_music_url_uses_default() {
+  fn valid_theme_colors_are_accepted() {
     let mut settings = Settings::default();
-    settings.music_url = "".into();
+    settings.theme_accent = "#ff0000".into();
+    settings.theme_background = "#123456".into();
+    settings.theme_card = "#abcdef".into();
+    settings.theme_text = "#00ff00".into();
     let mut warnings = Vec::new();
     reconcile(&mut settings, &mut warnings);
-    assert_eq!(settings.music_url, "https://music.youtube.com");
+    assert_eq!(settings.theme_accent, "#ff0000");
+    assert_eq!(settings.theme_background, "#123456");
+    assert_eq!(settings.theme_card, "#abcdef");
+    assert_eq!(settings.theme_text, "#00ff00");
+    assert!(warnings.is_empty());
     assert!(validate(&settings).is_ok());
   }
 }

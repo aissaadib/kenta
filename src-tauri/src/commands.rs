@@ -418,21 +418,16 @@ pub fn capture_stop_manual(app: AppHandle) -> Result<SaveResult, String> {
 /// dependable "the file is on disk" signal rather than a hint that a save
 /// started. It never blocks: the sound module plays on its own thread.
 pub fn confirm_saved(state: &AppState) {
-  let (enabled, volume, kind, path) = {
+  let (enabled, volume, kind) = {
     let settings = state.settings.lock().unwrap();
     (
       settings.confirmation_sound_enabled,
       settings.confirmation_sound_volume,
       settings.confirmation_sound_kind.clone(),
-      settings.confirmation_sound_path.clone(),
     )
   };
   if enabled {
-    sound::play_sound(
-      sound::SoundKind::from_str(&kind),
-      volume,
-      path.as_deref().map(Path::new),
-    );
+    sound::play_sound(sound::SoundKind::from_str(&kind), volume);
   }
 }
 
@@ -440,17 +435,8 @@ pub fn confirm_saved(state: &AppState) {
 /// volume so the slider can be heard before the change is saved.
 #[tauri::command]
 pub fn preview_confirmation_sound(kind: String, volume: u8) -> bool {
-  let settings = match crate::settings::SettingsStore::load_with_warnings() {
-    Ok((s, _)) => s,
-    Err(_) => return false,
-  };
   let volume = volume.min(100);
-  let path = settings.confirmation_sound_path.clone();
-  sound::play_sound(
-    sound::SoundKind::from_str(&kind),
-    volume,
-    path.as_deref().map(Path::new),
-  );
+  sound::play_sound(sound::SoundKind::from_str(&kind), volume);
   sound::is_audible(volume)
 }
 
@@ -493,11 +479,10 @@ impl VoiceSink for VoiceBridge {
         let settings = state.settings.lock().unwrap().clone();
         if settings.voice_show_overlay {
           let icon = settings.voice_overlay_icon.clone();
-          let image_path = settings.voice_overlay_image_path.clone();
           let app = self.app.clone();
           std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            let _ = crate::overlay::show_voice_overlay(&app, &icon, image_path.as_deref().map(Path::new));
+            let _ = crate::overlay::show_voice_overlay(&app, &icon);
           });
         }
         voice::SaveOutcome::Saved
@@ -523,16 +508,11 @@ impl VoiceSink for VoiceBridge {
     let _ = self.app.emit("voice-status", status);
   }
 
-  fn show_overlay(&self, icon: &str, image_path: Option<&str>) {
+  fn show_overlay(&self, icon: &str, _image_path: Option<&str>) {
     let app = self.app.clone();
     let icon = icon.to_string();
-    let image_path = image_path.map(|s| s.to_string());
     std::thread::spawn(move || {
-      let _ = crate::overlay::show_voice_overlay(
-        &app,
-        &icon,
-        image_path.as_deref().map(Path::new),
-      );
+      let _ = crate::overlay::show_voice_overlay(&app, &icon);
     });
   }
 }
@@ -547,7 +527,6 @@ fn voice_config(settings: &Settings) -> VoiceConfig {
     single_word: settings.voice_single_word,
     show_overlay: settings.voice_show_overlay,
     overlay_icon: settings.voice_overlay_icon.clone(),
-    overlay_image_path: settings.voice_overlay_image_path.clone(),
   }
 }
 
@@ -1779,6 +1758,7 @@ pub fn open_in_player(state: State<'_, AppState>, id: Option<String>, path: Opti
   Ok(())
 }
 
+/// Open a folder dialog to choose the clip output directory.
 #[tauri::command]
 pub fn select_output_dir(current_dir: Option<String>) -> Option<PathBuf> {
   let mut dialog = rfd::FileDialog::new();
@@ -1789,24 +1769,6 @@ pub fn select_output_dir(current_dir: Option<String>) -> Option<PathBuf> {
     }
   }
   dialog.pick_folder()
-}
-
-/// Open a file dialog to choose a confirmation sound file (MP3/WAV).
-#[tauri::command]
-pub fn import_confirmation_sound() -> Option<String> {
-  let dialog = rfd::FileDialog::new()
-    .add_filter("Audio files", &["mp3", "wav", "ogg", "flac"])
-    .set_title("Choose confirmation sound");
-  dialog.pick_file().map(|p| p.to_string_lossy().to_string())
-}
-
-/// Open a file dialog to choose an overlay icon image (PNG/JPG).
-#[tauri::command]
-pub fn import_overlay_image() -> Option<String> {
-  let dialog = rfd::FileDialog::new()
-    .add_filter("Image files", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
-    .set_title("Choose overlay icon");
-  dialog.pick_file().map(|p| p.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -1834,22 +1796,6 @@ pub fn recommended_capture_bitrate(
 #[tauri::command]
 pub fn enumerate_monitors() -> Vec<MonitorInfo> {
   monitors::enumerate()
-}
-
-/// Get the music site URL from settings.
-#[tauri::command]
-pub fn get_music_url(state: State<'_, AppState>) -> String {
-  state.settings.lock().unwrap().music_url.clone()
-}
-
-/// Set the music site URL in settings.
-#[tauri::command]
-pub fn set_music_url(state: State<'_, AppState>, url: String) -> Result<(), String> {
-  let mut settings = state.settings.lock().unwrap();
-  settings.music_url = url;
-  drop(settings);
-  let store = SettingsStore::default();
-  store.save(&state.settings.lock().unwrap()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

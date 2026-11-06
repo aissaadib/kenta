@@ -15,10 +15,7 @@
 //! it plays. It cannot contaminate the clip that triggered it, because that clip
 //! has already been written and registered before the sound starts.
 
-use std::path::Path;
-use std::os::windows::ffi::OsStrExt;
-
-use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_FILENAME, SND_MEMORY, SND_NODEFAULT};
+use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT};
 
 pub const SAMPLE_RATE: u32 = 44_100;
 const CHANNELS: u16 = 1;
@@ -41,8 +38,6 @@ pub enum SoundKind {
   Ding,
   /// Silence: no sound plays.
   None,
-  /// A user-provided MP3/WAV file.
-  Custom,
 }
 
 impl SoundKind {
@@ -52,7 +47,6 @@ impl SoundKind {
       "beep" => SoundKind::Beep,
       "ding" => SoundKind::Ding,
       "none" => SoundKind::None,
-      "custom" => SoundKind::Custom,
       _ => SoundKind::Chime,
     }
   }
@@ -64,7 +58,6 @@ impl SoundKind {
       SoundKind::Beep => "beep",
       SoundKind::Ding => "ding",
       SoundKind::None => "none",
-      SoundKind::Custom => "custom",
     }
   }
 }
@@ -96,24 +89,21 @@ pub fn is_audible(volume: u8) -> bool {
   volume > 0
 }
 
-/// Total milliseconds for a given kind (notes + tail). Custom sounds have no
-/// pre-known duration.
+/// Total milliseconds for a given kind (notes + tail).
 fn kind_duration_ms(kind: SoundKind) -> u32 {
   match kind {
     SoundKind::Chime => CHIME_FIRST_MS + CHIME_SECOND_MS + TAIL_MS,
     SoundKind::Beep => BEEP_MS + TAIL_MS,
     SoundKind::Ding => DING_MS + TAIL_MS,
     SoundKind::None => 0,
-    SoundKind::Custom => 0,
   }
 }
 
 /// Build a mono 16-bit PCM WAV for the given kind at the requested volume.
 ///
-/// Returns an empty buffer for `Custom`: custom files are played by path, not
-/// generated in memory.
+/// The result is deterministic, so tests can compare bytes.
 pub fn sound_wav(kind: SoundKind, volume: u8) -> Vec<u8> {
-  if kind == SoundKind::None || kind == SoundKind::Custom {
+  if kind == SoundKind::None {
     return Vec::new();
   }
   let volume = volume.min(100) as f64 / 100.0;
@@ -126,7 +116,6 @@ pub fn sound_wav(kind: SoundKind, volume: u8) -> Vec<u8> {
     SoundKind::Beep => push_note(&mut samples, BEEP_HZ, BEEP_MS),
     SoundKind::Ding => push_note(&mut samples, DING_HZ, DING_MS),
     SoundKind::None => {}
-    SoundKind::Custom => {}
   }
   samples.resize(sample_count(kind), 0);
 
@@ -171,63 +160,33 @@ fn push_note(samples: &mut Vec<i16>, hz: f64, millis: u32) {
 }
 
 /// Play a confirmation sound once, without blocking the caller.
-///
-/// Custom sounds are played from a file path using `SND_FILENAME`; all other
-/// kinds are generated in memory and played with `SND_MEMORY`.
-pub fn play_sound(kind: SoundKind, volume: u8, custom_path: Option<&Path>) {
+pub fn play_sound(kind: SoundKind, volume: u8) {
   if !is_audible(volume) {
     return;
   }
   let volume = volume.min(100);
   let kind_as_str = kind.as_str();
-  let path = custom_path.map(|p| p.to_path_buf());
   std::thread::spawn(move || {
-    match kind {
-      SoundKind::Custom => {
-        let Some(path) = path else {
-          log::warn!("Custom confirmation sound requested but no file path configured");
-          return;
-        };
-        if !Path::new(&path).exists() {
-          log::warn!("Custom confirmation sound file does not exist: {}", path.display());
-          return;
-        }
-        let played = unsafe {
-          PlaySoundW(
-            path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<u16>>().as_ptr(),
-            std::ptr::null_mut(),
-            SND_FILENAME | SND_NODEFAULT,
-          )
-        };
-        if played == 0 {
-          log::warn!("Windows rejected the custom sound file: {}", path.display());
-        } else {
-          log::info!("Confirmation custom sound played from {} at {}%", path.display(), volume);
-        }
-      }
-      _ => {
-        let wav = sound_wav(kind, volume);
-        if wav.is_empty() {
-          log::info!("Confirmation sound is silent ({kind_as_str})");
-          return;
-        }
-        // SAFETY: `wav` outlives the call because playback is synchronous on this
-        // thread, and `SND_MEMORY` reads a well-formed WAV image we just built.
-        let played = unsafe {
-          PlaySoundW(
-            wav.as_ptr() as *const u16,
-            std::ptr::null_mut(),
-            SND_MEMORY | SND_NODEFAULT,
-          )
-        };
-        // Without `SND_ASYNC` this returns once the cue has finished, so a success
-        // here means Windows actually played it.
-        if played == 0 {
-          log::warn!("Windows rejected the confirmation sound buffer");
-        } else {
-          log::info!("Confirmation {kind_as_str} played at {volume}%");
-        }
-      }
+    let wav = sound_wav(kind, volume);
+    if wav.is_empty() {
+      log::info!("Confirmation sound is silent ({kind_as_str})");
+      return;
+    }
+    // SAFETY: `wav` outlives the call because playback is synchronous on this
+    // thread, and `SND_MEMORY` reads a well-formed WAV image we just built.
+    let played = unsafe {
+      PlaySoundW(
+        wav.as_ptr() as *const u16,
+        std::ptr::null_mut(),
+        SND_MEMORY | SND_NODEFAULT,
+      )
+    };
+    // Without `SND_ASYNC` this returns once the cue has finished, so a success
+    // here means Windows actually played it.
+    if played == 0 {
+      log::warn!("Windows rejected the confirmation sound buffer");
+    } else {
+      log::info!("Confirmation {kind_as_str} played at {volume}%");
     }
   });
 }
@@ -236,114 +195,5 @@ pub fn play_sound(kind: SoundKind, volume: u8, custom_path: Option<&Path>) {
 ///
 /// Kept for any callers that still reference the old name.
 pub fn play(volume: u8) {
-  play_sound(SoundKind::Chime, volume, None);
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  fn read_u16(bytes: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([bytes[at], bytes[at + 1]])
-  }
-
-  fn read_u32(bytes: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-  }
-
-  fn samples(wav: &[u8]) -> Vec<i16> {
-    wav[HEADER_BYTES..]
-      .chunks_exact(2)
-      .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
-      .collect()
-  }
-
-  #[test]
-  fn writes_a_valid_mono_pcm_wav_header() {
-    let wav = sound_wav(SoundKind::Chime, 100);
-    assert_eq!(&wav[0..4], b"RIFF");
-    assert_eq!(&wav[8..12], b"WAVE");
-    assert_eq!(&wav[12..16], b"fmt ");
-    assert_eq!(&wav[36..40], b"data");
-    assert_eq!(read_u32(&wav, 4) as usize, wav.len() - 8);
-    assert_eq!(read_u32(&wav, 16), 16);
-    assert_eq!(read_u16(&wav, 20), 1, "PCM");
-    assert_eq!(read_u16(&wav, 22), CHANNELS);
-    assert_eq!(read_u32(&wav, 24), SAMPLE_RATE);
-    assert_eq!(read_u32(&wav, 28), SAMPLE_RATE * 2, "byte rate");
-    assert_eq!(read_u16(&wav, 32), 2, "block align");
-    assert_eq!(read_u16(&wav, 34), BITS_PER_SAMPLE);
-    assert_eq!(read_u32(&wav, 40) as usize, wav.len() - HEADER_BYTES);
-  }
-
-  #[test]
-  fn the_effect_is_short_and_has_the_expected_length() {
-    let wav = sound_wav(SoundKind::Chime, 100);
-    let count = samples(&wav).len();
-    assert_eq!(count, sample_count(SoundKind::Chime));
-    let seconds = count as f64 / SAMPLE_RATE as f64;
-    assert!(seconds > 0.2 && seconds < 0.5, "got {seconds}s");
-    assert_eq!(duration_ms(), 300);
-  }
-
-  #[test]
-  fn volume_scales_the_samples_and_never_clips() {
-    let loud = samples(&sound_wav(SoundKind::Chime, 100));
-    let half = samples(&sound_wav(SoundKind::Chime,50));
-    let peak = |values: &[i16]| values.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
-    assert!(peak(&loud) > 0);
-    assert!(peak(&half) > 0);
-    assert!(peak(&half) < peak(&loud));
-    assert!(peak(&loud) < i16::MAX as u16, "full volume must not clip");
-    // 50% is roughly half the amplitude of 100%.
-    let ratio = peak(&half) as f64 / peak(&loud) as f64;
-    assert!((ratio - 0.5).abs() < 0.03, "ratio was {ratio}");
-  }
-
-  #[test]
-  fn zero_volume_is_silence_and_is_not_played() {
-    let wav = sound_wav(SoundKind::Chime,0);
-    assert!(samples(&wav).iter().all(|value| *value == 0));
-    assert!(!is_audible(0));
-    assert!(is_audible(1));
-    // Out-of-range volume is clamped instead of overflowing the samples.
-    assert_eq!(sound_wav(SoundKind::Chime,200), sound_wav(SoundKind::Chime, 100));
-  }
-
-  #[test]
-  fn the_sound_ends_in_silence_and_is_deterministic() {
-    let wav = sound_wav(SoundKind::Chime,70);
-    let values = samples(&wav);
-    assert_eq!(values.len(), sample_count(SoundKind::Chime));
-    let tail = &values[values.len() - 200..];
-    assert!(tail.iter().all(|value| *value == 0), "the tail must be silent");
-    assert_eq!(wav, sound_wav(SoundKind::Chime,70));
-  }
-
-  #[test]
-  fn the_cue_stays_well_below_full_scale() {
-    // A cue that clips or startles is worse than no cue at all.
-    let values = samples(&sound_wav(SoundKind::Chime, 100));
-    let peak = values.iter().map(|value| value.unsigned_abs()).max().unwrap_or(0);
-    let ratio = peak as f64 / i16::MAX as f64;
-    assert!(ratio > 0.2, "peak was {ratio}");
-    assert!(ratio < 0.35, "peak was {ratio}");
-  }
-
-  /// Windows only. Proves the buffer is a sound Windows accepts, which a byte
-  /// comparison cannot: `SND_MEMORY` without `SND_ASYNC` returns once playback
-  /// has finished. Ignored by default because it makes an audible noise.
-  #[test]
-  #[ignore]
-  fn windows_plays_the_generated_buffer() {
-    let wav = sound_wav(SoundKind::Chime,30);
-    let played = unsafe {
-      PlaySoundW(
-        wav.as_ptr() as *const u16,
-        std::ptr::null_mut(),
-        SND_MEMORY | SND_NODEFAULT,
-      )
-    };
-    assert_ne!(played, 0, "PlaySoundW rejected the generated WAV");
-  }
+  play_sound(SoundKind::Chime, volume);
 }

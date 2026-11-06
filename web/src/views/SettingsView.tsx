@@ -16,7 +16,7 @@ import {
   Loader2,
   Mic,
   Monitor,
-  Music2,
+  Palette,
   Play,
   RefreshCw,
   RotateCcw,
@@ -31,15 +31,12 @@ import {
   enumerateMonitors,
   enumerateVideoEncoders,
   getGoogleDriveStatus,
-  importConfirmationSound,
-  importOverlayImage,
   openFileLocation,
   openGoogleDrive,
   openOutputDir,
   previewConfirmationSound,
   recommendedCaptureBitrate,
   selectOutputDir,
-  setMusicUrl,
   voiceStatus,
   voiceTest,
   type AudioDevice,
@@ -995,7 +992,7 @@ function SettingsViewImpl({
           />
           <Row
             label="Sound"
-            hint="Choose the confirmation sound. Custom plays a file you import."
+            hint="Choose the confirmation sound."
           >
             <select
               className="select"
@@ -1009,23 +1006,7 @@ function SettingsViewImpl({
               <option value="beep">Beep</option>
               <option value="ding">Ding</option>
               <option value="none">None</option>
-              <option value="custom">Custom file</option>
             </select>
-            {draft.confirmation_sound_kind === "custom" && (
-              <button
-                type="button"
-                className="btn btn-quiet btn-sm"
-                disabled={!draft.confirmation_sound_enabled}
-                onClick={async () => {
-                  const path = await importConfirmationSound();
-                  if (path) {
-                    update("confirmation_sound_path", path);
-                  }
-                }}
-              >
-                <FolderOpen size={13} /> Import sound file
-              </button>
-            )}
           </Row>
           <Row label="Volume" hint="The chime is generated on this PC; nothing is downloaded.">
             <div className="volume-row">
@@ -1236,53 +1217,60 @@ function SettingsViewImpl({
               <option value="save">Save</option>
               <option value="camera">Camera</option>
               <option value="clip">Clip</option>
-              <option value="custom">Custom image</option>
             </select>
-            {draft.voice_overlay_icon === "custom" && (
-              <button
-                type="button"
-                className="btn btn-quiet btn-sm"
-                disabled={!draft.voice_enabled || !draft.voice_show_overlay}
-                onClick={async () => {
-                  const path = await importOverlayImage();
-                  if (path) {
-                    update("voice_overlay_image_path", path);
-                  }
-                }}
-              >
-                <FolderOpen size={13} /> Import image file
-              </button>
-            )}
           </Row>
         </div>
       </section>
 
       <section className="settings-section">
         <header>
-          <Music2 size={16} className="settings-icon" />
-          <h2>Music</h2>
-          <p>The Music tab loads this site in an embedded viewer.</p>
+          <Palette size={16} className="settings-icon" />
+          <h2>Theme</h2>
+          <p>Choose the colors Kenta uses throughout the app.</p>
         </header>
         <div className="settings-body">
-          <Row label="Music site URL" hint="Any site that allows embedding in an iframe. Some sites block this.">
-            <div className="input-row">
+          <Row label="Accent color" hint="Used for buttons, selected states, and active indicators.">
+            <div className="color-row">
               <input
-                className="input"
-                value={draft.music_url}
-                disabled={!draft.voice_enabled}
-                onChange={(event) => update("music_url", event.target.value)}
-                placeholder="https://music.youtube.com"
+                className="color-input"
+                type="color"
+                value={draft.theme_accent}
+                onChange={(event) => update("theme_accent", event.target.value)}
               />
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={async () => {
-                  await setMusicUrl(draft.music_url);
-                  onNotify("success", "Music URL saved");
-                }}
-              >
-                Save
-              </button>
+              <span className="color-value">{draft.theme_accent}</span>
+            </div>
+          </Row>
+          <Row label="Background color" hint="The main app background.">
+            <div className="color-row">
+              <input
+                className="color-input"
+                type="color"
+                value={draft.theme_background}
+                onChange={(event) => update("theme_background", event.target.value)}
+              />
+              <span className="color-value">{draft.theme_background}</span>
+            </div>
+          </Row>
+          <Row label="Card color" hint="Used for panels and cards.">
+            <div className="color-row">
+              <input
+                className="color-input"
+                type="color"
+                value={draft.theme_card}
+                onChange={(event) => update("theme_card", event.target.value)}
+              />
+              <span className="color-value">{draft.theme_card}</span>
+            </div>
+          </Row>
+          <Row label="Text color" hint="Primary text color.">
+            <div className="color-row">
+              <input
+                className="color-input"
+                type="color"
+                value={draft.theme_text}
+                onChange={(event) => update("theme_text", event.target.value)}
+              />
+              <span className="color-value">{draft.theme_text}</span>
             </div>
           </Row>
         </div>

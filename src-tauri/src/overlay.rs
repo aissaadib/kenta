@@ -4,24 +4,21 @@
 //! appears in a screen corner for a couple of seconds. It sits on top of other
 //! windows so the user gets confirmation without leaving their current app.
 //!
-//! The overlay HTML reads the chosen icon and optional image path from
-//! `localStorage`; `set_overlay_icon` writes them before the window is shown.
-
-use std::path::Path;
+//! The overlay HTML reads the chosen icon from `localStorage`; `set_overlay_icon`
+//! writes it before the window is shown.
 
 use tauri::{AppHandle, Manager};
 
-/// Store the chosen icon and optional image path in the overlay window's
-/// localStorage so the HTML can read them on load.
-pub fn set_overlay_icon(app: &AppHandle, icon: &str, image_path: Option<&str>) {
+/// Store the chosen icon in the overlay window's localStorage so the HTML can
+/// read it on load.
+pub fn set_overlay_icon(app: &AppHandle, icon: &str) {
   let Some(window) = app.get_webview_window("overlay") else {
     log::warn!("Overlay window not found; is it declared in tauri.conf.json?");
     return;
   };
   let script = format!(
-    "localStorage.setItem('kenta-overlay-icon', {icon:?}); localStorage.setItem('kenta-overlay-image', {image:?});",
-    icon = icon,
-    image = image_path.map(|p| p.to_string()).unwrap_or_default()
+    "localStorage.setItem('kenta-overlay-icon', {icon:?});",
+    icon = icon
   );
   if let Err(error) = window.eval(&script) {
     log::warn!("Could not set overlay icon: {error}");
@@ -29,8 +26,8 @@ pub fn set_overlay_icon(app: &AppHandle, icon: &str, image_path: Option<&str>) {
 }
 
 /// Show the overlay window, then hide it after a delay.
-pub fn show_voice_overlay(app: &AppHandle, icon: &str, image_path: Option<&Path>) {
-  set_overlay_icon(app, icon, image_path.map(|p| p.to_str()).flatten());
+pub fn show_voice_overlay(app: &AppHandle, icon: &str) {
+  set_overlay_icon(app, icon);
 
   let Some(window) = app.get_webview_window("overlay") else {
     log::warn!("Overlay window not found; is it declared in tauri.conf.json?");

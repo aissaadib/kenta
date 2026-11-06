@@ -410,8 +410,6 @@ pub struct VoiceConfig {
   pub show_overlay: bool,
   /// Which icon the overlay shows.
   pub overlay_icon: String,
-  /// Optional path to a user-provided image for the overlay icon.
-  pub overlay_image_path: Option<String>,
 }
 
 /// What happened when the engine tried to save a clip.
@@ -1469,7 +1467,6 @@ mod tests {
       single_word: false,
       show_overlay: true,
       overlay_icon: "bell".into(),
-      overlay_image_path: None,
     }
   }
 
