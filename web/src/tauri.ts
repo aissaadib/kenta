@@ -95,7 +95,7 @@ export interface Settings {
   /** 0..100. Recognitions below this are ignored. */
   voice_min_confidence: number;
   voice_cooldown_seconds: number;
-  /** Upload every new clip to Google Drive. Off unless the user opts in. */
+  /** Save every new clip locally and to Google Drive. On by default. */
   drive_auto_upload: boolean;
 }
 
