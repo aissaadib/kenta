@@ -989,6 +989,24 @@ function SettingsViewImpl({
             label="Play a sound when a clip is saved"
             description="Plays once, after the file is written. Failed and cancelled saves stay silent."
           />
+          <Row
+            label="Sound"
+            hint="The confirmation sound is generated on this PC; nothing is downloaded."
+          >
+            <select
+              className="select"
+              value={draft.confirmation_sound_kind}
+              disabled={!draft.confirmation_sound_enabled}
+              onChange={(event) =>
+                update("confirmation_sound_kind", event.target.value)
+              }
+            >
+              <option value="chime">Chime</option>
+              <option value="beep">Beep</option>
+              <option value="ding">Ding</option>
+              <option value="none">None</option>
+            </select>
+          </Row>
           <Row label="Volume" hint="The chime is generated on this PC; nothing is downloaded.">
             <div className="volume-row">
               <input
@@ -1005,12 +1023,15 @@ function SettingsViewImpl({
                 }
               />
               <span className="mono volume-value">{draft.confirmation_sound_volume}%</span>
-              <button
+                <button
                 type="button"
                 className="btn btn-quiet btn-sm"
                 disabled={draft.confirmation_sound_volume === 0}
                 onClick={() => {
-                  previewConfirmationSound(draft.confirmation_sound_volume).catch((reason) =>
+                  previewConfirmationSound(
+                    draft.confirmation_sound_kind,
+                    draft.confirmation_sound_volume,
+                  ).catch((reason) =>
                     onNotify("error", "Could not play the sound", String(reason)),
                   );
                 }}
@@ -1050,6 +1071,13 @@ function SettingsViewImpl({
             onChange={(checked) => update("voice_enabled", checked)}
             label="Listen for voice commands"
             description="Uses the speech engine built into Windows. Audio is decoded on this PC and thrown away."
+          />
+          <Switch
+            checked={draft.voice_single_word}
+            onChange={(checked) => update("voice_single_word", checked)}
+            label="Single-word activation"
+            description="Saying just the clip command saves a clip. When off, the wake phrase must come first."
+            disabled={!draft.voice_enabled}
           />
           <Row label="Wake phrase" hint="Said on its own, it waits a few seconds for the command.">
             <input
@@ -1160,6 +1188,36 @@ function SettingsViewImpl({
               sound. Windows needs a speech language installed for the phrase to be understood.
             </span>
           </div>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <header>
+          <Bell size={16} className="settings-icon" />
+          <h2>Voice on-screen icon</h2>
+          <p>A small icon that appears in the corner when a voice clip saves.</p>
+        </header>
+        <div className="settings-body">
+          <Switch
+            checked={draft.voice_show_overlay}
+            onChange={(checked) => update("voice_show_overlay", checked)}
+            label="Show on-screen icon when a voice clip saves"
+            description="Appears on top of other windows for a few seconds."
+            disabled={!draft.voice_enabled}
+          />
+          <Row label="Overlay icon" hint="The icon shown on screen.">
+            <select
+              className="select"
+              value={draft.voice_overlay_icon}
+              disabled={!draft.voice_enabled || !draft.voice_show_overlay}
+              onChange={(event) => update("voice_overlay_icon", event.target.value)}
+            >
+              <option value="bell">Bell</option>
+              <option value="save">Save</option>
+              <option value="camera">Camera</option>
+              <option value="clip">Clip</option>
+            </select>
+          </Row>
         </div>
       </section>
 

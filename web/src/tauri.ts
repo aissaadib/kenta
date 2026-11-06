@@ -85,16 +85,24 @@ export interface Settings {
   confirmation_sound_enabled: boolean;
   /** 0..100. 0 is silent. */
   confirmation_sound_volume: number;
+  /** Which confirmation sound plays: "chime", "beep", "ding", "none". */
+  confirmation_sound_kind: string;
   /** Hands-free clipping. Off by default because it opens the microphone. */
   voice_enabled: boolean;
   /** Spoken first, for example "Kenta". */
   voice_wake_phrase: string;
   /** Spoken after the wake phrase, for example "clip that". */
   voice_clip_command: string;
+  /** When true, saying just the clip command saves a clip without the wake phrase. */
+  voice_single_word: boolean;
   voice_clip_seconds: number;
   /** 0..100. Recognitions below this are ignored. */
   voice_min_confidence: number;
   voice_cooldown_seconds: number;
+  /** Show a small on-screen icon when a voice clip saves, on top of other windows. */
+  voice_show_overlay: boolean;
+  /** Which icon the overlay shows: "bell", "save", "camera", "clip". */
+  voice_overlay_icon: string;
   /** Save every new clip locally and to Google Drive. On by default. */
   drive_auto_upload: boolean;
 }
