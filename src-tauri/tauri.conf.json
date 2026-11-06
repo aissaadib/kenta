@@ -11,6 +11,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Kenta",
         "width": 1000,
         "height": 700,
@@ -22,6 +23,7 @@
         "closable": true
       },
       {
+        "label": "overlay",
         "title": "Kenta Clip",
         "url": "overlay.html",
         "width": 120,
