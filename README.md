@@ -6,8 +6,6 @@ clip in a local library.
 
 [**Download Kenta for Windows**](https://github.com/aissaadib/kenta/releases/latest)
 
-![Kenta Capture view](docs/screenshots/capture.png)
-
 ## What it does
 
 - Keeps a rolling replay buffer (5 seconds to 60 minutes).
