@@ -31,7 +31,6 @@ import {
   enumerateMonitors,
   enumerateVideoEncoders,
   getGoogleDriveStatus,
-  getMusicUrl,
   importConfirmationSound,
   importOverlayImage,
   openFileLocation,
