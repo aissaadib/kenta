@@ -10,6 +10,7 @@ mod hotkey;
 mod instance;
 mod migrate;
 mod monitors;
+mod overlay;
 mod process;
 mod settings;
 mod sound;

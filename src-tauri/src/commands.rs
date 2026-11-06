@@ -418,24 +418,25 @@ pub fn capture_stop_manual(app: AppHandle) -> Result<SaveResult, String> {
 /// dependable "the file is on disk" signal rather than a hint that a save
 /// started. It never blocks: the sound module plays on its own thread.
 pub fn confirm_saved(state: &AppState) {
-  let (enabled, volume) = {
+  let (enabled, volume, kind) = {
     let settings = state.settings.lock().unwrap();
     (
       settings.confirmation_sound_enabled,
       settings.confirmation_sound_volume,
+      settings.confirmation_sound_kind.clone(),
     )
   };
   if enabled {
-    sound::play(volume);
+    sound::play_sound(sound::SoundKind::from_str(&kind), volume);
   }
 }
 
 /// Audition the chime. The settings screen passes its draft volume so the
 /// slider can be heard before the change is saved.
 #[tauri::command]
-pub fn preview_confirmation_sound(volume: u8) -> bool {
+pub fn preview_confirmation_sound(kind: String, volume: u8) -> bool {
   let volume = volume.min(100);
-  sound::play(volume);
+  sound::play_sound(sound::SoundKind::from_str(&kind), volume);
   sound::is_audible(volume)
 }
 
@@ -473,7 +474,19 @@ impl VoiceSink for VoiceBridge {
       return outcome;
     }
     match perform_save_replay(&self.app, Some(seconds)) {
-      Ok(_) => voice::SaveOutcome::Saved,
+      Ok(_) => {
+        // Show the on-screen clip icon if the user enabled it.
+        let settings = state.settings.lock().unwrap().clone();
+        if settings.voice_show_overlay {
+          let icon = settings.voice_overlay_icon.clone();
+          let app = self.app.clone();
+          std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = crate::overlay::show_voice_overlay(&app, &icon);
+          });
+        }
+        voice::SaveOutcome::Saved
+      }
       // The buffer can stop between the check above and the save.
       Err(message) if message.contains("replay buffer is not running") => {
         voice::SaveOutcome::NotReady(message)
@@ -494,6 +507,14 @@ impl VoiceSink for VoiceBridge {
   fn status_changed(&self, status: &VoiceStatus) {
     let _ = self.app.emit("voice-status", status);
   }
+
+  fn show_overlay(&self, icon: &str) {
+    let app = self.app.clone();
+    let icon = icon.to_string();
+    std::thread::spawn(move || {
+      let _ = crate::overlay::show_voice_overlay(&app, &icon);
+    });
+  }
 }
 
 fn voice_config(settings: &Settings) -> VoiceConfig {
@@ -504,6 +525,8 @@ fn voice_config(settings: &Settings) -> VoiceConfig {
     min_confidence: settings.voice_min_confidence,
     cooldown: std::time::Duration::from_secs(settings.voice_cooldown_seconds as u64),
     single_word: settings.voice_single_word,
+    show_overlay: settings.voice_show_overlay,
+    overlay_icon: settings.voice_overlay_icon.clone(),
   }
 }
 
@@ -543,6 +566,8 @@ fn voice_affecting_changed(previous: &Settings, settings: &Settings) -> bool {
     || previous.voice_clip_seconds != settings.voice_clip_seconds
     || previous.voice_min_confidence != settings.voice_min_confidence
     || previous.voice_cooldown_seconds != settings.voice_cooldown_seconds
+    || previous.voice_show_overlay != settings.voice_show_overlay
+    || previous.voice_overlay_icon != settings.voice_overlay_icon
 }
 
 #[tauri::command]

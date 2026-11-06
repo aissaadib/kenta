@@ -406,6 +406,10 @@ pub struct VoiceConfig {
   /// When true, speaking just the clip command saves a clip without the wake
   /// phrase first.
   pub single_word: bool,
+  /// Show a small on-screen icon when a voice clip saves.
+  pub show_overlay: bool,
+  /// Which icon the overlay shows.
+  pub overlay_icon: String,
 }
 
 /// What happened when the engine tried to save a clip.
@@ -423,6 +427,9 @@ pub trait VoiceSink: Send + Sync {
   fn save(&self, seconds: u32) -> SaveOutcome;
   fn buffer_ready(&self) -> bool;
   fn status_changed(&self, status: &VoiceStatus);
+  /// Briefly show the on-screen clip icon. Default does nothing; the Tauri
+  /// implementation shows an always-on-top overlay window.
+  fn show_overlay(&self, _icon: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -1458,6 +1465,8 @@ mod tests {
       min_confidence: 60,
       cooldown: Duration::from_secs(5),
       single_word: false,
+      show_overlay: true,
+      overlay_icon: "bell".into(),
     }
   }
 
