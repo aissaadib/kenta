@@ -385,8 +385,8 @@ function DriveSection({ autoUpload, onAutoUploadChange, onNotify }: DriveSection
         <Switch
           checked={autoUpload}
           onChange={onAutoUploadChange}
-          label="Upload new clips automatically"
-          description="Off by default. Turning it on uploads future clips only, never the ones you already have."
+          label="Save new clips to Google Drive"
+          description="On by default once an account is connected. Each clip is saved locally first, then copied to Drive in the background. Existing clips are never uploaded automatically."
           disabled={!connected}
         />
 

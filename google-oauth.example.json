@@ -5,15 +5,17 @@
   // 2. Configure the OAuth consent screen (internal or published, depending on
   //    who will use this build).
   // 3. Create credentials > OAuth client ID > Desktop app.
-  // 4. Copy the client ID below. The client secret is optional: a desktop app
-  //    is a public client, so Kenta never treats it as confidential.
+  // 4. Copy the client ID and client secret below. Google's token endpoint
+  //    requires the secret for a desktop authorization-code exchange; it is
+  //    not confidential, but it must be present.
   //
   // Save this file as google-oauth.json next to Kenta.exe, or in
-  // %APPDATA%\Kenta\google-oauth.json. The file is gitignored: never
+  // %APPDATA%\Kenta\google-oauth.json. You can also save Google's downloaded
+  // client_secret_*.json there unchanged. The file is gitignored: never
   // commit real credentials.
   //
-  // Alternatively set KENTA_GOOGLE_CLIENT_ID (and optionally
-  // KENTA_GOOGLE_CLIENT_SECRET) in the environment.
+  // Alternatively set KENTA_GOOGLE_CLIENT_ID and KENTA_GOOGLE_CLIENT_SECRET
+  // in the environment.
   "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
-  "client_secret": ""
+  "client_secret": "YOUR_CLIENT_SECRET"
 }

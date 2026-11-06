@@ -1,10 +1,11 @@
 //! Where the Google OAuth desktop client id comes from.
 //!
-//! A desktop OAuth client is a public client: the id is not a secret and the
-//! optional client secret is not treated as confidential. Kenta never
-//! bundles either one in the repository or in the installer. The id is read
-//! from the environment (development) or from `google-oauth.json` in the app
-//! config folder / next to the executable (packaged builds).
+//! A desktop OAuth client is a public client, but Google still requires its
+//! `client_secret` when exchanging an authorization code. The value is not
+//! confidential, but it must be present. Kenta never bundles either value in
+//! the repository or in the installer. They are read from the environment
+//! (development) or from `google-oauth.json` in the app config folder / next
+//! to the executable (packaged builds).
 //!
 //! The file is deliberately outside the installer's resources so a build made
 //! from a fresh clone still starts, and simply reports that Drive is not
@@ -43,6 +44,19 @@ impl ConfigError {
 
 #[derive(Deserialize)]
 struct ConfigFile {
+  #[serde(default)]
+  client_id: Option<String>,
+  #[serde(default)]
+  client_secret: Option<String>,
+  /// Google's downloaded desktop credential file wraps the values in
+  /// `"installed"`. Accept that shape directly so users can save the file they
+  /// downloaded instead of retyping it.
+  #[serde(default)]
+  installed: Option<InstalledClient>,
+}
+
+#[derive(Deserialize)]
+struct InstalledClient {
   client_id: String,
   #[serde(default)]
   client_secret: Option<String>,
@@ -74,11 +88,16 @@ impl OAuthConfig {
     })
   }
 
-  /// Parse the JSON shape documented in `google-oauth.example.json`.
+  /// Parse the JSON shape documented in `google-oauth.example.json`, plus the
+  /// `{"installed": {...}}` shape that Google's console downloads.
   pub fn parse(json: &str) -> Result<Self, ConfigError> {
     let file: ConfigFile = serde_json::from_str(json)
       .map_err(|error| ConfigError::Invalid(format!("could not read the JSON file ({error})")))?;
-    Self::new(&file.client_id, file.client_secret.as_deref())
+    let (client_id, client_secret) = match file.installed {
+      Some(installed) => (installed.client_id, installed.client_secret),
+      None => (file.client_id.unwrap_or_default(), file.client_secret),
+    };
+    Self::new(&client_id, client_secret.as_deref())
   }
 
   pub fn client_id(&self) -> &str {
@@ -98,17 +117,29 @@ pub fn load() -> Result<OAuthConfig, ConfigError> {
   if let Ok(client_id) = std::env::var(ENV_CLIENT_ID) {
     if !client_id.trim().is_empty() {
       let secret = std::env::var(ENV_CLIENT_SECRET).ok();
-      return OAuthConfig::new(&client_id, secret.as_deref());
+      return require_secret(OAuthConfig::new(&client_id, secret.as_deref())?);
     }
   }
   for path in candidate_paths() {
     if path.is_file() {
       let json = std::fs::read_to_string(&path)
         .map_err(|error| ConfigError::Invalid(format!("could not read {} ({error})", path.display())))?;
-      return OAuthConfig::parse(&json);
+      return require_secret(OAuthConfig::parse(&json)?);
     }
   }
   Err(ConfigError::Missing)
+}
+
+/// Google's token endpoint rejects a desktop authorization-code exchange that
+/// omits the client secret ("client_secret is missing"), so report the problem
+/// before opening a browser that can only end in an error page.
+fn require_secret(config: OAuthConfig) -> Result<OAuthConfig, ConfigError> {
+  if config.client_secret().is_none() {
+    return Err(ConfigError::Invalid(
+      "the client secret is missing; copy it from the Desktop app OAuth client".into(),
+    ));
+  }
+  Ok(config)
 }
 
 pub fn candidate_paths() -> Vec<PathBuf> {
@@ -133,7 +164,7 @@ pub fn setup_hint() -> String {
     .map(|path| path.display().to_string())
     .unwrap_or_else(|| CONFIG_FILE_NAME.into());
   format!(
-    "Create a Desktop app OAuth client in Google Cloud (Drive API enabled), then save its client id in {path} as {{\"client_id\": \"…apps.googleusercontent.com\"}}. Set {ENV_CLIENT_ID} to override for development."
+    "Create a Desktop app OAuth client in Google Cloud (Drive API enabled), then save its client id and client secret in {path} as {{\"client_id\": \"…apps.googleusercontent.com\", \"client_secret\": \"…\"}}. You can also save Google's downloaded client_secret_*.json there unchanged. Set {ENV_CLIENT_ID} and {ENV_CLIENT_SECRET} to override for development."
   )
 }
 
@@ -152,8 +183,30 @@ mod tests {
 
   #[test]
   fn parses_the_documented_json_shape() {
-    let config = OAuthConfig::parse(&format!(r#"{{"client_id":"{VALID}"}}"#)).unwrap();
+    let config = OAuthConfig::parse(&format!(
+      r#"{{"client_id":"{VALID}","client_secret":"GOCSPX-abc"}}"#
+    ))
+    .unwrap();
     assert_eq!(config.client_id(), VALID);
+    assert_eq!(config.client_secret(), Some("GOCSPX-abc"));
+  }
+
+  #[test]
+  fn parses_googles_downloaded_installed_shape() {
+    let config = OAuthConfig::parse(&format!(
+      r#"{{"installed":{{"client_id":"{VALID}","client_secret":"GOCSPX-abc"}}}}"#
+    ))
+    .unwrap();
+    assert_eq!(config.client_id(), VALID);
+    assert_eq!(config.client_secret(), Some("GOCSPX-abc"));
+  }
+
+  #[test]
+  fn production_configuration_requires_the_client_secret() {
+    let without = OAuthConfig::new(VALID, None).unwrap();
+    assert!(require_secret(without).is_err());
+    let with = OAuthConfig::new(VALID, Some("GOCSPX-abc")).unwrap();
+    assert!(require_secret(with).is_ok());
   }
 
   #[test]

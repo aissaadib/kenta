@@ -287,15 +287,28 @@ impl OAuthHttp for UreqHttp {
 #[derive(Deserialize)]
 struct ErrorBody {
   error: Option<String>,
+  #[serde(default)]
+  error_description: Option<String>,
 }
 
 fn token_error(status: u16, body: &str) -> OAuthError {
-  let kind = serde_json::from_str::<ErrorBody>(body)
-    .ok()
-    .and_then(|body| body.error)
+  let parsed = serde_json::from_str::<ErrorBody>(body).ok();
+  let kind = parsed
+    .as_ref()
+    .and_then(|body| body.error.clone())
     .unwrap_or_else(|| "unknown".into());
+  let description = parsed
+    .as_ref()
+    .and_then(|body| body.error_description.clone())
+    .unwrap_or_default();
   if kind == "invalid_grant" {
     OAuthError::ReauthRequired
+  } else if description.contains("client_secret is missing") {
+    // Google rejects desktop code exchanges without the (public) client
+    // secret. Point at the exact fix instead of a generic 400.
+    OAuthError::Protocol(
+      "Google requires the OAuth client secret. Add client_secret to google-oauth.json and try again.".into(),
+    )
   } else {
     OAuthError::Protocol(format!("token request failed with HTTP {status} ({kind})"))
   }
@@ -788,6 +801,17 @@ mod tests {
       refresh_access_token(&http, &config(), "rt"),
       Err(OAuthError::ReauthRequired)
     );
+  }
+
+  #[test]
+  fn a_missing_client_secret_points_at_the_config_fix() {
+    let http = ScriptedHttp::new(vec![(
+      400,
+      r#"{"error":"invalid_request","error_description":"client_secret is missing."}"#.into(),
+    )]);
+    let error = refresh_access_token(&http, &config(), "rt").unwrap_err();
+    assert!(error.user_message().contains("client secret"));
+    assert!(error.user_message().contains("google-oauth.json"));
   }
 
   #[test]

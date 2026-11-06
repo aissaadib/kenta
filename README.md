@@ -5,7 +5,8 @@ A local-first Windows replay recorder built with Tauri 2, React 19, Rust, SQLite
 Kenta keeps a rolling replay buffer of your desktop, saves the last N seconds when
 something happens, and can also record longer manual sessions. Clips are written to a
 folder you choose and indexed in a local SQLite library. Local files are the
-source of truth. Google Drive upload is optional, one-way and off by default.
+source of truth. Google Drive upload is optional and one-way; when an account
+is connected, new clips are saved locally and copied to Drive by default.
 
 ## Features
 
@@ -28,9 +29,10 @@ source of truth. Google Drive upload is optional, one-way and off by default.
   folder picker, launch-at-sign-in, and close-to-tray.
 - **Tray menu** — show the window, save a replay, toggle recording, open the clip folder,
   or quit.
-- **Google Drive (optional)** — connect a Google account and upload a clip from its menu,
-  or opt in to upload new clips automatically. Resumable uploads, retries and cancellation
-  are handled in the background; local saves never depend on the cloud.
+- **Google Drive (optional)** — connect a Google account and save a clip directly to
+  Drive from its preview or menu. New clips are saved locally and copied to Drive by
+  default; opt out in Settings. Resumable uploads, retries and cancellation are handled
+  in the background; local saves never depend on the cloud.
 
 ## Requirements
 

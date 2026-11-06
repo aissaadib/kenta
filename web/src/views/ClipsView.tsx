@@ -119,6 +119,55 @@ function ClipUploadBadge({
   );
 }
 
+/** The direct Drive action inside the preview modal. */
+function PreviewDriveButton({
+  upload,
+  busy,
+  exists,
+  onUpload,
+  onOpen,
+}: {
+  upload: ClipUploadStatus | null;
+  busy: boolean;
+  exists: boolean;
+  onUpload: () => void;
+  onOpen: () => void;
+}) {
+  if (upload?.status === "uploaded") {
+    return (
+      <button type="button" className="btn btn-quiet" onClick={onOpen}>
+        <Cloud size={15} /> Open in Google Drive
+      </button>
+    );
+  }
+  const active =
+    upload !== null &&
+    (upload.status === "queued" ||
+      upload.status === "uploading" ||
+      upload.status === "retrying" ||
+      upload.status === "finalizing");
+  return (
+    <button
+      type="button"
+      className="btn btn-quiet"
+      disabled={!exists || busy || active}
+      title={
+        busy || active
+          ? "This clip is already on its way to Google Drive."
+          : "Copy this clip to the Kenta folder in Google Drive."
+      }
+      onClick={onUpload}
+    >
+      {busy || active ? <Loader2 size={15} className="spin" /> : <CloudUpload size={15} />}
+      {active && upload?.status === "uploading"
+        ? `Uploading ${upload.percent}%`
+        : busy
+          ? "Queuing upload…"
+          : "Save to Google Drive"}
+    </button>
+  );
+}
+
 function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }: Props) {  const [clips, setClips] = useState<ClipListItem[]>([]);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("date");
@@ -291,6 +340,8 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
     setClips((previous) =>
       previous.map((clip) => (clip.id === clipId ? { ...clip, upload } : clip)),
     );
+    // The preview modal can start the same upload, so keep its copy in sync.
+    setPreview((current) => (current && current.id === clipId ? { ...current, upload } : current));
   };
 
   const uploadClip = async (clip: ClipListItem) => {
@@ -789,6 +840,15 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
               </div>
             )}
             <div className="modal-actions">
+              {driveConnected ? (
+                <PreviewDriveButton
+                  upload={preview.upload ?? null}
+                  busy={uploadBusy === preview.id}
+                  exists={preview.exists}
+                  onUpload={() => void uploadClip(preview)}
+                  onOpen={() => void openRemote(preview)}
+                />
+              ) : null}
               <button
                 type="button"
                 className="btn btn-ghost"
