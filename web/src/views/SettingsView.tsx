@@ -16,6 +16,7 @@ import {
   Loader2,
   Mic,
   Monitor,
+  Music2,
   Play,
   RefreshCw,
   RotateCcw,
@@ -30,12 +31,16 @@ import {
   enumerateMonitors,
   enumerateVideoEncoders,
   getGoogleDriveStatus,
+  getMusicUrl,
+  importConfirmationSound,
+  importOverlayImage,
   openFileLocation,
   openGoogleDrive,
   openOutputDir,
   previewConfirmationSound,
   recommendedCaptureBitrate,
   selectOutputDir,
+  setMusicUrl,
   voiceStatus,
   voiceTest,
   type AudioDevice,
@@ -991,7 +996,7 @@ function SettingsViewImpl({
           />
           <Row
             label="Sound"
-            hint="The confirmation sound is generated on this PC; nothing is downloaded."
+            hint="Choose the confirmation sound. Custom plays a file you import."
           >
             <select
               className="select"
@@ -1005,7 +1010,23 @@ function SettingsViewImpl({
               <option value="beep">Beep</option>
               <option value="ding">Ding</option>
               <option value="none">None</option>
+              <option value="custom">Custom file</option>
             </select>
+            {draft.confirmation_sound_kind === "custom" && (
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={!draft.confirmation_sound_enabled}
+                onClick={async () => {
+                  const path = await importConfirmationSound();
+                  if (path) {
+                    update("confirmation_sound_path", path);
+                  }
+                }}
+              >
+                <FolderOpen size={13} /> Import sound file
+              </button>
+            )}
           </Row>
           <Row label="Volume" hint="The chime is generated on this PC; nothing is downloaded.">
             <div className="volume-row">
@@ -1216,7 +1237,54 @@ function SettingsViewImpl({
               <option value="save">Save</option>
               <option value="camera">Camera</option>
               <option value="clip">Clip</option>
+              <option value="custom">Custom image</option>
             </select>
+            {draft.voice_overlay_icon === "custom" && (
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={!draft.voice_enabled || !draft.voice_show_overlay}
+                onClick={async () => {
+                  const path = await importOverlayImage();
+                  if (path) {
+                    update("voice_overlay_image_path", path);
+                  }
+                }}
+              >
+                <FolderOpen size={13} /> Import image file
+              </button>
+            )}
+          </Row>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <header>
+          <Music2 size={16} className="settings-icon" />
+          <h2>Music</h2>
+          <p>The Music tab loads this site in an embedded viewer.</p>
+        </header>
+        <div className="settings-body">
+          <Row label="Music site URL" hint="Any site that allows embedding in an iframe. Some sites block this.">
+            <div className="input-row">
+              <input
+                className="input"
+                value={draft.music_url}
+                disabled={!draft.voice_enabled}
+                onChange={(event) => update("music_url", event.target.value)}
+                placeholder="https://music.youtube.com"
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={async () => {
+                  await setMusicUrl(draft.music_url);
+                  onNotify("success", "Music URL saved");
+                }}
+              >
+                Save
+              </button>
+            </div>
           </Row>
         </div>
       </section>

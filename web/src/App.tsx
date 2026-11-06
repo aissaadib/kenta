@@ -39,14 +39,14 @@ type View = "capture" | "clips" | "music" | "settings";
 const NAV: { key: View; label: string; icon: ReactNode }[] = [
   { key: "capture", label: "Capture", icon: <Gamepad2 size={17} /> },
   { key: "clips", label: "Clips", icon: <Film size={17} /> },
-  { key: "music", label: "YouTube Music", icon: <Music2 size={17} /> },
+  { key: "music", label: "Music", icon: <Music2 size={17} /> },
   { key: "settings", label: "Settings", icon: <Settings2 size={17} /> },
 ];
 
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
   capture: { title: "Capture", subtitle: "Replay buffer status and manual recording." },
   clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
-  music: { title: "YouTube Music", subtitle: "Play music while you record." },
+  music: { title: "Music", subtitle: "Play music while you record." },
   settings: { title: "Settings", subtitle: "Make Kenta fit your setup." },
 };
 

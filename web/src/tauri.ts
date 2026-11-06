@@ -85,8 +85,10 @@ export interface Settings {
   confirmation_sound_enabled: boolean;
   /** 0..100. 0 is silent. */
   confirmation_sound_volume: number;
-  /** Which confirmation sound plays: "chime", "beep", "ding", "none". */
+  /** Which confirmation sound plays: "chime", "beep", "ding", "none", "custom". */
   confirmation_sound_kind: string;
+  /** Optional path to a user-provided MP3/WAV confirmation sound. */
+  confirmation_sound_path: string | null;
   /** Hands-free clipping. Off by default because it opens the microphone. */
   voice_enabled: boolean;
   /** Spoken first, for example "Kenta". */
@@ -101,8 +103,12 @@ export interface Settings {
   voice_cooldown_seconds: number;
   /** Show a small on-screen icon when a voice clip saves, on top of other windows. */
   voice_show_overlay: boolean;
-  /** Which icon the overlay shows: "bell", "save", "camera", "clip". */
+  /** Which icon the overlay shows: "bell", "save", "camera", "clip", "custom". */
   voice_overlay_icon: string;
+  /** Optional path to a user-provided image for the overlay icon. */
+  voice_overlay_image_path: string | null;
+  /** URL the Music tab loads (default: YouTube Music). */
+  music_url: string;
   /** Save every new clip locally and to Google Drive. On by default. */
   drive_auto_upload: boolean;
 }
@@ -267,6 +273,26 @@ export function saveSettings(settings: Settings): Promise<SaveSettingsResult> {
  */
 export function previewConfirmationSound(kind: string, volume: number): Promise<boolean> {
   return invoke("preview_confirmation_sound", { kind, volume });
+}
+
+/** Open a file picker to choose a custom confirmation sound (MP3/WAV/etc.). */
+export function importConfirmationSound(): Promise<string | null> {
+  return invoke("import_confirmation_sound");
+}
+
+/** Open a file picker to choose a custom overlay icon image (PNG/JPG/etc.). */
+export function importOverlayImage(): Promise<string | null> {
+  return invoke("import_overlay_image");
+}
+
+/** Get the music site URL from settings. */
+export function getMusicUrl(): Promise<string> {
+  return invoke("get_music_url");
+}
+
+/** Set the music site URL in settings. */
+export function setMusicUrl(url: string): Promise<void> {
+  return invoke("set_music_url", { url });
 }
 
 /** What the recogniser is doing, or "disabled" when it is not running. */

@@ -1,16 +1,27 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertTriangle } from "lucide-react";
+import { getMusicUrl } from "../tauri";
 
 interface Props {}
-
-const YOUTUBE_MUSIC_URL = "https://music.youtube.com";
 
 export function MusicView(_props: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [url, setUrl] = useState("");
 
   useEffect(() => {
+    let mounted = true;
+    getMusicUrl().then((u) => {
+      if (mounted) setUrl(u || "https://music.youtube.com");
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!url) return;
     const iframe = iframeRef.current;
     if (!iframe) return;
 
@@ -19,7 +30,9 @@ export function MusicView(_props: Props) {
       setError(null);
     };
     const handleError = () => {
-      setError("YouTube Music could not load. Check your internet connection.");
+      setError(
+        "This site can't be opened inside Kenta. Try a different URL or open it in your browser."
+      );
     };
 
     iframe.addEventListener("load", handleLoad);
@@ -28,14 +41,14 @@ export function MusicView(_props: Props) {
       iframe.removeEventListener("load", handleLoad);
       iframe.removeEventListener("error", handleError, true);
     };
-  }, []);
+  }, [url]);
 
   if (error) {
     return (
       <div className="music-error">
         <div className="music-error-body">
           <div className="music-error-icon">⚠️</div>
-          <h2>YouTube Music</h2>
+          <h2>Music</h2>
           <p>{error}</p>
           <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
             Try again
@@ -49,7 +62,7 @@ export function MusicView(_props: Props) {
     return (
       <div className="music-loading">
         <Loader2 size={24} className="spin" />
-        <span>Opening YouTube Music…</span>
+        <span>Opening Music…</span>
       </div>
     );
   }
@@ -58,8 +71,8 @@ export function MusicView(_props: Props) {
     <div className="music-view">
       <iframe
         ref={iframeRef}
-        src={YOUTUBE_MUSIC_URL}
-        title="YouTube Music"
+        src={url}
+        title="Music"
         className="music-iframe"
         allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"
         loading="eager"

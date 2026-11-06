@@ -16,7 +16,18 @@
       filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
       pointer-events: none;
     }
-    svg { width: 64px; height: 64px; fill: #f5ff2e; }
+    #icon img {
+      width: 64px;
+      height: 64px;
+      object-fit: contain;
+      pointer-events: none;
+    }
+    #icon svg {
+      width: 64px;
+      height: 64px;
+      fill: #f5ff2e;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -31,8 +42,23 @@
 
     const params = new URLSearchParams(window.location.search);
     const kind = params.get('icon') || 'bell';
-    const svg = ICONS[kind] || ICONS.bell;
-    document.getElementById('icon').innerHTML = svg;
+    const container = document.getElementById('icon');
+
+    // Custom image from localStorage set by the backend.
+    const storedIcon = localStorage.getItem('kenta-overlay-icon');
+    const storedImage = localStorage.getItem('kenta-overlay-image');
+
+    if (storedIcon === 'custom' && storedImage) {
+      const img = document.createElement('img');
+      img.src = storedImage;
+      img.onerror = () => {
+        // Fall back to default bell if the image fails to load.
+        container.innerHTML = ICONS.bell;
+      };
+      container.appendChild(img);
+    } else {
+      container.innerHTML = ICONS[kind] || ICONS.bell;
+    }
 
     // Auto-hide after 2 seconds.
     setTimeout(() => {

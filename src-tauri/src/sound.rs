@@ -15,7 +15,10 @@
 //! it plays. It cannot contaminate the clip that triggered it, because that clip
 //! has already been written and registered before the sound starts.
 
-use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT};
+use std::path::Path;
+use std::os::windows::ffi::OsStrExt;
+
+use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_FILENAME, SND_MEMORY, SND_NODEFAULT};
 
 pub const SAMPLE_RATE: u32 = 44_100;
 const CHANNELS: u16 = 1;
@@ -38,6 +41,8 @@ pub enum SoundKind {
   Ding,
   /// Silence: no sound plays.
   None,
+  /// A user-provided MP3/WAV file.
+  Custom,
 }
 
 impl SoundKind {
@@ -47,6 +52,7 @@ impl SoundKind {
       "beep" => SoundKind::Beep,
       "ding" => SoundKind::Ding,
       "none" => SoundKind::None,
+      "custom" => SoundKind::Custom,
       _ => SoundKind::Chime,
     }
   }
@@ -58,6 +64,7 @@ impl SoundKind {
       SoundKind::Beep => "beep",
       SoundKind::Ding => "ding",
       SoundKind::None => "none",
+      SoundKind::Custom => "custom",
     }
   }
 }
@@ -89,21 +96,24 @@ pub fn is_audible(volume: u8) -> bool {
   volume > 0
 }
 
-/// Total milliseconds for a given kind (notes + tail).
+/// Total milliseconds for a given kind (notes + tail). Custom sounds have no
+/// pre-known duration.
 fn kind_duration_ms(kind: SoundKind) -> u32 {
   match kind {
     SoundKind::Chime => CHIME_FIRST_MS + CHIME_SECOND_MS + TAIL_MS,
     SoundKind::Beep => BEEP_MS + TAIL_MS,
     SoundKind::Ding => DING_MS + TAIL_MS,
     SoundKind::None => 0,
+    SoundKind::Custom => 0,
   }
 }
 
 /// Build a mono 16-bit PCM WAV for the given kind at the requested volume.
 ///
-/// The result is deterministic, so tests can compare bytes.
+/// Returns an empty buffer for `Custom`: custom files are played by path, not
+/// generated in memory.
 pub fn sound_wav(kind: SoundKind, volume: u8) -> Vec<u8> {
-  if kind == SoundKind::None {
+  if kind == SoundKind::None || kind == SoundKind::Custom {
     return Vec::new();
   }
   let volume = volume.min(100) as f64 / 100.0;
@@ -116,6 +126,7 @@ pub fn sound_wav(kind: SoundKind, volume: u8) -> Vec<u8> {
     SoundKind::Beep => push_note(&mut samples, BEEP_HZ, BEEP_MS),
     SoundKind::Ding => push_note(&mut samples, DING_HZ, DING_MS),
     SoundKind::None => {}
+    SoundKind::Custom => {}
   }
   samples.resize(sample_count(kind), 0);
 
@@ -160,33 +171,63 @@ fn push_note(samples: &mut Vec<i16>, hz: f64, millis: u32) {
 }
 
 /// Play a confirmation sound once, without blocking the caller.
-pub fn play_sound(kind: SoundKind, volume: u8) {
+///
+/// Custom sounds are played from a file path using `SND_FILENAME`; all other
+/// kinds are generated in memory and played with `SND_MEMORY`.
+pub fn play_sound(kind: SoundKind, volume: u8, custom_path: Option<&Path>) {
   if !is_audible(volume) {
     return;
   }
   let volume = volume.min(100);
   let kind_as_str = kind.as_str();
+  let path = custom_path.map(|p| p.to_path_buf());
   std::thread::spawn(move || {
-    let wav = sound_wav(kind, volume);
-    if wav.is_empty() {
-      log::info!("Confirmation sound is silent ({kind_as_str})");
-      return;
-    }
-    // SAFETY: `wav` outlives the call because playback is synchronous on this
-    // thread, and `SND_MEMORY` reads a well-formed WAV image we just built.
-    let played = unsafe {
-      PlaySoundW(
-        wav.as_ptr() as *const u16,
-        std::ptr::null_mut(),
-        SND_MEMORY | SND_NODEFAULT,
-      )
-    };
-    // Without `SND_ASYNC` this returns once the cue has finished, so a success
-    // here means Windows actually played it.
-    if played == 0 {
-      log::warn!("Windows rejected the confirmation sound buffer");
-    } else {
-      log::info!("Confirmation {kind_as_str} played at {volume}%");
+    match kind {
+      SoundKind::Custom => {
+        let Some(path) = path else {
+          log::warn!("Custom confirmation sound requested but no file path configured");
+          return;
+        };
+        if !Path::new(&path).exists() {
+          log::warn!("Custom confirmation sound file does not exist: {}", path.display());
+          return;
+        }
+        let played = unsafe {
+          PlaySoundW(
+            path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<u16>>().as_ptr(),
+            std::ptr::null_mut(),
+            SND_FILENAME | SND_NODEFAULT,
+          )
+        };
+        if played == 0 {
+          log::warn!("Windows rejected the custom sound file: {}", path.display());
+        } else {
+          log::info!("Confirmation custom sound played from {} at {}%", path.display(), volume);
+        }
+      }
+      _ => {
+        let wav = sound_wav(kind, volume);
+        if wav.is_empty() {
+          log::info!("Confirmation sound is silent ({kind_as_str})");
+          return;
+        }
+        // SAFETY: `wav` outlives the call because playback is synchronous on this
+        // thread, and `SND_MEMORY` reads a well-formed WAV image we just built.
+        let played = unsafe {
+          PlaySoundW(
+            wav.as_ptr() as *const u16,
+            std::ptr::null_mut(),
+            SND_MEMORY | SND_NODEFAULT,
+          )
+        };
+        // Without `SND_ASYNC` this returns once the cue has finished, so a success
+        // here means Windows actually played it.
+        if played == 0 {
+          log::warn!("Windows rejected the confirmation sound buffer");
+        } else {
+          log::info!("Confirmation {kind_as_str} played at {volume}%");
+        }
+      }
     }
   });
 }
@@ -195,7 +236,7 @@ pub fn play_sound(kind: SoundKind, volume: u8) {
 ///
 /// Kept for any callers that still reference the old name.
 pub fn play(volume: u8) {
-  play_sound(SoundKind::Chime, volume);
+  play_sound(SoundKind::Chime, volume, None);
 }
 
 #[cfg(test)]

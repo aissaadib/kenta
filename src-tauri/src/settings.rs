@@ -43,8 +43,10 @@ pub struct Settings {
   pub confirmation_sound_enabled: bool,
   /// 0 is silent, 100 is the full (still deliberately quiet) level.
   pub confirmation_sound_volume: u8,
-  /// Which confirmation sound plays after a save: "chime", "beep", "ding", "none".
+  /// Which confirmation sound plays after a save: "chime", "beep", "ding", "none", "custom".
   pub confirmation_sound_kind: String,
+  /// Optional path to a user-provided MP3/WAV confirmation sound.
+  pub confirmation_sound_path: Option<String>,
   /// Hands-free clipping. Off by default because it opens the microphone.
   pub voice_enabled: bool,
   /// Spoken first, for example "Kenta".
@@ -61,8 +63,12 @@ pub struct Settings {
   pub voice_cooldown_seconds: u32,
   /// Show a small on-screen icon when a voice clip saves, on top of other windows.
   pub voice_show_overlay: bool,
-  /// Which icon the overlay shows: "bell", "save", "camera", "clip".
+  /// Which icon the overlay shows: "bell", "save", "camera", "clip", "custom".
   pub voice_overlay_icon: String,
+  /// Optional path to a user-provided image for the overlay icon.
+  pub voice_overlay_image_path: Option<String>,
+  /// URL the Music tab loads (default: YouTube Music).
+  pub music_url: String,
   /// Save every new clip to Google Drive as well as locally. Off by default:
   /// connecting an account never silently uploads anything. Only clips saved
   /// after the user turns this on are queued, and the local save still
@@ -100,6 +106,7 @@ impl Default for Settings {
       confirmation_sound_enabled: true,
       confirmation_sound_volume: 70,
       confirmation_sound_kind: "chime".to_string(),
+      confirmation_sound_path: None,
       voice_enabled: false,
       voice_wake_phrase: DEFAULT_WAKE_PHRASE.to_string(),
       voice_clip_command: DEFAULT_CLIP_COMMAND.to_string(),
@@ -109,6 +116,8 @@ impl Default for Settings {
       voice_cooldown_seconds: 5,
       voice_show_overlay: true,
       voice_overlay_icon: "bell".to_string(),
+      voice_overlay_image_path: None,
+      music_url: "https://music.youtube.com".to_string(),
       drive_auto_upload: false,
     }
   }
@@ -264,17 +273,25 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
   }
   if !matches!(
     settings.confirmation_sound_kind.as_str(),
-    "chime" | "beep" | "ding" | "none"
+    "chime" | "beep" | "ding" | "none" | "custom"
   ) {
     settings.confirmation_sound_kind = "chime".into();
     warnings.push("The confirmation sound was reset to the default chime.".into());
   }
   if !matches!(
     settings.voice_overlay_icon.as_str(),
-    "bell" | "save" | "camera" | "clip"
+    "bell" | "save" | "camera" | "clip" | "custom"
   ) {
     settings.voice_overlay_icon = "bell".into();
     warnings.push("The overlay icon was reset to the default bell.".into());
+  }
+
+  // Music URL must be an absolute http/https URL or empty to fall back to default.
+  if settings.music_url.trim().is_empty() {
+    settings.music_url = "https://music.youtube.com".into();
+  } else if !settings.music_url.starts_with("http://") && !settings.music_url.starts_with("https://") {
+    settings.music_url = "https://music.youtube.com".into();
+    warnings.push("The music URL was invalid and was reset to the default.".into());
   }
 
   // Voice phrases are matched after normalisation, so two phrases that only
@@ -680,5 +697,49 @@ mod tests {
     reconcile(&mut settings, &mut warnings);
     assert_eq!(settings.voice_overlay_icon, "bell");
     assert!(warnings.iter().any(|warning| warning.contains("overlay")));
+  }
+
+  #[test]
+  fn custom_sound_kind_is_valid() {
+    let mut settings = Settings::default();
+    settings.confirmation_sound_kind = "custom".into();
+    settings.confirmation_sound_path = Some("C:\\Sounds\\ding.mp3".into());
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.confirmation_sound_kind, "custom");
+    assert_eq!(settings.confirmation_sound_path.as_deref(), Some("C:\\Sounds\\ding.mp3"));
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn custom_overlay_icon_is_valid() {
+    let mut settings = Settings::default();
+    settings.voice_overlay_icon = "custom".into();
+    settings.voice_overlay_image_path = Some("C:\\Icons\\bell.png".into());
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.voice_overlay_icon, "custom");
+    assert_eq!(settings.voice_overlay_image_path.as_deref(), Some("C:\\Icons\\bell.png"));
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn invalid_music_url_is_reset_to_default() {
+    let mut settings = Settings::default();
+    settings.music_url = "not-a-url".into();
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.music_url, "https://music.youtube.com");
+    assert!(warnings.iter().any(|warning| warning.contains("music URL")));
+  }
+
+  #[test]
+  fn empty_music_url_uses_default() {
+    let mut settings = Settings::default();
+    settings.music_url = "".into();
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.music_url, "https://music.youtube.com");
+    assert!(validate(&settings).is_ok());
   }
 }

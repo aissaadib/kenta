@@ -410,6 +410,8 @@ pub struct VoiceConfig {
   pub show_overlay: bool,
   /// Which icon the overlay shows.
   pub overlay_icon: String,
+  /// Optional path to a user-provided image for the overlay icon.
+  pub overlay_image_path: Option<String>,
 }
 
 /// What happened when the engine tried to save a clip.
@@ -429,7 +431,7 @@ pub trait VoiceSink: Send + Sync {
   fn status_changed(&self, status: &VoiceStatus);
   /// Briefly show the on-screen clip icon. Default does nothing; the Tauri
   /// implementation shows an always-on-top overlay window.
-  fn show_overlay(&self, _icon: &str) {}
+  fn show_overlay(&self, _icon: &str, _image_path: Option<&str>) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -1467,6 +1469,7 @@ mod tests {
       single_word: false,
       show_overlay: true,
       overlay_icon: "bell".into(),
+      overlay_image_path: None,
     }
   }
 
