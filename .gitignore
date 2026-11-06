@@ -12,3 +12,6 @@ src-tauri/binaries/
 src-tauri/google-oauth.json
 src-tauri/resources/
 
+# NSIS installer built for distribution (kept on disk, not committed).
+Kenta_*_x64-setup.exe
+
