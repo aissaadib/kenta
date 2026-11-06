@@ -1,14 +1,14 @@
 //! Where the Google OAuth desktop client id comes from.
 //!
 //! A desktop OAuth client is a public client, but Google still requires its
-//! `client_secret` when exchanging an authorization code. The value is not
-//! confidential, but it must be present. Kenta never bundles either value in
-//! the repository or in the installer. They are read from the environment
-//! (development) or from `google-oauth.json` in the app config folder / next
-//! to the executable (packaged builds).
+//! `client_secret` when exchanging an authorization code. The value is not a
+//! confidential credential and cannot be protected inside a distributed
+//! binary. The released installer therefore ships the public client
+//! configuration as a resource; it never ships an account, token, or user
+//! data. Development builds can override it from the environment, and a
+//! locally saved `google-oauth.json` in the app config folder takes priority.
 //!
-//! The file is deliberately outside the installer's resources so a build made
-//! from a fresh clone still starts, and simply reports that Drive is not
+//! A build without the file still starts and simply reports that Drive is not
 //! configured.
 
 use serde::Deserialize;
@@ -149,6 +149,9 @@ pub fn candidate_paths() -> Vec<PathBuf> {
   }
   if let Ok(exe) = std::env::current_exe() {
     if let Some(dir) = exe.parent() {
+      // Tauri's bundled resources normally land next to the executable, but a
+      // resource directory keeps the same layout with a `resources` folder.
+      paths.push(dir.join("resources").join(CONFIG_FILE_NAME));
       paths.push(dir.join(CONFIG_FILE_NAME));
     }
   }
