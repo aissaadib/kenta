@@ -8,11 +8,12 @@ a file on your local machine or in your Drive.
 
 Only the MP4 files you choose:
 
-- A clip from the library, through **Upload to Google Drive** in its overflow
-  menu.
-- Future clips, only if you turn on **Upload new clips automatically** in
-  Settings. This is off by default, and connecting an account does not upload
-  your existing library.
+- A clip from the library, through **Save to Google Drive** in its preview or
+  overflow menu.
+- New clips, automatically. Kenta saves the local file first and then copies it
+  to Drive in the background, so a normal save exists in both places. This is on
+  by default for future clips only: connecting an account never uploads your
+  existing library. You can turn it off in Settings.
 
 Kenta does not upload thumbnails, the settings file, the clip database,
 logs, audio samples, or anything else.
@@ -27,8 +28,9 @@ to Drive.
 ## Google Cloud setup (one time)
 
 Kenta uses the Google Drive API v3 through a **Desktop app** OAuth client.
-Desktop clients are public clients: the client ID is not a secret, and no
-client secret is bundled with the app.
+The client ID is not a secret, but Google still requires the client secret
+when exchanging an authorization code. The secret is not confidential; it just
+has to be present in the configuration.
 
 1. Create a project in the [Google Cloud Console](https://console.cloud.google.com/).
 2. Enable the **Google Drive API** for that project.
@@ -36,15 +38,19 @@ client secret is bundled with the app.
    "Internal" user type is enough. For wider distribution, Google must verify
    the app before unrestricted use; until then the project stays in Testing
    mode and only test users can sign in.
-4. Create **Credentials > OAuth client ID > Desktop app**. Note the client ID.
-5. Give the client ID to Kenta in one of two ways:
-   - Set `KENTA_GOOGLE_CLIENT_ID` in the environment (development), or
-   - Save the client ID as `google-oauth.json` next to `Kenta.exe` or in
-     `%APPDATA%\Kenta\google-oauth.json`. Use `google-oauth.example.json`
+4. Create **Credentials > OAuth client ID > Desktop app**. Note the client ID
+   and client secret.
+5. Give both values to Kenta in one of two ways:
+   - Set `KENTA_GOOGLE_CLIENT_ID` and `KENTA_GOOGLE_CLIENT_SECRET` in the
+     environment (development), or
+   - Save them as `google-oauth.json` next to `Kenta.exe` or in
+     `%APPDATA%\Kenta\google-oauth.json`. You can also save Google's downloaded
+     `client_secret_*.json` there unchanged. Use `google-oauth.example.json`
      as a shape reference. This file is gitignored: never commit real credentials.
 
-Without a configured client ID, Settings shows `Not configured` with the exact
-file to create.
+Without a configured client ID and secret, Settings shows `Not configured`
+with the exact file to create. If the secret is missing, the message says so
+instead of opening a browser that can only end in an error.
 
 ## Scopes requested
 
