@@ -43,18 +43,26 @@ pub struct Settings {
   pub confirmation_sound_enabled: bool,
   /// 0 is silent, 100 is the full (still deliberately quiet) level.
   pub confirmation_sound_volume: u8,
+  /// Which confirmation sound plays after a save: "chime", "beep", "ding", "none".
+  pub confirmation_sound_kind: String,
   /// Hands-free clipping. Off by default because it opens the microphone.
   pub voice_enabled: bool,
   /// Spoken first, for example "Kenta".
   pub voice_wake_phrase: String,
   /// Spoken after the wake phrase, for example "clip that".
   pub voice_clip_command: String,
+  /// When true, saying just the clip command saves a clip without the wake phrase.
+  pub voice_single_word: bool,
   /// How many seconds a voice-triggered save keeps.
   pub voice_clip_seconds: u32,
   /// 0..=100. Recognitions below this are ignored.
   pub voice_min_confidence: u8,
   /// Seconds during which repeat triggers are ignored after a save.
   pub voice_cooldown_seconds: u32,
+  /// Show a small on-screen icon when a voice clip saves, on top of other windows.
+  pub voice_show_overlay: bool,
+  /// Which icon the overlay shows: "bell", "save", "camera", "clip".
+  pub voice_overlay_icon: String,
   /// Save every new clip to Google Drive as well as locally. Off by default:
   /// connecting an account never silently uploads anything. Only clips saved
   /// after the user turns this on are queued, and the local save still
@@ -91,12 +99,16 @@ impl Default for Settings {
       monitor_index: None,
       confirmation_sound_enabled: true,
       confirmation_sound_volume: 70,
+      confirmation_sound_kind: "chime".to_string(),
       voice_enabled: false,
       voice_wake_phrase: DEFAULT_WAKE_PHRASE.to_string(),
       voice_clip_command: DEFAULT_CLIP_COMMAND.to_string(),
+      voice_single_word: false,
       voice_clip_seconds: 30,
       voice_min_confidence: 60,
       voice_cooldown_seconds: 5,
+      voice_show_overlay: true,
+      voice_overlay_icon: "bell".to_string(),
       drive_auto_upload: false,
     }
   }
@@ -249,6 +261,20 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
   settings.confirmation_sound_volume = sound_volume.min(100);
   if settings.confirmation_sound_volume != sound_volume {
     warnings.push("The confirmation sound volume was reset to 100%.".into());
+  }
+  if !matches!(
+    settings.confirmation_sound_kind.as_str(),
+    "chime" | "beep" | "ding" | "none"
+  ) {
+    settings.confirmation_sound_kind = "chime".into();
+    warnings.push("The confirmation sound was reset to the default chime.".into());
+  }
+  if !matches!(
+    settings.voice_overlay_icon.as_str(),
+    "bell" | "save" | "camera" | "clip"
+  ) {
+    settings.voice_overlay_icon = "bell".into();
+    warnings.push("The overlay icon was reset to the default bell.".into());
   }
 
   // Voice phrases are matched after normalisation, so two phrases that only
@@ -553,11 +579,14 @@ mod tests {
   fn voice_defaults_are_off_and_use_the_medal_phrases() {
     let settings = Settings::default();
     assert!(!settings.voice_enabled, "voice opens the microphone");
-    assert_eq!(settings.voice_wake_phrase, "Kenta");
-    assert_eq!(settings.voice_clip_command, "clip that");
+    assert_eq!(settings.voice_wake_phrase, DEFAULT_WAKE_PHRASE);
+    assert_eq!(settings.voice_clip_command, DEFAULT_CLIP_COMMAND);
+    assert!(!settings.voice_single_word, "single-word needs to be turned on");
     assert_eq!(settings.voice_clip_seconds, 30);
     assert_eq!(settings.voice_min_confidence, 60);
     assert_eq!(settings.voice_cooldown_seconds, 5);
+    assert!(settings.voice_show_overlay, "the overlay shows by default");
+    assert_eq!(settings.voice_overlay_icon, "bell");
     assert!(validate(&settings).is_ok());
   }
 
@@ -567,6 +596,12 @@ mod tests {
     assert!(!settings.voice_enabled);
     assert_eq!(settings.voice_wake_phrase, DEFAULT_WAKE_PHRASE);
     assert_eq!(settings.voice_clip_command, DEFAULT_CLIP_COMMAND);
+    assert!(!settings.voice_single_word);
+    assert_eq!(settings.voice_clip_seconds, 30);
+    assert_eq!(settings.voice_min_confidence, 60);
+    assert_eq!(settings.voice_cooldown_seconds, 5);
+    assert!(settings.voice_show_overlay);
+    assert_eq!(settings.voice_overlay_icon, "bell");
     assert!(validate(&settings).is_ok());
   }
 
@@ -625,5 +660,25 @@ mod tests {
     let mut settings = Settings::default();
     settings.voice_wake_phrase = "a".repeat(61);
     assert!(validate(&settings).is_err());
+  }
+
+  #[test]
+  fn an_invalid_sound_kind_is_reset_to_chime() {
+    let mut settings = Settings::default();
+    settings.confirmation_sound_kind = "laser".into();
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.confirmation_sound_kind, "chime");
+    assert!(warnings.iter().any(|warning| warning.contains("sound")));
+  }
+
+  #[test]
+  fn an_invalid_overlay_icon_is_reset_to_bell() {
+    let mut settings = Settings::default();
+    settings.voice_overlay_icon = "unicorn".into();
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.voice_overlay_icon, "bell");
+    assert!(warnings.iter().any(|warning| warning.contains("overlay")));
   }
 }
