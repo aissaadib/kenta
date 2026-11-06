@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  # Pinned BtbN FFmpeg build. GPL v3, static, with gfxcapture, NVENC and libx264.
+  FFMPEG_ZIP_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip
+  FFMPEG_ZIP_SHA256: a0e45723c72141975f51d8666302e614711745f3102b704ca3f82c897a58d278
+  FFMPEG_SHA256: 513368c81583572ce1d09d5c7ff827feed1a63db352412a5001f4da3a1583d98
+  FFPROBE_SHA256: 0fd8f3bae96cc707993bcd8c56c13f8cd73962d37dbcaac0dad4fe3a0ce1f68f
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-nsis
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.12" --locked
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          "version=$($conf.version)" >> $env:GITHUB_OUTPUT
+          "tag=$($env:GITHUB_REF_NAME)" >> $env:GITHUB_OUTPUT
+
+      - name: Create the public Google desktop client resource
+        shell: pwsh
+        env:
+          CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          if (-not $env:CLIENT_ID -or -not $env:CLIENT_SECRET) {
+            throw "GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET are required for a public release build."
+          }
+          $json = @{
+            installed = @{
+              client_id = $env:CLIENT_ID
+              client_secret = $env:CLIENT_SECRET
+              auth_uri = "https://accounts.google.com/o/oauth2/auth"
+              token_uri = "https://oauth2.googleapis.com/token"
+              auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+              redirect_uris = @("http://127.0.0.1")
+            }
+          } | ConvertTo-Json -Depth 4
+          $json | Set-Content -Path src-tauri/google-oauth.json -Encoding utf8NoBOM
+
+      - name: Download and verify FFmpeg
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          Invoke-WebRequest -Uri $env:FFMPEG_ZIP_URL -OutFile $zip -UseBasicParsing
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:FFMPEG_ZIP_SHA256) {
+            throw "FFmpeg archive hash mismatch: $actual"
+          }
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $root = Get-ChildItem $env:RUNNER_TEMP -Directory -Filter "ffmpeg-n9.0.2-*" | Select-Object -First 1
+          $bin = Join-Path $root.FullName "bin"
+          $ffmpeg = Join-Path $bin "ffmpeg.exe"
+          $ffprobe = Join-Path $bin "ffprobe.exe"
+          if ((Get-FileHash $ffmpeg -Algorithm SHA256).Hash.ToLower() -ne $env:FFMPEG_SHA256) { throw "ffmpeg.exe hash mismatch" }
+          if ((Get-FileHash $ffprobe -Algorithm SHA256).Hash.ToLower() -ne $env:FFPROBE_SHA256) { throw "ffprobe.exe hash mismatch" }
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          Copy-Item $ffmpeg "src-tauri/binaries/ffmpeg.exe"
+          Copy-Item $ffprobe "src-tauri/binaries/ffprobe.exe"
+          & $ffmpeg -hide_banner -filters | Select-String gfxcapture
+          & $ffmpeg -hide_banner -encoders | Select-String "h264_nvenc|libx264"
+
+      - name: Frontend gates
+        working-directory: web
+        run: |
+          npm ci
+          npm run lint
+          npx tsc --noEmit
+          npm run build
+
+      - name: Rust gates
+        working-directory: src-tauri
+        run: |
+          cargo test --release --lib
+          cargo check --release --lib
+
+      - name: Build NSIS installer
+        working-directory: src-tauri
+        run: cargo tauri build --bundles nsis
+
+      - name: Checksums
+        id: checksum
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "Kenta_${version}_x64-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Installer not found" }
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($installer.Name)" | Set-Content "src-tauri/target/release/bundle/nsis/SHA256SUMS.txt" -Encoding ascii
+          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "checksums=$(Resolve-Path 'src-tauri/target/release/bundle/nsis/SHA256SUMS.txt')" >> $env:GITHUB_OUTPUT
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kenta-windows-nsis
+          path: |
+            src-tauri/target/release/bundle/nsis/Kenta_*_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
+
+      # Draft release only. A maintainer reviews the assets, tests the installer
+      # on a clean Windows machine, and publishes the release manually.
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: Kenta ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: docs/release-notes/v${{ steps.version.outputs.version }}.md
+          draft: true
+          prerelease: false
+          files: |
+            src-tauri/target/release/bundle/nsis/Kenta_*_x64-setup.exe
+            src-tauri/target/release/bundle/nsis/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
