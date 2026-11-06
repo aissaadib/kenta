@@ -103,6 +103,14 @@ export interface Settings {
   voice_show_overlay: boolean;
   /** Which icon the overlay shows: "bell", "save", "camera", "clip". */
   voice_overlay_icon: string;
+  /** Theme accent color (hex). */
+  theme_accent: string;
+  /** Theme background color (hex). */
+  theme_background: string;
+  /** Theme card color (hex). */
+  theme_card: string;
+  /** Theme text color (hex). */
+  theme_text: string;
   /** Save every new clip locally and to Google Drive. On by default. */
   drive_auto_upload: boolean;
 }
