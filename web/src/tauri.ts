@@ -262,11 +262,11 @@ export function saveSettings(settings: Settings): Promise<SaveSettingsResult> {
 }
 
 /**
- * Audition the save chime at `volume` (0..100). Resolves false when the volume
- * is zero, i.e. when nothing was played.
+ * Audition the confirmation sound at `kind` and `volume` (0..100). Resolves
+ * false when the volume is zero, i.e. when nothing was played.
  */
-export function previewConfirmationSound(volume: number): Promise<boolean> {
-  return invoke("preview_confirmation_sound", { volume });
+export function previewConfirmationSound(kind: string, volume: number): Promise<boolean> {
+  return invoke("preview_confirmation_sound", { kind, volume });
 }
 
 /** What the recogniser is doing, or "disabled" when it is not running. */
