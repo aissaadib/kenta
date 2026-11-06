@@ -7,6 +7,7 @@ import {
   Film,
   Gamepad2,
   Loader2,
+  Music2,
   Settings2,
 } from "lucide-react";
 import {
@@ -27,22 +28,25 @@ import {
 import { CaptureView } from "./views/CaptureView";
 import { ClipsView } from "./views/ClipsView";
 import { EditorView } from "./views/EditorView";
+import { MusicView } from "./views/MusicView";
 import { SettingsView } from "./views/SettingsView";
 import { Popover } from "./components/Popover";
 import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
 import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
 
-type View = "capture" | "clips" | "settings";
+type View = "capture" | "clips" | "music" | "settings";
 
 const NAV: { key: View; label: string; icon: ReactNode }[] = [
   { key: "capture", label: "Capture", icon: <Gamepad2 size={17} /> },
   { key: "clips", label: "Clips", icon: <Film size={17} /> },
+  { key: "music", label: "YouTube Music", icon: <Music2 size={17} /> },
   { key: "settings", label: "Settings", icon: <Settings2 size={17} /> },
 ];
 
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
   capture: { title: "Capture", subtitle: "Replay buffer status and manual recording." },
   clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
+  music: { title: "YouTube Music", subtitle: "Play music while you record." },
   settings: { title: "Settings", subtitle: "Make Kenta fit your setup." },
 };
 
@@ -74,6 +78,7 @@ export default function App() {
   const [mountedViews, setMountedViews] = useState<Record<View, boolean>>({
     capture: true,
     clips: false,
+    music: false,
     settings: false,
   });
 
@@ -486,6 +491,12 @@ export default function App() {
                 onEdit={openEditor}
                 onOpenCapture={() => showView("capture")}
               />
+            </div>
+          ) : null}
+
+          {mountedViews.music ? (
+            <div className="view-slot" hidden={inEditor || view !== "music"}>
+              <MusicView />
             </div>
           ) : null}
 
