@@ -227,6 +227,10 @@ pub struct Matcher {
   command: String,
   min_confidence: f32,
   armed_until: Option<Instant>,
+  /// When true, speaking the clip command alone saves a clip without the wake
+  /// phrase first. When false (the default), the wake phrase must precede or
+  /// accompany the command.
+  single_word: bool,
 }
 
 impl Matcher {
@@ -236,7 +240,15 @@ impl Matcher {
       command: normalize_phrase(command),
       min_confidence: (min_confidence_percent.min(100) as f32) / 100.0,
       armed_until: None,
+      single_word: false,
     }
+  }
+
+  /// Same as [`new`], but with single-word mode enabled.
+  pub fn new_single_word(wake: &str, command: &str, min_confidence_percent: u8) -> Self {
+    let mut matcher = Self::new(wake, command, min_confidence_percent);
+    matcher.single_word = true;
+    matcher
   }
 
   pub fn armed(&self, now: Instant) -> bool {
@@ -270,8 +282,9 @@ impl Matcher {
         self.armed_until = Some(now + ARM_WINDOW);
         Decision::Armed
       }
-      // "clip that" while the wake phrase is still fresh.
-      (None, Some(_)) if self.armed(now) => {
+      // "clip that" while the wake phrase is still fresh, or alone in
+      // single-word mode.
+      (None, Some(_)) if self.armed(now) || self.single_word => {
         self.armed_until = None;
         Decision::Trigger
       }
@@ -390,6 +403,9 @@ pub struct VoiceConfig {
   pub min_confidence: u8,
   /// Repeat triggers are ignored for this long after a save.
   pub cooldown: Duration,
+  /// When true, speaking just the clip command saves a clip without the wake
+  /// phrase first.
+  pub single_word: bool,
 }
 
 /// What happened when the engine tried to save a clip.
@@ -695,11 +711,19 @@ unsafe fn handle_recognition(
   // A test captures one utterance and never saves, so the settings screen can
   // prove the microphone works without producing a clip.
   if shared.has_test() {
-    let mut probe = Matcher::new(
-      &config.wake_phrase,
-      &config.clip_command,
-      config.min_confidence,
-    );
+    let mut probe = if config.single_word {
+      Matcher::new_single_word(
+        &config.wake_phrase,
+        &config.clip_command,
+        config.min_confidence,
+      )
+    } else {
+      Matcher::new(
+        &config.wake_phrase,
+        &config.clip_command,
+        config.min_confidence,
+      )
+    };
     let matched = probe.decide(&heard, recognition.confidence, Instant::now())
       == Decision::Trigger;
     let outcome = describe_test(&heard, percent, matched, config);
@@ -709,16 +733,16 @@ unsafe fn handle_recognition(
     return;
   }
 
-  let decision = matcher.decide(&heard, recognition.confidence, Instant::now());
-  match decision {
-    Decision::Ignore => {}
-    Decision::Armed => {
-      log::info!("Voice wake phrase heard; waiting for the clip command");
-      if let Some(status) = shared.update(|status| status.armed = true) {
-        sink.status_changed(&status);
+    let decision = matcher.decide(&heard, recognition.confidence, Instant::now());
+    match decision {
+      Decision::Ignore => {}
+      Decision::Armed => {
+        log::info!("Voice wake phrase heard; waiting for the clip command");
+        if let Some(status) = shared.update(|status| status.armed = true) {
+          sink.status_changed(&status);
+        }
       }
-    }
-    Decision::Trigger => {
+      Decision::Trigger => {
       let now = Instant::now();
       if !cooldown_allows(*last_save, now, config.cooldown) {
         log::info!("Voice command ignored: still cooling down");
@@ -767,6 +791,13 @@ fn describe_test(heard: &str, percent: u8, matched: bool, config: &VoiceConfig) 
     format!(
       "Heard \"{heard}\" at {percent}%, below the {}% confidence threshold.",
       config.min_confidence
+    )
+  } else if config.single_word && transcript.find(&config.clip_command).is_some() {
+    // In single-word mode the command alone is enough; anything else is just
+    // not the command.
+    format!(
+      "Heard \"{heard}\" but not the clip command \"{}\".",
+      config.clip_command
     )
   } else if transcript.find(&config.wake_phrase).is_none() {
     format!(
@@ -1372,6 +1403,51 @@ mod tests {
     assert!(cooldown_allows(Some(now), now + Duration::from_secs(30), cooldown));
   }
 
+  // -- single-word mode -----------------------------------------------------
+
+  #[test]
+  fn single_word_mode_triggers_on_command_alone() {
+    let now = Instant::now();
+    let mut matcher = Matcher::new_single_word("Kenta", "clip that", 60);
+    // No wake phrase needed: the command alone fires.
+    assert_eq!(matcher.decide("clip that", 0.95, now), Decision::Trigger);
+    assert!(!matcher.armed(now));
+  }
+
+  #[test]
+  fn single_word_mode_also_triggers_on_wake_then_command() {
+    let now = Instant::now();
+    let mut matcher = Matcher::new_single_word("Kenta", "clip that", 60);
+    assert_eq!(
+      matcher.decide("Kenta, clip that", 0.95, now),
+      Decision::Trigger
+    );
+    assert!(!matcher.armed(now));
+  }
+
+  #[test]
+  fn single_word_mode_wake_phrase_still_arms() {
+    let now = Instant::now();
+    let mut matcher = Matcher::new_single_word("Kenta", "clip that", 60);
+    assert_eq!(matcher.decide("Kenta", 0.9, now), Decision::Armed);
+    assert!(matcher.armed(now));
+    assert_eq!(
+      matcher.decide("clip that", 0.9, now + Duration::from_secs(2)),
+      Decision::Trigger
+    );
+  }
+
+  #[test]
+  fn single_word_mode_still_ignores_weak_guesses() {
+    let now = Instant::now();
+    let mut matcher = Matcher::new_single_word("Kenta", "clip that", 60);
+    assert_eq!(
+      matcher.decide("clip that", 0.59, now),
+      Decision::Ignore
+    );
+    assert!(!matcher.armed(now));
+  }
+
   // -- test outcome -------------------------------------------------------
 
   fn config() -> VoiceConfig {
@@ -1381,6 +1457,7 @@ mod tests {
       clip_seconds: 30,
       min_confidence: 60,
       cooldown: Duration::from_secs(5),
+      single_word: false,
     }
   }
 

@@ -503,6 +503,7 @@ fn voice_config(settings: &Settings) -> VoiceConfig {
     clip_seconds: settings.voice_clip_seconds,
     min_confidence: settings.voice_min_confidence,
     cooldown: std::time::Duration::from_secs(settings.voice_cooldown_seconds as u64),
+    single_word: settings.voice_single_word,
   }
 }
 
@@ -538,6 +539,7 @@ fn voice_affecting_changed(previous: &Settings, settings: &Settings) -> bool {
   previous.voice_enabled != settings.voice_enabled
     || previous.voice_wake_phrase != settings.voice_wake_phrase
     || previous.voice_clip_command != settings.voice_clip_command
+    || previous.voice_single_word != settings.voice_single_word
     || previous.voice_clip_seconds != settings.voice_clip_seconds
     || previous.voice_min_confidence != settings.voice_min_confidence
     || previous.voice_cooldown_seconds != settings.voice_cooldown_seconds
