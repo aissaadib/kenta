@@ -17,7 +17,6 @@ import {
   Mic,
   Monitor,
   Palette,
-  Play,
   RefreshCw,
   RotateCcw,
   Save,
@@ -1297,9 +1296,10 @@ function SettingsViewImpl({
                     type="button"
                     className="btn btn-quiet btn-sm"
                     onClick={() => void handlePreviewClipSound()}
-                    disabled={!clipSound.enabled || savingSound}
+                    disabled={savingSound}
+                    title="Play the selected cue at the volume above"
                   >
-                    <Play size={12} /> Preview
+                    <Volume2 size={12} /> Test sound
                   </button>
                   <button
                     type="button"
