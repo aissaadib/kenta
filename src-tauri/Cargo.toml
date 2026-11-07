@@ -10,10 +10,12 @@ rust-version = "1.90"
 
 [lib]
 name = "app_lib"
-# `cdylib` is only needed for mobile targets. On Windows it produces a 14 MB
-# app_lib.dll that the desktop executable never loads, but Tauri's MSI bundler
-# globs every *.dll in the output directory and ships it anyway.
-crate-type = ["staticlib", "rlib"]
+# Desktop Windows only needs the rlib: the binary links it directly. `cdylib`
+# would emit a 14 MB app_lib.dll that nothing loads (and that Tauri's MSI
+# bundler would ship), and `staticlib` emits a multi-hundred-megabyte
+# libapp_lib.a that only the iOS/macOS hosts consume. Both are dropped here;
+# a mobile target would need `staticlib` added back.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.7.4", features = [] }
@@ -67,6 +69,12 @@ rand = "0.8"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 # Theme assets are validated (and icons normalised) before they are stored.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "ico"] }
+
+# Debug builds keep full symbols for Kenta itself, which is where our own
+# panics and breakpoints live. Dependency crates drop theirs: they account for
+# the bulk of target/debug, and their source is not something we step through.
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 # Ship one optimised, symbol-free executable instead of a 27 MB binary full of
