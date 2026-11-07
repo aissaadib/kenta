@@ -42,9 +42,6 @@ interface MusicContextValue {
   error: string | null;
   queue: MusicTrack[];
   current: MusicTrack | null;
-  playing: boolean;
-  position: number;
-  duration: number;
   volume: number;
   shuffle: boolean;
   repeat: RepeatMode;
@@ -85,6 +82,28 @@ const MusicContext = createContext<MusicContextValue | null>(null);
 export function useMusic(): MusicContextValue {
   const value = useContext(MusicContext);
   if (!value) throw new Error("useMusic must be used inside MusicProvider");
+  return value;
+}
+
+/**
+ * High-frequency playback state.
+ *
+ * The audio element emits `timeupdate` about four times a second. Keeping
+ * position and duration here, instead of in the library context, means a
+ * thousand-row library is not reconciled on every tick: only the transport
+ * controls that actually display time subscribe to this.
+ */
+export interface PlaybackState {
+  playing: boolean;
+  position: number;
+  duration: number;
+}
+
+const PlaybackContext = createContext<PlaybackState | null>(null);
+
+export function usePlayback(): PlaybackState {
+  const value = useContext(PlaybackContext);
+  if (!value) throw new Error("usePlayback must be used inside MusicProvider");
   return value;
 }
 
@@ -606,9 +625,6 @@ export function MusicProvider({ children, notify }: Props) {
       error,
       queue,
       current,
-      playing,
-      position,
-      duration,
       volume,
       shuffle,
       repeat,
@@ -650,9 +666,6 @@ export function MusicProvider({ children, notify }: Props) {
       error,
       queue,
       current,
-      playing,
-      position,
-      duration,
       volume,
       shuffle,
       repeat,
@@ -684,5 +697,14 @@ export function MusicProvider({ children, notify }: Props) {
     ],
   );
 
-  return <MusicContext.Provider value={value}>{children}</MusicContext.Provider>;
+  const playback = useMemo<PlaybackState>(
+    () => ({ playing, position, duration }),
+    [playing, position, duration],
+  );
+
+  return (
+    <MusicContext.Provider value={value}>
+      <PlaybackContext.Provider value={playback}>{children}</PlaybackContext.Provider>
+    </MusicContext.Provider>
+  );
 }

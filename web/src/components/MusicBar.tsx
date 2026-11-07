@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { fileSrc } from "../tauri";
 import { formatDuration } from "../format";
-import { useMusic } from "../music";
+import { useMusic, usePlayback } from "../music";
 
 interface Props {
   onOpen: () => void;
@@ -26,6 +26,7 @@ interface Props {
  */
 export function MusicBar({ onOpen }: Props) {
   const music = useMusic();
+  const playback = usePlayback();
   const visible = music.current !== null;
 
   useEffect(() => {
@@ -37,7 +38,7 @@ export function MusicBar({ onOpen }: Props) {
 
   if (!music.current) return null;
 
-  const percent = music.duration > 0 ? (music.position / music.duration) * 100 : 0;
+  const percent = playback.duration > 0 ? (playback.position / playback.duration) * 100 : 0;
 
   return (
     <div className="music-bar" role="region" aria-label="Music player">
@@ -73,10 +74,10 @@ export function MusicBar({ onOpen }: Props) {
           type="button"
           className="music-bar-play"
           onClick={() => void music.toggle()}
-          aria-label={music.playing ? "Pause" : "Play"}
-          title={music.playing ? "Pause" : "Play"}
+          aria-label={playback.playing ? "Pause" : "Play"}
+          title={playback.playing ? "Pause" : "Play"}
         >
-          {music.playing ? <Pause size={16} /> : <Play size={16} />}
+          {playback.playing ? <Pause size={16} /> : <Play size={16} />}
         </button>
         <button
           type="button"
@@ -90,19 +91,19 @@ export function MusicBar({ onOpen }: Props) {
       </div>
 
       <div className="music-bar-progress">
-        <span className="mono">{formatDuration(music.position)}</span>
+        <span className="mono">{formatDuration(playback.position)}</span>
         <input
           type="range"
           min={0}
-          max={Math.max(1, music.duration)}
+          max={Math.max(1, playback.duration)}
           step={0.1}
-          value={Math.min(music.position, music.duration || 0)}
+          value={Math.min(playback.position, playback.duration || 0)}
           onChange={(event) => music.seek(Number(event.target.value))}
           aria-label="Seek in the current track"
-          aria-valuetext={`${formatDuration(music.position)} of ${formatDuration(music.duration)}`}
+          aria-valuetext={`${formatDuration(playback.position)} of ${formatDuration(playback.duration)}`}
           style={{ ["--seek" as string]: `${percent}%` }}
         />
-        <span className="mono">{formatDuration(music.duration)}</span>
+        <span className="mono">{formatDuration(playback.duration)}</span>
       </div>
 
       <div className="music-bar-right">

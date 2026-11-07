@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { fileSrc, type MusicPlaylist, type MusicTrack } from "../tauri";
 import { formatDuration } from "../format";
-import { useMusic } from "../music";
+import { useMusic, usePlayback } from "../music";
 
 const SORTS = [
   { value: "title", label: "Title" },
@@ -58,6 +58,7 @@ function TrackArt({ track, size = "row" }: { track: MusicTrack; size?: "row" | "
 
 export function MusicView() {
   const music = useMusic();
+  const playback = usePlayback();
   const [search, setSearch] = useState("");
   const [playlistId, setPlaylistId] = useState<string | null>(null);
   const [playlistTracks, setPlaylistTracks] = useState<MusicTrack[]>([]);
@@ -164,7 +165,7 @@ export function MusicView() {
     setMenuId(null);
   };
 
-  const percent = music.duration > 0 ? (music.position / music.duration) * 100 : 0;
+  const percent = playback.duration > 0 ? (playback.position / playback.duration) * 100 : 0;
 
   return (
     <div className="music-view">
@@ -281,14 +282,14 @@ export function MusicView() {
                     <button
                       type="button"
                       className="music-play"
-                      aria-label={active && music.playing ? `Pause ${track.title}` : `Play ${track.title}`}
+                      aria-label={active && playback.playing ? `Pause ${track.title}` : `Play ${track.title}`}
                       disabled={track.missing}
                       onClick={() => {
                         if (active) void music.toggle();
                         else playRow(track);
                       }}
                     >
-                      {active && music.playing ? <Pause size={14} /> : <Play size={14} />}
+                      {active && playback.playing ? <Pause size={14} /> : <Play size={14} />}
                     </button>
                     <div className="music-title-cell">
                       <TrackArt track={track} />
@@ -397,18 +398,18 @@ export function MusicView() {
               className="player-seek"
               type="range"
               min={0}
-              max={Math.max(1, music.duration)}
+              max={Math.max(1, playback.duration)}
               step={0.1}
-              value={Math.min(music.position, music.duration || 0)}
+              value={Math.min(playback.position, playback.duration || 0)}
               disabled={!music.current}
               aria-label="Seek"
-              aria-valuetext={`${formatDuration(music.position)} of ${formatDuration(music.duration)}`}
+              aria-valuetext={`${formatDuration(playback.position)} of ${formatDuration(playback.duration)}`}
               onChange={(event) => music.seek(Number(event.target.value))}
               style={{ ["--seek" as string]: `${percent}%` }}
             />
             <div className="player-times mono">
-              <span>{formatDuration(music.position)}</span>
-              <span>{formatDuration(music.duration)}</span>
+              <span>{formatDuration(playback.position)}</span>
+              <span>{formatDuration(playback.duration)}</span>
             </div>
             <div className="player-controls">
               <button
@@ -436,9 +437,9 @@ export function MusicView() {
                 className="player-main"
                 onClick={() => void music.toggle()}
                 disabled={music.tracks.length === 0}
-                aria-label={music.playing ? "Pause" : "Play"}
+                aria-label={playback.playing ? "Pause" : "Play"}
               >
-                {music.playing ? <Pause size={19} /> : <Play size={19} />}
+                {playback.playing ? <Pause size={19} /> : <Play size={19} />}
               </button>
               <button
                 type="button"
