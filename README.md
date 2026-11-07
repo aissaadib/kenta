@@ -36,7 +36,7 @@ clip in a local library.
 
 ## Install
 
-1. Download `Kenta_0.1.0_x64-setup.exe` from
+1. Download `Kenta_0.2.0_x64-setup.exe` from
    [Releases](https://github.com/aissaadib/kenta/releases).
 2. Run it. The installer is per-user and does not need administrator rights.
 3. Launch **Kenta** from the Start Menu.

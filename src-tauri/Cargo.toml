@@ -1,6 +1,6 @@
 [package]
 name = "kenta"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first Windows replay recorder with an optional Google Drive backup"
 authors = ["HumanHEART"]
 license = "MIT"

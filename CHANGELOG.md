@@ -4,9 +4,15 @@ All notable changes to Kenta are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-07
 
 ### Added
+
+- Settings: any WAV, MP3, OGG, FLAC, M4A, AAC or Opus file can be used as the
+  clip cue. It is converted to mono 16-bit WAV (capped at 8 seconds) on import,
+  with a **Test sound** button, a volume slider, and a one-click return to the
+  built-in cues. The cue is stored on the active theme, so the Appearance
+  Studio and Settings always agree.
 
 - Music: a local library that references your own files, FFprobe metadata and
   embedded artwork, search and sorting, a persistent player with shuffle and
@@ -22,6 +28,12 @@ All notable changes to Kenta are documented here. The format follows
 
 ### Changed
 
+- Settings: choosing between the wake phrase plus command and the command
+  alone is a **Two words / One word** tab pair instead of a switch, and the
+  hint spells out the phrases the selected mode requires.
+- The release build is leaner: the unused `staticlib` artifact and duplicate
+  FFmpeg/FFprobe sidecar copies are gone, and dependency debug symbols are no
+  longer kept in development builds.
 - The old theme colours from `settings.json` are imported once into a custom
   theme; recordings, clips and Google Drive data are untouched.
 - Chrome that previously hardcoded colours (danger buttons, warning counts,
