@@ -1,7 +1,8 @@
 # Releasing Kenta
 
-Kenta's first public release is v0.1.0. This document describes how to cut
-future releases. It is written for the project maintainer.
+This document describes how to cut a Kenta release. It is written for the
+project maintainer. v0.1.0 was the first public release; v0.2.0 is the current
+one.
 
 ## Overview
 
@@ -64,6 +65,44 @@ On a clean Windows machine (or Windows Sandbox):
 8. Restart Kenta and confirm settings and library persist.
 9. Install a newer build over this one and confirm data survives.
 10. Uninstall and confirm recordings and the library database are not deleted.
+
+## Staging a local release folder
+
+After `cargo tauri build --bundles nsis` succeeds, the installer can be staged
+for hand-off or archival without shipping any build residue:
+
+```powershell
+pwsh -File scripts/stage-release.ps1
+```
+
+This writes a gitignored `Kenta-Release/` folder containing only:
+
+```
+Kenta_Installer.exe
+SHA256SUMS.txt
+README.txt
+LICENSE.txt
+THIRD_PARTY_NOTICES.txt
+LICENSES/GPL-3.0.txt
+```
+
+The script reads the version from `src-tauri/tauri.conf.json`, clears only that
+folder, and computes the SHA-256 in `SHA256SUMS.txt`. Compare it with:
+
+```powershell
+Get-FileHash .\Kenta-Release\Kenta_Installer.exe -Algorithm SHA256
+```
+
+`src-tauri/target/`, `web/dist/`, `.dist/` and `Kenta-Release/` must never be
+committed; all four are in `.gitignore`.
+
+### FFmpeg sidecars
+
+`externalBin` is declared as `binaries/ffmpeg` and `binaries/ffprobe`, so the
+bundler resolves the target-suffixed names only:
+`ffmpeg-x86_64-pc-windows-gnu.exe` and `ffprobe-x86_64-pc-windows-gnu.exe`
+(MSVC on CI). Plain `ffmpeg.exe` copies in `src-tauri/binaries/` are never
+resolved by the build and only double that folder's size.
 
 ## Publishing
 

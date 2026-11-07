@@ -12,3 +12,11 @@ src-tauri/binaries/
 src-tauri/google-oauth.json
 src-tauri/resources/
 
+# Local release staging: the installer, checksums and notices are published as
+# GitHub release assets, not committed.
+Kenta-Release/
+
+# Local logs and benchmark output.
+*.log
+bench/
+
