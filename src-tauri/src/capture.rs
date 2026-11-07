@@ -10,12 +10,21 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Maximum number of stale warnings to keep. Older warnings are dropped so a
+/// long buffering session does not grow this vec without bound.
+const MAX_WARNINGS: usize = 50;
+
+fn push_warning(warnings: &mut Vec<String>, message: String) {
+  if warnings.len() >= MAX_WARNINGS {
+    warnings.remove(0);
+  }
+  warnings.push(message);
+}
+
 /// The number of seconds in each segment file. The last, still-open segment is
 /// never used for an export, so the maximum latency between pressing "save" and
 /// the end of the exported clip is one segment.
 pub const SEGMENT_SECONDS: u32 = 2;
-
-/// Which Windows screen-capture path FFmpeg should use.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CaptureBackend {
   /// Prefer the fast Windows Graphics Capture filter, fall back to GDI.
@@ -273,7 +282,8 @@ impl CaptureEngine {
         let used_gfx = preferred_backend != CaptureBackend::Gdi
           && resolve_backend(&self.config) == CaptureBackend::Gfx;
         if used_gfx {
-          self.warnings.push(
+          push_warning(
+            &mut self.warnings,
             "Windows Graphics Capture could not start, so Kenta switched to the GDI capture path. Smoothness may be limited.".into(),
           );
           self.fallback_reason = Some(first_error.to_string());
@@ -299,10 +309,13 @@ impl CaptureEngine {
   /// so a hardware/driver problem does not leave the user without capture.
   fn fallback_to_cpu(&mut self, requested: String, first_error: String) -> AppResult<()> {
     if requested != "libx264" && ffmpeg::encoder_available("libx264") {
-      self.warnings.push(format!(
-        "{} was unavailable, so Kenta switched to the CPU x264 encoder.",
-        encoder_display(&requested)
-      ));
+      push_warning(
+        &mut self.warnings,
+        format!(
+          "{} was unavailable, so Kenta switched to the CPU x264 encoder.",
+          encoder_display(&requested)
+        ),
+      );
       self.fallback_reason = Some(first_error.clone());
       self.reset_session()?;
       match self.spawn_and_wait("libx264") {
@@ -526,7 +539,7 @@ impl CaptureEngine {
             continue;
           }
           if let Ok(mut tail) = tail.lock() {
-            if tail.len() >= 40 {
+            if tail.len() >= 15 {
               tail.pop_front();
             }
             tail.push_back(trimmed.to_string());
