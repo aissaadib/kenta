@@ -1,4 +1,5 @@
 use crate::errors::{AppError, AppResult};
+use crate::music::{Playlist, Track};
 use chrono::{DateTime, Utc};
 use dirs::video_dir;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -155,6 +156,41 @@ const CLOUD_SCHEMA: &str = "
   CREATE INDEX IF NOT EXISTS idx_cloud_uploads_account ON cloud_uploads(account_id, status);
 ";
 
+const MUSIC_SCHEMA: &str = "
+  CREATE TABLE IF NOT EXISTS music_tracks (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    artist TEXT,
+    album TEXT,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    codec TEXT,
+    sample_rate INTEGER,
+    channels INTEGER,
+    artwork_path TEXT,
+    added_at TEXT NOT NULL,
+    missing INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_music_tracks_added ON music_tracks(added_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_music_tracks_title ON music_tracks(title COLLATE NOCASE);
+  CREATE TABLE IF NOT EXISTS music_playlists (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS music_playlist_tracks (
+    playlist_id TEXT NOT NULL,
+    track_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (playlist_id, track_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_music_playlist_tracks ON music_playlist_tracks(playlist_id, position);
+  CREATE TABLE IF NOT EXISTS music_folders (
+    path TEXT PRIMARY KEY,
+    added_at TEXT NOT NULL
+  );
+";
+
 impl Storage {
   pub fn open() -> AppResult<Self> {
     let base = video_dir().ok_or_else(|| AppError::Storage("no video dir".into()))?;
@@ -200,6 +236,9 @@ impl Storage {
     // as unavailable instead of taking the whole app down.
     if let Err(error) = self.conn.execute_batch(CLOUD_SCHEMA) {
       log::warn!("cloud upload tables are unavailable: {error}");
+    }
+    if let Err(error) = self.conn.execute_batch(MUSIC_SCHEMA) {
+      log::warn!("music tables are unavailable: {error}");
     }
     Ok(())
   }
@@ -544,6 +583,260 @@ impl Storage {
     }
     Ok(uploads)
   }
+
+  /// Insert a track unless its original path is already in the library.
+  /// Returns true when a new row was created.
+  pub fn add_music_track(&mut self, track: &Track) -> AppResult<bool> {
+    let changed = self.conn.execute(
+      "INSERT OR IGNORE INTO music_tracks
+        (id, path, title, artist, album, duration_seconds, codec, sample_rate, channels, artwork_path, added_at, missing)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+      rusqlite::params![
+        track.id,
+        track.path,
+        track.title,
+        track.artist,
+        track.album,
+        track.duration_seconds,
+        track.codec,
+        track.sample_rate,
+        track.channels,
+        track.artwork_path,
+        track.added_at,
+        track.missing as i32,
+      ],
+    )?;
+    Ok(changed > 0)
+  }
+
+  pub fn list_music_tracks(&self, search: Option<&str>, sort: Option<&str>) -> AppResult<Vec<Track>> {
+    let order = match sort.unwrap_or("title") {
+      "artist" => "artist COLLATE NOCASE ASC, title COLLATE NOCASE ASC",
+      "album" => "album COLLATE NOCASE ASC, title COLLATE NOCASE ASC",
+      "added" => "added_at DESC",
+      "duration" => "duration_seconds DESC",
+      _ => "title COLLATE NOCASE ASC",
+    };
+    let search = search.unwrap_or_default().trim();
+    let mut statement = self.conn.prepare(&format!(
+      "SELECT id, path, title, artist, album, duration_seconds, codec, sample_rate, channels, artwork_path, added_at, missing
+       FROM music_tracks
+       WHERE (?1 = '' OR title LIKE ?2 ESCAPE '\\' OR artist LIKE ?2 ESCAPE '\\' OR album LIKE ?2 ESCAPE '\\')
+       ORDER BY {order}"
+    ))?;
+    let pattern = format!("%{}%", escape_like(search));
+    let rows = statement.query_map(rusqlite::params![search, pattern], music_track_from_row)?;
+    let mut tracks = Vec::new();
+    for row in rows {
+      tracks.push(row?);
+    }
+    Ok(tracks)
+  }
+
+  pub fn get_music_track(&self, id: &str) -> AppResult<Option<Track>> {
+    let mut statement = self.conn.prepare(
+      "SELECT id, path, title, artist, album, duration_seconds, codec, sample_rate, channels, artwork_path, added_at, missing
+       FROM music_tracks WHERE id = ?1",
+    )?;
+    Ok(statement
+      .query_row([id], music_track_from_row)
+      .optional()?)
+  }
+
+  pub fn music_track_by_path(&self, path: &str) -> AppResult<Option<Track>> {
+    let mut statement = self.conn.prepare(
+      "SELECT id, path, title, artist, album, duration_seconds, codec, sample_rate, channels, artwork_path, added_at, missing
+       FROM music_tracks WHERE path = ?1 LIMIT 1",
+    )?;
+    Ok(statement
+      .query_row([path], music_track_from_row)
+      .optional()?)
+  }
+
+  pub fn set_music_track_missing(&self, id: &str, missing: bool) -> AppResult<()> {
+    self.conn.execute(
+      "UPDATE music_tracks SET missing = ?2 WHERE id = ?1",
+      rusqlite::params![id, missing as i32],
+    )?;
+    Ok(())
+  }
+
+  pub fn remove_music_track(&mut self, id: &str) -> AppResult<()> {
+    self.conn.execute("DELETE FROM music_playlist_tracks WHERE track_id = ?1", [id])?;
+    self.conn.execute("DELETE FROM music_tracks WHERE id = ?1", [id])?;
+    Ok(())
+  }
+
+  pub fn list_music_playlists(&self) -> AppResult<Vec<Playlist>> {
+    let mut statement = self.conn.prepare(
+      "SELECT p.id, p.name, p.created_at,
+              (SELECT COUNT(*) FROM music_playlist_tracks t WHERE t.playlist_id = p.id)
+       FROM music_playlists p
+       ORDER BY p.created_at ASC",
+    )?;
+    let rows = statement.query_map([], |row| {
+      Ok(Playlist {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        created_at: row.get(2)?,
+        track_count: row.get::<_, i64>(3)?.max(0) as u32,
+      })
+    })?;
+    let mut playlists = Vec::new();
+    for row in rows {
+      playlists.push(row?);
+    }
+    Ok(playlists)
+  }
+
+  pub fn create_music_playlist(&mut self, playlist: &Playlist) -> AppResult<()> {
+    self.conn.execute(
+      "INSERT INTO music_playlists (id, name, created_at) VALUES (?1, ?2, ?3)",
+      rusqlite::params![playlist.id, playlist.name, playlist.created_at],
+    )?;
+    Ok(())
+  }
+
+  pub fn rename_music_playlist(&self, id: &str, name: &str) -> AppResult<()> {
+    self.conn.execute(
+      "UPDATE music_playlists SET name = ?2 WHERE id = ?1",
+      rusqlite::params![id, name],
+    )?;
+    Ok(())
+  }
+
+  pub fn delete_music_playlist(&mut self, id: &str) -> AppResult<()> {
+    self.conn.execute("DELETE FROM music_playlist_tracks WHERE playlist_id = ?1", [id])?;
+    self.conn.execute("DELETE FROM music_playlists WHERE id = ?1", [id])?;
+    Ok(())
+  }
+
+  pub fn music_playlist_tracks(&self, playlist_id: &str) -> AppResult<Vec<Track>> {
+    let mut statement = self.conn.prepare(
+      "SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_seconds, t.codec, t.sample_rate, t.channels, t.artwork_path, t.added_at, t.missing
+       FROM music_tracks t
+       JOIN music_playlist_tracks p ON p.track_id = t.id
+       WHERE p.playlist_id = ?1
+       ORDER BY p.position ASC",
+    )?;
+    let rows = statement.query_map([playlist_id], music_track_from_row)?;
+    let mut tracks = Vec::new();
+    for row in rows {
+      tracks.push(row?);
+    }
+    Ok(tracks)
+  }
+
+  pub fn add_music_playlist_track(&mut self, playlist_id: &str, track_id: &str) -> AppResult<bool> {
+    let next: i64 = self.conn.query_row(
+      "SELECT COALESCE(MAX(position), -1) + 1 FROM music_playlist_tracks WHERE playlist_id = ?1",
+      [playlist_id],
+      |row| row.get(0),
+    )?;
+    let changed = self.conn.execute(
+      "INSERT OR IGNORE INTO music_playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+      rusqlite::params![playlist_id, track_id, next],
+    )?;
+    Ok(changed > 0)
+  }
+
+  pub fn remove_music_playlist_track(&mut self, playlist_id: &str, track_id: &str) -> AppResult<()> {
+    self.conn.execute(
+      "DELETE FROM music_playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+      rusqlite::params![playlist_id, track_id],
+    )?;
+    self.renumber_music_playlist(playlist_id)?;
+    Ok(())
+  }
+
+  pub fn reorder_music_playlist(&mut self, playlist_id: &str, track_ids: &[String]) -> AppResult<()> {
+    let transaction = self.conn.transaction()?;
+    for (position, track_id) in track_ids.iter().enumerate() {
+      transaction.execute(
+        "UPDATE music_playlist_tracks SET position = ?3 WHERE playlist_id = ?1 AND track_id = ?2",
+        rusqlite::params![playlist_id, track_id, position as i64],
+      )?;
+    }
+    transaction.commit()?;
+    self.renumber_music_playlist(playlist_id)?;
+    Ok(())
+  }
+
+  pub fn list_music_folders(&self) -> AppResult<Vec<String>> {
+    let mut statement = self
+      .conn
+      .prepare("SELECT path FROM music_folders ORDER BY added_at ASC")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut folders = Vec::new();
+    for row in rows {
+      folders.push(row?);
+    }
+    Ok(folders)
+  }
+
+  pub fn add_music_folder(&mut self, path: &str) -> AppResult<()> {
+    self.conn.execute(
+      "INSERT OR IGNORE INTO music_folders (path, added_at) VALUES (?1, ?2)",
+      rusqlite::params![path, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+  }
+
+  pub fn remove_music_folder(&mut self, path: &str) -> AppResult<()> {
+    self
+      .conn
+      .execute("DELETE FROM music_folders WHERE path = ?1", [path])?;
+    Ok(())
+  }
+
+  pub fn missing_music_tracks(&self) -> AppResult<Vec<Track>> {
+    let mut statement = self.conn.prepare(
+      "SELECT id, path, title, artist, album, duration_seconds, codec, sample_rate, channels, artwork_path, added_at, missing
+       FROM music_tracks WHERE missing = 1 ORDER BY title COLLATE NOCASE ASC",
+    )?;
+    let rows = statement.query_map([], music_track_from_row)?;
+    let mut tracks = Vec::new();
+    for row in rows {
+      tracks.push(row?);
+    }
+    Ok(tracks)
+  }
+
+  fn renumber_music_playlist(&mut self, playlist_id: &str) -> AppResult<()> {
+    let mut statement = self.conn.prepare(
+      "SELECT track_id FROM music_playlist_tracks WHERE playlist_id = ?1 ORDER BY position ASC",
+    )?;
+    let ids = statement
+      .query_map([playlist_id], |row| row.get::<_, String>(0))?
+      .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let transaction = self.conn.transaction()?;
+    for (position, id) in ids.iter().enumerate() {
+      transaction.execute(
+        "UPDATE music_playlist_tracks SET position = ?3 WHERE playlist_id = ?1 AND track_id = ?2",
+        rusqlite::params![playlist_id, id, position as i64],
+      )?;
+    }
+    transaction.commit()?;
+    Ok(())
+  }
+}
+
+fn music_track_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
+  Ok(Track {
+    id: row.get(0)?,
+    path: row.get(1)?,
+    title: row.get(2)?,
+    artist: row.get(3)?,
+    album: row.get(4)?,
+    duration_seconds: row.get(5)?,
+    codec: row.get(6)?,
+    sample_rate: row.get::<_, Option<i64>>(7)?.map(|value| value as u32),
+    channels: row.get::<_, Option<i64>>(8)?.map(|value| value as u32),
+    artwork_path: row.get(9)?,
+    added_at: row.get(10)?,
+    missing: row.get::<_, i64>(11)? != 0,
+  })
 }
 
 const UPLOAD_COLUMNS: &str = "clip_id, account_id, remote_file_id, remote_name, status, uploaded_bytes, total_bytes, checksum, error, attempts, created_at, updated_at, completed_at";

@@ -1,3 +1,4 @@
+use crate::appearance::{self, AppearanceConfig, Theme};
 use crate::autostart;
 use crate::capture::{
   self, export_plan, CaptureBackend, CaptureConfig, CaptureEngine, CaptureState, SaveResult,
@@ -10,6 +11,7 @@ use crate::errors::AppResult;
 use crate::ffmpeg::{self, AudioDevice, EncoderInfo};
 use crate::hotkey::{self, HotkeyManager};
 use crate::monitors::{self, MonitorInfo};
+use crate::music::{self, Playlist, Track};
 use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
 use crate::sound;
 use crate::storage::{Clip, CloudUpload, Storage, UploadStatus};
@@ -48,6 +50,9 @@ pub struct AppState {
   pub drive: Mutex<Option<Arc<AccountManager>>>,
   /// The single background upload worker.
   pub uploads: Mutex<Option<Arc<UploadManager>>>,
+  /// Appearance Studio configuration. Persisted separately from settings so a
+  /// broken theme can never reset recording preferences.
+  pub appearance: Mutex<AppearanceConfig>,
 }
 
 pub struct EditorSession {
@@ -73,6 +78,7 @@ impl AppState {
       voice: Mutex::new(None),
       drive: Mutex::new(None),
       uploads: Mutex::new(None),
+      appearance: Mutex::new(AppearanceConfig::default()),
     }
   }
 }
@@ -405,6 +411,7 @@ pub fn capture_start_manual(
   let status = status_from_engine(&state, engine);
   drop(capture);
   let _ = app.emit("capture-status", &status);
+  play_event(&app, "recording_started");
   Ok(status)
 }
 
@@ -418,17 +425,40 @@ pub fn capture_stop_manual(app: AppHandle) -> Result<SaveResult, String> {
 /// dependable "the file is on disk" signal rather than a hint that a save
 /// started. It never blocks: the sound module plays on its own thread.
 pub fn confirm_saved(state: &AppState) {
-  let (enabled, volume, kind) = {
-    let settings = state.settings.lock().unwrap();
-    (
-      settings.confirmation_sound_enabled,
-      settings.confirmation_sound_volume,
-      settings.confirmation_sound_kind.clone(),
-    )
-  };
-  if enabled {
-    sound::play_sound(sound::SoundKind::from_str(&kind), volume);
+  play_event_for_state(state, "clip_saved");
+}
+
+/// Play the configured sound for one real application event. Sounds are read
+/// from the active appearance theme; if appearance is unavailable the historic
+/// settings confirmation cue is still used for a successful save.
+pub fn play_event_for_state(state: &AppState, event: &str) {
+  let event_settings = state
+    .appearance
+    .lock()
+    .ok()
+    .and_then(|appearance| appearance.active().sounds.event(event).cloned());
+  if let Some(event_settings) = event_settings {
+    event_settings.play();
+    return;
   }
+  if event == "clip_saved" {
+    let (enabled, volume, kind) = {
+      let settings = state.settings.lock().unwrap();
+      (
+        settings.confirmation_sound_enabled,
+        settings.confirmation_sound_volume,
+        settings.confirmation_sound_kind.clone(),
+      )
+    };
+    if enabled {
+      sound::play_sound(sound::SoundKind::from_str(&kind), volume);
+    }
+  }
+}
+
+pub fn play_event(app: &AppHandle, event: &str) {
+  let state = app.state::<AppState>();
+  play_event_for_state(&state, event);
 }
 
 /// Audition the confirmation sound. The settings screen passes its draft
@@ -712,6 +742,9 @@ pub fn perform_stop_manual(app: &AppHandle) -> Result<SaveResult, String> {
       let _ = app.emit("app-error", error.clone());
     }
   }
+  if result.is_ok() {
+    play_event(app, "recording_stopped");
+  }
   result
 }
 
@@ -737,6 +770,7 @@ pub fn perform_toggle_manual(app: &AppHandle) -> Result<Option<SaveResult>, Stri
       engine.start_manual_recording().map_err(|e| e.to_string())?;
     }
     emit_status(app);
+    play_event(app, "recording_started");
     Ok(None)
   }
 }
@@ -2079,6 +2113,752 @@ fn safe_file_name(input: &str, old: &Path) -> Result<String, String> {
     }
   };
   Ok(name)
+}
+
+// ---------------------------------------------------------------------------
+// Music
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub struct MusicImportResult {
+  pub added: usize,
+  pub duplicates: usize,
+  pub failed: Vec<String>,
+  pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct MusicSource {
+  pub id: String,
+  pub path: String,
+  pub artwork: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct MusicPrefs {
+  pub volume: u8,
+  pub shuffle: bool,
+  pub repeat: String,
+  pub sort: String,
+  pub last_track: Option<String>,
+}
+
+fn allow_asset(app: &AppHandle, path: &Path) {
+  if path.is_file() {
+    let _ = app.asset_protocol_scope().allow_file(path);
+  }
+}
+
+fn music_artwork_dir() -> PathBuf {
+  appearance::config_dir().join("music-artwork")
+}
+
+fn storage_guard<'a>(
+  state: &'a State<'_, AppState>,
+) -> Result<std::sync::MutexGuard<'a, Option<Storage>>, String> {
+  state
+    .storage
+    .lock()
+    .map_err(|_| "The clip library lock is unavailable.".to_string())
+}
+
+#[tauri::command]
+pub fn music_pick_files() -> Vec<String> {
+  let dialog = rfd::FileDialog::new().add_filter(
+    "Audio",
+    &["mp3", "wav", "flac", "m4a", "aac", "ogg", "oga", "opus"],
+  );
+  dialog
+    .pick_files()
+    .map(|paths| {
+      paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
+    })
+    .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn music_pick_folder() -> Option<String> {
+  rfd::FileDialog::new()
+    .pick_folder()
+    .map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn music_import_paths(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  paths: Vec<String>,
+) -> Result<MusicImportResult, String> {
+  if paths.is_empty() {
+    return Err("Choose at least one file or folder.".into());
+  }
+  let mut files = Vec::new();
+  let mut result = MusicImportResult {
+    added: 0,
+    duplicates: 0,
+    failed: Vec::new(),
+    warnings: Vec::new(),
+  };
+  for raw in paths {
+    let path = PathBuf::from(&raw);
+    if path.is_dir() {
+      let found = music::collect_audio_files(&path);
+      if found.is_empty() {
+        result
+          .warnings
+          .push(format!("No supported audio files were found in {}.", path.display()));
+      }
+      files.extend(found);
+    } else if path.is_file() {
+      if music::is_supported(&path) {
+        files.push(path);
+      } else {
+        result.failed.push(format!(
+          "{} is not a supported audio file.",
+          path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+      }
+    } else {
+      result.failed.push(format!("{raw} no longer exists."));
+    }
+  }
+  files.sort();
+  files.dedup();
+  if files.len() > music::MAX_FOLDER_FILES {
+    result.warnings.push(format!(
+      "Only the first {} files were imported. Import the remaining folders separately.",
+      music::MAX_FOLDER_FILES
+    ));
+    files.truncate(music::MAX_FOLDER_FILES);
+  }
+
+  let artwork_dir = music_artwork_dir();
+  for file in files {
+    let canonical = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+    let canonical_text = canonical.to_string_lossy().to_string();
+    let existing = {
+      let storage = storage_guard(&state)?;
+      let storage = storage
+        .as_ref()
+        .ok_or_else(|| "The music library is unavailable.".to_string())?;
+      storage
+        .music_track_by_path(&canonical_text)
+        .map_err(|error| error.to_string())?
+    };
+    if existing.is_some() {
+      result.duplicates += 1;
+      continue;
+    }
+    let probe = match music::probe(&canonical) {
+      Ok(probe) => probe,
+      Err(error) => {
+        result.failed.push(format!(
+          "{}: {}",
+          file.file_name().unwrap_or_default().to_string_lossy(),
+          error.message()
+        ));
+        continue;
+      }
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let artwork = if probe.has_artwork {
+      music::extract_artwork(&canonical, &artwork_dir, &id)
+    } else {
+      None
+    };
+    let track = Track {
+      id: id.clone(),
+      path: canonical_text,
+      title: probe.title,
+      artist: probe.artist,
+      album: probe.album,
+      duration_seconds: probe.duration_seconds,
+      codec: probe.codec,
+      sample_rate: probe.sample_rate,
+      channels: probe.channels,
+      artwork_path: artwork,
+      added_at: Utc::now().to_rfc3339(),
+      missing: false,
+    };
+    let inserted = {
+      let mut storage = storage_guard(&state)?;
+      let storage = storage
+        .as_mut()
+        .ok_or_else(|| "The music library is unavailable.".to_string())?;
+      storage.add_music_track(&track).map_err(|error| error.to_string())?
+    };
+    if inserted {
+      allow_asset(&app, &canonical);
+      result.added += 1;
+    } else {
+      result.duplicates += 1;
+    }
+  }
+  Ok(result)
+}
+
+#[tauri::command]
+pub fn music_add_folder(
+  state: State<'_, AppState>,
+  path: String,
+) -> Result<Vec<String>, String> {
+  if !Path::new(&path).is_dir() {
+    return Err("That folder no longer exists.".into());
+  }
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .add_music_folder(&path)
+    .map_err(|error| error.to_string())?;
+  storage.list_music_folders().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_remove_folder(
+  state: State<'_, AppState>,
+  path: String,
+) -> Result<Vec<String>, String> {
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .remove_music_folder(&path)
+    .map_err(|error| error.to_string())?;
+  storage.list_music_folders().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_folders(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+  let storage = storage_guard(&state)?;
+  let storage = storage
+    .as_ref()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage.list_music_folders().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_list(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  search: Option<String>,
+  sort: Option<String>,
+) -> Result<Vec<Track>, String> {
+  let tracks = {
+    let storage = storage_guard(&state)?;
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The music library is unavailable.".to_string())?;
+    storage
+      .list_music_tracks(search.as_deref(), sort.as_deref())
+      .map_err(|error| error.to_string())?
+  };
+  for track in &tracks {
+    allow_asset(&app, Path::new(&track.path));
+    if let Some(artwork) = &track.artwork_path {
+      allow_asset(&app, Path::new(artwork));
+    }
+  }
+  Ok(tracks)
+}
+
+#[tauri::command]
+pub fn music_source(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  id: String,
+) -> Result<MusicSource, String> {
+  let track = {
+    let storage = storage_guard(&state)?;
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The music library is unavailable.".to_string())?;
+    storage
+      .get_music_track(&id)
+      .map_err(|error| error.to_string())?
+      .ok_or_else(|| "That track is no longer in the library.".to_string())?
+  };
+  let path = PathBuf::from(&track.path);
+  if !path.is_file() {
+    if let Ok(storage) = storage_guard(&state) {
+      if let Some(storage) = storage.as_ref() {
+        let _ = storage.set_music_track_missing(&id, true);
+      }
+    }
+    return Err(format!(
+      "\"{}\" is missing from disk. Remove it from the library or restore the file.",
+      track.title
+    ));
+  }
+  allow_asset(&app, &path);
+  if let Some(artwork) = &track.artwork_path {
+    allow_asset(&app, Path::new(artwork));
+  }
+  Ok(MusicSource {
+    id: track.id,
+    path: track.path,
+    artwork: track.artwork_path,
+  })
+}
+
+#[tauri::command]
+pub fn music_check_missing(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<Vec<Track>, String> {
+  let tracks = {
+    let storage = storage_guard(&state)?;
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The music library is unavailable.".to_string())?;
+    storage
+      .list_music_tracks(None, Some("title"))
+      .map_err(|error| error.to_string())?
+  };
+  let mut missing = Vec::new();
+  {
+    let storage = storage_guard(&state)?;
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The music library is unavailable.".to_string())?;
+    for track in tracks {
+      let exists = Path::new(&track.path).is_file();
+      if !exists {
+        let _ = storage.set_music_track_missing(&track.id, true);
+        let mut track = track;
+        track.missing = true;
+        missing.push(track);
+      } else if track.missing {
+        let _ = storage.set_music_track_missing(&track.id, false);
+      } else if let Some(artwork) = &track.artwork_path {
+        allow_asset(&app, Path::new(artwork));
+      }
+    }
+  }
+  Ok(missing)
+}
+
+#[tauri::command]
+pub fn music_remove_track(state: State<'_, AppState>, id: String) -> Result<(), String> {
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .remove_music_track(&id)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_list_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, String> {
+  let storage = storage_guard(&state)?;
+  let storage = storage
+    .as_ref()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage.list_music_playlists().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_create_playlist(
+  state: State<'_, AppState>,
+  name: String,
+) -> Result<Vec<Playlist>, String> {
+  let name = name.trim();
+  if name.is_empty() {
+    return Err("Enter a playlist name.".into());
+  }
+  if name.chars().count() > 80 {
+    return Err("Playlist names must be 80 characters or fewer.".into());
+  }
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .create_music_playlist(&Playlist {
+      id: uuid::Uuid::new_v4().to_string(),
+      name: name.to_string(),
+      created_at: Utc::now().to_rfc3339(),
+      track_count: 0,
+    })
+    .map_err(|error| error.to_string())?;
+  storage.list_music_playlists().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_rename_playlist(
+  state: State<'_, AppState>,
+  id: String,
+  name: String,
+) -> Result<Vec<Playlist>, String> {
+  let name = name.trim();
+  if name.is_empty() || name.chars().count() > 80 {
+    return Err("Playlist names must be between 1 and 80 characters.".into());
+  }
+  let storage = storage_guard(&state)?;
+  let storage = storage
+    .as_ref()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .rename_music_playlist(&id, name)
+    .map_err(|error| error.to_string())?;
+  storage.list_music_playlists().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_delete_playlist(
+  state: State<'_, AppState>,
+  id: String,
+) -> Result<Vec<Playlist>, String> {
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .delete_music_playlist(&id)
+    .map_err(|error| error.to_string())?;
+  storage.list_music_playlists().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_playlist_tracks(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  id: String,
+) -> Result<Vec<Track>, String> {
+  let tracks = {
+    let storage = storage_guard(&state)?;
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The music library is unavailable.".to_string())?;
+    storage
+      .music_playlist_tracks(&id)
+      .map_err(|error| error.to_string())?
+  };
+  for track in &tracks {
+    allow_asset(&app, Path::new(&track.path));
+    if let Some(artwork) = &track.artwork_path {
+      allow_asset(&app, Path::new(artwork));
+    }
+  }
+  Ok(tracks)
+}
+
+#[tauri::command]
+pub fn music_add_playlist_track(
+  state: State<'_, AppState>,
+  playlist_id: String,
+  track_id: String,
+) -> Result<(), String> {
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .add_music_playlist_track(&playlist_id, &track_id)
+    .map_err(|error| error.to_string())?;
+  Ok(())
+}
+
+#[tauri::command]
+pub fn music_remove_playlist_track(
+  state: State<'_, AppState>,
+  playlist_id: String,
+  track_id: String,
+) -> Result<(), String> {
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .remove_music_playlist_track(&playlist_id, &track_id)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_reorder_playlist(
+  state: State<'_, AppState>,
+  playlist_id: String,
+  track_ids: Vec<String>,
+) -> Result<(), String> {
+  let mut storage = storage_guard(&state)?;
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The music library is unavailable.".to_string())?;
+  storage
+    .reorder_music_playlist(&playlist_id, &track_ids)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn music_save_prefs(
+  state: State<'_, AppState>,
+  volume: u8,
+  shuffle: bool,
+  repeat: String,
+  sort: String,
+  last_track: Option<String>,
+) -> Result<Settings, String> {
+  let mut settings = state.settings.lock().unwrap().clone();
+  settings.music_volume = volume.min(100);
+  settings.music_shuffle = shuffle;
+  settings.music_repeat = repeat;
+  settings.music_sort = sort;
+  settings.music_last_track = last_track.filter(|id| !id.trim().is_empty());
+  validate(&settings).map_err(|error| error.to_string())?;
+  SettingsStore::default()
+    .save(&settings)
+    .map_err(|error| error.to_string())?;
+  *state.settings.lock().unwrap() = settings.clone();
+  Ok(settings)
+}
+
+// ---------------------------------------------------------------------------
+// Appearance
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub struct AppearancePayload {
+  pub config: AppearanceConfig,
+  pub themes: Vec<Theme>,
+  pub active: Theme,
+  pub assets_dir: String,
+}
+
+fn appearance_payload(config: AppearanceConfig) -> AppearancePayload {
+  AppearancePayload {
+    themes: config.all_themes(),
+    active: config.active(),
+    config,
+    assets_dir: appearance::assets_dir().to_string_lossy().to_string(),
+  }
+}
+
+fn persist_appearance(state: &AppState, config: AppearanceConfig) -> Result<(), String> {
+  appearance::save(&config).map_err(|error| error.to_string())?;
+  *state.appearance.lock().unwrap() = config;
+  Ok(())
+}
+
+fn apply_theme_runtime(app: &AppHandle, theme: &Theme) {
+  if let Some(window) = app.get_webview_window("main") {
+    #[cfg(windows)]
+    appearance::apply_window_colors(&window, theme);
+    #[cfg(not(windows))]
+    let _ = &window;
+  }
+  if let Some(warning) = appearance::apply_runtime_icons(app, theme) {
+    log::warn!("{warning}");
+  }
+}
+
+#[tauri::command]
+pub fn get_appearance(state: State<'_, AppState>) -> AppearancePayload {
+  let config = state.appearance.lock().unwrap().clone();
+  appearance_payload(config)
+}
+
+#[tauri::command]
+pub fn save_appearance_theme(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  theme: Theme,
+) -> Result<AppearancePayload, String> {
+  let mut config = state.appearance.lock().unwrap().clone();
+  let saved = config.save_theme(theme);
+  config.active_theme = saved.id.clone();
+  persist_appearance(&state, config.clone())?;
+  apply_theme_runtime(&app, &saved);
+  Ok(appearance_payload(config))
+}
+
+#[tauri::command]
+pub fn delete_appearance_theme(
+  state: State<'_, AppState>,
+  id: String,
+) -> Result<AppearancePayload, String> {
+  let mut config = state.appearance.lock().unwrap().clone();
+  if builtin_theme(&id) {
+    return Err("Built-in themes cannot be deleted.".into());
+  }
+  if !config.delete(&id) {
+    return Err("That theme no longer exists.".into());
+  }
+  persist_appearance(&state, config.clone())?;
+  Ok(appearance_payload(config))
+}
+
+#[tauri::command]
+pub fn duplicate_appearance_theme(
+  state: State<'_, AppState>,
+  id: String,
+  name: Option<String>,
+) -> Result<AppearancePayload, String> {
+  let mut config = state.appearance.lock().unwrap().clone();
+  config
+    .duplicate(&id, name)
+    .ok_or_else(|| "That theme no longer exists.".to_string())?;
+  persist_appearance(&state, config.clone())?;
+  Ok(appearance_payload(config))
+}
+
+#[tauri::command]
+pub fn set_appearance_theme(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  id: String,
+) -> Result<AppearancePayload, String> {
+  let mut config = state.appearance.lock().unwrap().clone();
+  let theme = config.set_active(&id).map_err(|error| error.message())?;
+  persist_appearance(&state, config.clone())?;
+  apply_theme_runtime(&app, &theme);
+  Ok(appearance_payload(config))
+}
+
+fn builtin_theme(id: &str) -> bool {
+  appearance::builtin_themes()
+    .iter()
+    .any(|theme| theme.id == id)
+}
+
+#[tauri::command]
+pub fn reset_appearance(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<AppearancePayload, String> {
+  let mut config = state.appearance.lock().unwrap().clone();
+  let theme = config
+    .set_active(appearance::DEFAULT_THEME_ID)
+    .map_err(|error| error.message())?;
+  persist_appearance(&state, config.clone())?;
+  apply_theme_runtime(&app, &theme);
+  Ok(appearance_payload(config))
+}
+
+#[tauri::command]
+pub fn preview_appearance_theme(app: AppHandle, theme: Theme) {
+  apply_theme_runtime(&app, &theme);
+}
+
+#[tauri::command]
+pub fn preview_appearance_sound(
+  event: String,
+  kind: String,
+  custom: Option<String>,
+  volume: u8,
+) -> Result<bool, String> {
+  if !appearance::is_known_event(&event) {
+    return Err("Unknown sound event.".into());
+  }
+  if !appearance::is_known_sound(&kind) {
+    return Err("Unknown built-in sound.".into());
+  }
+  if let Some(custom) = &custom {
+    let path = appearance::resolve_asset(custom).map_err(|error| error.message())?;
+    if path.is_file() {
+      if volume > 0 {
+        sound::play_wav_file(&path, volume.min(100));
+      }
+      return Ok(volume > 0);
+    }
+  }
+  if volume > 0 {
+    sound::play_sound(sound::SoundKind::from_str(&kind), volume.min(100));
+  }
+  Ok(volume > 0)
+}
+
+#[tauri::command]
+pub fn appearance_pick_image(
+  kind: String,
+) -> Result<Option<appearance::ImportedAsset>, String> {
+  let dialog = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "webp", "ico"]);
+  let Some(path) = dialog.pick_file() else {
+    return Ok(None);
+  };
+  let (folder, max) = if kind == "icon" {
+    ("icons", appearance::MAX_ICON_DIMENSION)
+  } else {
+    ("backgrounds", appearance::MAX_BACKGROUND_DIMENSION)
+  };
+  appearance::import_image(&path, folder, max)
+    .map(Some)
+    .map_err(|error| error.message())
+}
+
+#[tauri::command]
+pub fn appearance_pick_sound() -> Result<Option<appearance::ImportedAsset>, String> {
+  let dialog = rfd::FileDialog::new().add_filter(
+    "Audio",
+    &["wav", "mp3", "ogg", "oga", "flac", "m4a", "aac", "opus"],
+  );
+  let Some(path) = dialog.pick_file() else {
+    return Ok(None);
+  };
+  appearance::import_sound(&path)
+    .map(Some)
+    .map_err(|error| error.message())
+}
+
+#[tauri::command]
+pub fn appearance_export_theme(theme: Theme) -> Result<Option<String>, String> {
+  let safe = theme
+    .name
+    .chars()
+    .map(|character| {
+      if character.is_alphanumeric() || character == ' ' || character == '-' || character == '_' {
+        character
+      } else {
+        '_'
+      }
+    })
+    .collect::<String>()
+    .trim()
+    .to_string();
+  let file_name = if safe.is_empty() {
+    "kenta-theme".to_string()
+  } else {
+    safe
+  };
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter("Kenta theme", &["kenta-theme"])
+    .set_file_name(format!("{file_name}.kenta-theme"))
+    .save_file()
+  else {
+    return Ok(None);
+  };
+  let path = if path.extension().is_none() {
+    path.with_extension("kenta-theme")
+  } else {
+    path
+  };
+  appearance::export_package(&theme, &path).map_err(|error| error.message())?;
+  Ok(Some(path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn appearance_import_theme(
+  app: AppHandle,
+  state: State<'_, AppState>,
+) -> Result<Option<AppearancePayload>, String> {
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter("Kenta theme", &["kenta-theme"])
+    .pick_file()
+  else {
+    return Ok(None);
+  };
+  let theme = appearance::import_package(&path).map_err(|error| error.message())?;
+  let mut config = state.appearance.lock().unwrap().clone();
+  let saved = config.save_theme(theme);
+  config.active_theme = saved.id.clone();
+  persist_appearance(&state, config.clone())?;
+  apply_theme_runtime(&app, &saved);
+  Ok(Some(appearance_payload(config)))
 }
 
 pub fn initial_settings() -> (Settings, Vec<String>) {
