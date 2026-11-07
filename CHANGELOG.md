@@ -4,6 +4,29 @@ All notable changes to Kenta are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Music: a local library that references your own files, FFprobe metadata and
+  embedded artwork, search and sorting, a persistent player with shuffle and
+  repeat, a queue with reordering, and playlists that never move the originals.
+  Playback lives above the navigation, so it survives switching sections,
+  minimising and hiding to the tray.
+- Appearance Studio: a semantic theme-token system applied live through CSS
+  custom properties, seven built-in presets, a colour editor with WCAG contrast
+  warnings and one-click fixes, typography, density, corner, sidebar, scale and
+  motion controls, solid/gradient/image backgrounds, icon packs, custom window
+  and tray icons, per-event sound cues with imported sounds, undo/redo, and
+  `.kenta-theme` import and export with validation.
+
+### Changed
+
+- The old theme colours from `settings.json` are imported once into a custom
+  theme; recordings, clips and Google Drive data are untouched.
+- Chrome that previously hardcoded colours (danger buttons, warning counts,
+  switches, media surfaces, scrollbars) now reads theme tokens.
+
 ## [0.1.0] - 2026-11-06
 
 First public Windows release.
