@@ -7,6 +7,8 @@ import {
   Film,
   Gamepad2,
   Loader2,
+  Music2,
+  Palette,
   Settings2,
 } from "lucide-react";
 import {
@@ -27,22 +29,34 @@ import {
 import { CaptureView } from "./views/CaptureView";
 import { ClipsView } from "./views/ClipsView";
 import { EditorView } from "./views/EditorView";
+import { MusicView } from "./views/MusicView";
+import { AppearanceView } from "./views/AppearanceView";
 import { SettingsView } from "./views/SettingsView";
+import { AppearanceProvider } from "./appearance";
+import { MusicProvider } from "./music";
+import { MusicBar } from "./components/MusicBar";
 import { Popover } from "./components/Popover";
 import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
 import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
 
-type View = "capture" | "clips" | "settings";
+type View = "capture" | "clips" | "music" | "appearance" | "settings";
 
 const NAV: { key: View; label: string; icon: ReactNode }[] = [
   { key: "capture", label: "Capture", icon: <Gamepad2 size={17} /> },
   { key: "clips", label: "Clips", icon: <Film size={17} /> },
+  { key: "music", label: "Music", icon: <Music2 size={17} /> },
+  { key: "appearance", label: "Appearance", icon: <Palette size={17} /> },
   { key: "settings", label: "Settings", icon: <Settings2 size={17} /> },
 ];
 
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
   capture: { title: "Capture", subtitle: "Replay buffer status and manual recording." },
   clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
+  music: { title: "Music", subtitle: "Your local library, playing everywhere in Kenta." },
+  appearance: {
+    title: "Appearance Studio",
+    subtitle: "Colors, type, layout, icons and cues — with a live preview.",
+  },
   settings: { title: "Settings", subtitle: "Make Kenta fit your setup." },
 };
 
@@ -74,6 +88,8 @@ export default function App() {
   const [mountedViews, setMountedViews] = useState<Record<View, boolean>>({
     capture: true,
     clips: false,
+    music: false,
+    appearance: false,
     settings: false,
   });
 
@@ -337,7 +353,9 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <AppearanceProvider>
+      <MusicProvider notify={addToast}>
+        <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark"><Clapperboard size={18} /></span>
@@ -452,7 +470,15 @@ export default function App() {
         </header>
 
         <div
-          className={`content ${view === "settings" && !inEditor ? "content-settings" : ""}`}
+          className={`content ${
+            view === "settings" && !inEditor
+              ? "content-settings"
+              : view === "music"
+                ? "content-music"
+                : view === "appearance"
+                  ? "content-appearance"
+                  : ""
+          }`}
           ref={contentRef}
         >
           {mountedViews.capture ? (
@@ -489,6 +515,21 @@ export default function App() {
             </div>
           ) : null}
 
+          {mountedViews.music ? (
+            <div className="view-slot" hidden={inEditor || view !== "music"}>
+              <MusicView />
+            </div>
+          ) : null}
+
+          {mountedViews.appearance ? (
+            <div className="view-slot" hidden={inEditor || view !== "appearance"}>
+              <AppearanceView
+                active={view === "appearance" && !inEditor}
+                onNotify={addToast}
+              />
+            </div>
+          ) : null}
+
           {editingClipId ? (
             <div className="view-slot">
               <EditorView
@@ -515,6 +556,7 @@ export default function App() {
                 onChange={setDraft}
                 onSave={handleSaveSettings}
                 onReset={handleReset}
+                onOpenAppearance={() => showView("appearance")}
                 onNotify={addToast}
               />
             </div>
@@ -523,6 +565,9 @@ export default function App() {
       </main>
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />
-    </div>
+        <MusicBar onOpen={() => showView("music")} />
+        </div>
+      </MusicProvider>
+    </AppearanceProvider>
   );
 }

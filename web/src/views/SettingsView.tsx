@@ -17,7 +17,6 @@ import {
   Mic,
   Monitor,
   Palette,
-  Play,
   RefreshCw,
   RotateCcw,
   Save,
@@ -34,7 +33,6 @@ import {
   openFileLocation,
   openGoogleDrive,
   openOutputDir,
-  previewConfirmationSound,
   recommendedCaptureBitrate,
   selectOutputDir,
   voiceStatus,
@@ -63,6 +61,7 @@ interface Props {
   onChange: (next: Settings) => void;
   onSave: () => void;
   onReset: () => void;
+  onOpenAppearance: () => void;
   onNotify: (kind: "success" | "error" | "info", title: string, message?: string) => void;
 }
 
@@ -533,6 +532,7 @@ function SettingsViewImpl({
   onChange,
   onSave,
   onReset,
+  onOpenAppearance,
   onNotify,
 }: Props) {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -979,74 +979,23 @@ function SettingsViewImpl({
 
       <section className="settings-section">
         <header>
-          <Bell size={16} className="settings-icon" />
-          <h2>Save confirmation</h2>
-          <p>A short chime when a clip is on disk.</p>
+          <Palette size={16} className="settings-icon" />
+          <h2>Appearance</h2>
+          <p>Colors, type, layout, backgrounds, icons and cue sounds.</p>
         </header>
         <div className="settings-body">
-          <Switch
-            checked={draft.confirmation_sound_enabled}
-            onChange={(checked) => update("confirmation_sound_enabled", checked)}
-            label="Play a sound when a clip is saved"
-            description="Plays once, after the file is written. Failed and cancelled saves stay silent."
-          />
-          <Row
-            label="Sound"
-            hint="Choose the confirmation sound."
-          >
-            <select
-              className="select"
-              value={draft.confirmation_sound_kind}
-              disabled={!draft.confirmation_sound_enabled}
-              onChange={(event) =>
-                update("confirmation_sound_kind", event.target.value)
-              }
-            >
-              <option value="chime">Chime</option>
-              <option value="beep">Beep</option>
-              <option value="ding">Ding</option>
-              <option value="none">None</option>
-            </select>
-          </Row>
-          <Row label="Volume" hint="The chime is generated on this PC; nothing is downloaded.">
-            <div className="volume-row">
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={1}
-                value={draft.confirmation_sound_volume}
-                disabled={!draft.confirmation_sound_enabled}
-                aria-label="Confirmation sound volume"
-                aria-valuetext={`${draft.confirmation_sound_volume}%`}
-                onChange={(event) =>
-                  update("confirmation_sound_volume", Number(event.target.value))
-                }
-              />
-              <span className="mono volume-value">{draft.confirmation_sound_volume}%</span>
-                <button
-                type="button"
-                className="btn btn-quiet btn-sm"
-                disabled={draft.confirmation_sound_volume === 0}
-                onClick={() => {
-                  previewConfirmationSound(
-                    draft.confirmation_sound_kind,
-                    draft.confirmation_sound_volume,
-                  ).catch((reason) =>
-                    onNotify("error", "Could not play the sound", String(reason)),
-                  );
-                }}
-              >
-                <Play size={13} /> Preview
-              </button>
-            </div>
-          </Row>
           <div className="inline-note">
             <Info size={14} />
             <span>
-              Desktop audio is captured from the system&apos;s own output, so a clip recorded right
-              after a save can contain the chime. The clip that triggered it is never affected.
+              The Appearance Studio is separate from these recording settings, so a theme can never
+              change your capture setup. Your previous colors and confirmation sound were imported
+              into a custom theme.
             </span>
+          </div>
+          <div className="appearance-entry">
+            <button type="button" className="btn btn-primary" onClick={onOpenAppearance}>
+              <Palette size={14} /> Open Appearance Studio
+            </button>
           </div>
         </div>
       </section>
@@ -1218,60 +1167,6 @@ function SettingsViewImpl({
               <option value="camera">Camera</option>
               <option value="clip">Clip</option>
             </select>
-          </Row>
-        </div>
-      </section>
-
-      <section className="settings-section">
-        <header>
-          <Palette size={16} className="settings-icon" />
-          <h2>Theme</h2>
-          <p>Choose the colors Kenta uses throughout the app.</p>
-        </header>
-        <div className="settings-body">
-          <Row label="Accent color" hint="Used for buttons, selected states, and active indicators.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_accent}
-                onChange={(event) => update("theme_accent", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_accent}</span>
-            </div>
-          </Row>
-          <Row label="Background color" hint="The main app background.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_background}
-                onChange={(event) => update("theme_background", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_background}</span>
-            </div>
-          </Row>
-          <Row label="Card color" hint="Used for panels and cards.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_card}
-                onChange={(event) => update("theme_card", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_card}</span>
-            </div>
-          </Row>
-          <Row label="Text color" hint="Primary text color.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_text}
-                onChange={(event) => update("theme_text", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_text}</span>
-            </div>
           </Row>
         </div>
       </section>

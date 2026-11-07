@@ -113,6 +113,14 @@ export interface Settings {
   theme_text: string;
   /** Save every new clip locally and to Google Drive. On by default. */
   drive_auto_upload: boolean;
+  /** Local music volume, 0..100. */
+  music_volume: number;
+  music_shuffle: boolean;
+  /** "off" | "track" | "queue" */
+  music_repeat: string;
+  /** "title" | "artist" | "album" | "added" | "duration" */
+  music_sort: string;
+  music_last_track: string | null;
 }
 
 /** The Drive section of Settings. No token, code or session URL ever reaches
@@ -451,4 +459,305 @@ export function getClipUploadStatus(clipId: string): Promise<ClipUploadStatus | 
 /** Opens the Kenta folder, or one remote file, in the browser. */
 export function openGoogleDrive(clipId?: string): Promise<void> {
   return invoke("open_google_drive", { clipId: clipId ?? null });
+}
+
+// ---------------------------------------------------------------------------
+// Local music library
+// ---------------------------------------------------------------------------
+
+export interface MusicTrack {
+  id: string;
+  path: string;
+  title: string;
+  artist: string | null;
+  album: string | null;
+  duration_seconds: number;
+  codec: string | null;
+  sample_rate: number | null;
+  channels: number | null;
+  artwork_path: string | null;
+  added_at: string;
+  missing: boolean;
+}
+
+export interface MusicPlaylist {
+  id: string;
+  name: string;
+  created_at: string;
+  track_count: number;
+}
+
+export interface MusicImportResult {
+  added: number;
+  duplicates: number;
+  failed: string[];
+  warnings: string[];
+}
+
+export interface MusicSource {
+  id: string;
+  path: string;
+  artwork: string | null;
+}
+
+export function musicPickFiles(): Promise<string[]> {
+  return invoke("music_pick_files");
+}
+
+export function musicPickFolder(): Promise<string | null> {
+  return invoke("music_pick_folder");
+}
+
+export function musicImportPaths(paths: string[]): Promise<MusicImportResult> {
+  return invoke("music_import_paths", { paths });
+}
+
+export function musicAddFolder(path: string): Promise<string[]> {
+  return invoke("music_add_folder", { path });
+}
+
+export function musicRemoveFolder(path: string): Promise<string[]> {
+  return invoke("music_remove_folder", { path });
+}
+
+export function musicFolders(): Promise<string[]> {
+  return invoke("music_folders");
+}
+
+export function musicList(search?: string | null, sort?: string | null): Promise<MusicTrack[]> {
+  return invoke("music_list", { search: search ?? null, sort: sort ?? null });
+}
+
+export function musicSource(id: string): Promise<MusicSource> {
+  return invoke("music_source", { id });
+}
+
+export function musicCheckMissing(): Promise<MusicTrack[]> {
+  return invoke("music_check_missing");
+}
+
+export function musicRemoveTrack(id: string): Promise<void> {
+  return invoke("music_remove_track", { id });
+}
+
+export function musicListPlaylists(): Promise<MusicPlaylist[]> {
+  return invoke("music_list_playlists");
+}
+
+export function musicCreatePlaylist(name: string): Promise<MusicPlaylist[]> {
+  return invoke("music_create_playlist", { name });
+}
+
+export function musicRenamePlaylist(id: string, name: string): Promise<MusicPlaylist[]> {
+  return invoke("music_rename_playlist", { id, name });
+}
+
+export function musicDeletePlaylist(id: string): Promise<MusicPlaylist[]> {
+  return invoke("music_delete_playlist", { id });
+}
+
+export function musicPlaylistTracks(id: string): Promise<MusicTrack[]> {
+  return invoke("music_playlist_tracks", { id });
+}
+
+export function musicAddPlaylistTrack(playlistId: string, trackId: string): Promise<void> {
+  return invoke("music_add_playlist_track", { playlistId, trackId });
+}
+
+export function musicRemovePlaylistTrack(playlistId: string, trackId: string): Promise<void> {
+  return invoke("music_remove_playlist_track", { playlistId, trackId });
+}
+
+export function musicReorderPlaylist(playlistId: string, trackIds: string[]): Promise<void> {
+  return invoke("music_reorder_playlist", { playlistId, trackIds });
+}
+
+export function musicSavePrefs(prefs: {
+  volume: number;
+  shuffle: boolean;
+  repeat: string;
+  sort: string;
+  lastTrack: string | null;
+}): Promise<Settings> {
+  return invoke("music_save_prefs", prefs);
+}
+
+// ---------------------------------------------------------------------------
+// Appearance Studio
+// ---------------------------------------------------------------------------
+
+export interface ThemeColors {
+  background: string;
+  background_secondary: string;
+  surface: string;
+  surface_raised: string;
+  surface_hover: string;
+  surface_selected: string;
+  accent: string;
+  accent_hover: string;
+  accent_muted: string;
+  text_primary: string;
+  text_secondary: string;
+  text_muted: string;
+  border: string;
+  border_strong: string;
+  success: string;
+  warning: string;
+  danger: string;
+  info: string;
+  focus_ring: string;
+  overlay: string;
+  recording: string;
+  buffer: string;
+  timeline_track: string;
+  timeline_selection: string;
+  playhead: string;
+}
+
+export interface ThemeTypography {
+  font_family: string;
+  font_scale: number;
+  font_weight: number;
+}
+
+export interface ThemeLayout {
+  density: "compact" | "comfortable" | "spacious";
+  corner_style: "sharp" | "subtle" | "rounded";
+  sidebar_width: number;
+  sidebar_icon_only: boolean;
+  ui_scale: number;
+  motion: "full" | "reduced" | "none";
+}
+
+export interface ThemeBackground {
+  kind: "solid" | "gradient" | "image";
+  gradient_from: string;
+  gradient_to: string;
+  image: string | null;
+  fit: "cover" | "contain";
+  opacity: number;
+  blur: number;
+}
+
+export interface ThemeIcons {
+  pack: "kenta" | "outline" | "solid" | "rounded";
+  app_icon: string | null;
+  window_icon: string | null;
+  tray_icon: string | null;
+  icon_background: string;
+}
+
+export interface ThemeSoundEvent {
+  enabled: boolean;
+  kind: string;
+  custom: string | null;
+  volume: number;
+}
+
+export interface ThemeSounds {
+  clip_saved: ThemeSoundEvent;
+  recording_started: ThemeSoundEvent;
+  recording_stopped: ThemeSoundEvent;
+  voice_clip_saved: ThemeSoundEvent;
+  upload_completed: ThemeSoundEvent;
+  upload_failed: ThemeSoundEvent;
+}
+
+export interface AppearanceTheme {
+  id: string;
+  name: string;
+  builtin: boolean;
+  schema: number;
+  colors: ThemeColors;
+  typography: ThemeTypography;
+  layout: ThemeLayout;
+  background: ThemeBackground;
+  icons: ThemeIcons;
+  sounds: ThemeSounds;
+}
+
+export interface AppearanceConfig {
+  schema: number;
+  active_theme: string;
+  themes: AppearanceTheme[];
+}
+
+export interface AppearancePayload {
+  config: AppearanceConfig;
+  themes: AppearanceTheme[];
+  active: AppearanceTheme;
+  assets_dir: string;
+}
+
+export interface ImportedAsset {
+  relative: string;
+  absolute: string;
+  width: number;
+  height: number;
+  bytes: number;
+}
+
+export function getAppearance(): Promise<AppearancePayload> {
+  return invoke("get_appearance");
+}
+
+export function saveAppearanceTheme(theme: AppearanceTheme): Promise<AppearancePayload> {
+  return invoke("save_appearance_theme", { theme });
+}
+
+export function deleteAppearanceTheme(id: string): Promise<AppearancePayload> {
+  return invoke("delete_appearance_theme", { id });
+}
+
+export function duplicateAppearanceTheme(
+  id: string,
+  name?: string | null,
+): Promise<AppearancePayload> {
+  return invoke("duplicate_appearance_theme", { id, name: name ?? null });
+}
+
+export function setAppearanceTheme(id: string): Promise<AppearancePayload> {
+  return invoke("set_appearance_theme", { id });
+}
+
+export function resetAppearance(): Promise<AppearancePayload> {
+  return invoke("reset_appearance");
+}
+
+export function previewAppearanceTheme(theme: AppearanceTheme): Promise<void> {
+  return invoke("preview_appearance_theme", { theme });
+}
+
+export function previewAppearanceSound(input: {
+  event: string;
+  kind: string;
+  custom: string | null;
+  volume: number;
+}): Promise<boolean> {
+  return invoke("preview_appearance_sound", input);
+}
+
+export function appearancePickImage(
+  kind: "icon" | "background",
+): Promise<ImportedAsset | null> {
+  return invoke("appearance_pick_image", { kind });
+}
+
+export function appearancePickSound(): Promise<ImportedAsset | null> {
+  return invoke("appearance_pick_sound");
+}
+
+export function appearanceExportTheme(theme: AppearanceTheme): Promise<string | null> {
+  return invoke("appearance_export_theme", { theme });
+}
+
+export function appearanceImportTheme(): Promise<AppearancePayload | null> {
+  return invoke("appearance_import_theme");
+}
+
+/** URL for a managed theme asset served through the asset protocol. */
+export function themeAssetSrc(assetsDir: string, relative: string | null): string | null {
+  if (!relative) return null;
+  const base = assetsDir.replace(/\\/g, "/").replace(/\/+$/, "");
+  return convertFileSrc(`${base}/${relative}`);
 }
