@@ -365,11 +365,17 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     appearance.previewTheme(theme);
   };
 
+  // One primary action for both cases the user actually has: apply pending
+  // edits, or make the selected preset active. Selecting a preset only
+  // previews it, so without this the Apply button would be disabled and
+  // choosing a theme would never persist.
   const handleApply = async () => {
     if (!draft || busy) return;
     setBusy(true);
     try {
-      const next = await appearance.saveTheme(draft);
+      const next = dirty
+        ? await appearance.saveTheme(draft)
+        : await appearance.activateTheme(draft.id);
       if (!next) return;
       loadTheme(next.active);
       onNotify(
@@ -389,17 +395,6 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     loadTheme(appearance.active);
     appearance.restorePreview();
     void previewAppearanceTheme(appearance.active).catch(() => {});
-  };
-
-  const handleUseSaved = async () => {
-    if (!draft) return;
-    const next = await appearance.activateTheme(draft.id);
-    if (!next) {
-      onNotify("error", "That theme could not be activated");
-      return;
-    }
-    loadTheme(next.active);
-    onNotify("success", "Theme applied", next.active.name);
   };
 
   const handleDuplicate = async () => {
@@ -1266,17 +1261,6 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
             >
               <Download size={13} /> Export
             </button>
-            {!selectedIsActive ? (
-              <button
-                type="button"
-                className="btn btn-quiet btn-sm"
-                onClick={() => void handleUseSaved()}
-                disabled={dirty}
-                title={dirty ? "Apply or revert your edits first" : "Activate the saved version"}
-              >
-                <Check size={13} /> Use saved
-              </button>
-            ) : null}
             <button
               type="button"
               className="btn btn-quiet btn-sm"
@@ -1289,7 +1273,7 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
               type="button"
               className="btn btn-primary btn-sm"
               onClick={() => void handleApply()}
-              disabled={!dirty || busy}
+              disabled={(!dirty && selectedIsActive) || busy}
             >
               {busy ? <Loader2 size={13} className="spin" /> : <Save size={13} />} Apply theme
             </button>
