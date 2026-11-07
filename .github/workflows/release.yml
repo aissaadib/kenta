@@ -90,8 +90,14 @@ jobs:
           if ((Get-FileHash $ffmpeg -Algorithm SHA256).Hash.ToLower() -ne $env:FFMPEG_SHA256) { throw "ffmpeg.exe hash mismatch" }
           if ((Get-FileHash $ffprobe -Algorithm SHA256).Hash.ToLower() -ne $env:FFPROBE_SHA256) { throw "ffprobe.exe hash mismatch" }
           New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          # externalBin resolves '<name>-<target triple>.exe'; the bundler never
+          # looks at the plain names. Keep both so a bundled ffmpeg.exe is also
+          # available next to the binary for ad-hoc runs.
+          $triple = (rustc -vV | Select-String '^host:').Line.Split(':')[1].Trim()
           Copy-Item $ffmpeg "src-tauri/binaries/ffmpeg.exe"
           Copy-Item $ffprobe "src-tauri/binaries/ffprobe.exe"
+          Copy-Item $ffmpeg "src-tauri/binaries/ffmpeg-$triple.exe"
+          Copy-Item $ffprobe "src-tauri/binaries/ffprobe-$triple.exe"
           & $ffmpeg -hide_banner -filters | Select-String gfxcapture
           & $ffmpeg -hide_banner -encoders | Select-String "h264_nvenc|libx264"
 
@@ -121,7 +127,9 @@ jobs:
           $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "Kenta_${version}_x64-setup.exe" | Select-Object -First 1
           if (-not $installer) { throw "Installer not found" }
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
-          "$hash  $($installer.Name)" | Set-Content "src-tauri/target/release/bundle/nsis/SHA256SUMS.txt" -Encoding ascii
+          # LF endings and two spaces, so `sha256sum -c` accepts the file too.
+          $sums = "src-tauri/target/release/bundle/nsis/SHA256SUMS.txt"
+          [System.IO.File]::WriteAllText($sums, "$hash  $($installer.Name)`n", [System.Text.Encoding]::ASCII)
           "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
           "checksums=$(Resolve-Path 'src-tauri/target/release/bundle/nsis/SHA256SUMS.txt')" >> $env:GITHUB_OUTPUT
 
