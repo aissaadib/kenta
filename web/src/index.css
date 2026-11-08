@@ -69,6 +69,14 @@
   --warn-ink: #1c1403;
   /* Media letterboxing stays neutral in every theme. */
   --media-bg: #000;
+  /* Neutral overlays and shadows are derived from the background's luminance
+     so light themes lift with dark ink instead of disappearing white-on-white. */
+  --tint-faint: rgba(255, 255, 255, 0.02);
+  --tint-weak: rgba(255, 255, 255, 0.04);
+  --tint: rgba(255, 255, 255, 0.06);
+  --tint-strong: rgba(255, 255, 255, 0.08);
+  --tint-edge: rgba(255, 255, 255, 0.16);
+  --shadow-color: rgba(0, 0, 0, 0.55);
 }
 
 * {
@@ -441,38 +449,38 @@ a {
 
 .tone-idle {
   --tone: var(--text-soft);
-  --tone-soft: rgba(196, 204, 213, 0.08);
-  --tone-border: rgba(196, 204, 213, 0.24);
+  --tone-soft: var(--tint-weak);
+  --tone-border: var(--tint-edge);
 }
 
 .tone-starting {
   --tone: var(--warn);
   --tone-soft: var(--warn-soft);
-  --tone-border: rgba(251, 191, 36, 0.32);
+  --tone-border: color-mix(in srgb, var(--warn) 32%, transparent);
 }
 
 .tone-buffering {
   --tone: var(--text-soft);
-  --tone-soft: rgba(196, 204, 213, 0.08);
-  --tone-border: rgba(196, 204, 213, 0.24);
+  --tone-soft: var(--tint-weak);
+  --tone-border: var(--tint-edge);
 }
 
 .tone-recording {
   --tone: var(--danger);
   --tone-soft: var(--danger-soft);
-  --tone-border: rgba(251, 113, 133, 0.36);
+  --tone-border: color-mix(in srgb, var(--danger) 36%, transparent);
 }
 
 .tone-saving {
   --tone: var(--info);
   --tone-soft: var(--info-soft);
-  --tone-border: rgba(134, 166, 200, 0.32);
+  --tone-border: color-mix(in srgb, var(--info) 32%, transparent);
 }
 
 .tone-error {
   --tone: var(--warn);
   --tone-soft: var(--warn-soft);
-  --tone-border: rgba(251, 191, 36, 0.32);
+  --tone-border: color-mix(in srgb, var(--warn) 32%, transparent);
 }
 
 .status-pill {
@@ -564,7 +572,7 @@ a {
 }
 
 .btn-quiet:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--tint);
   color: var(--text);
 }
 
@@ -605,7 +613,7 @@ a {
 }
 
 .icon-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--tint);
   color: var(--text);
 }
 
@@ -650,7 +658,7 @@ a {
   padding: 0 7px;
   border: 1px solid var(--divider);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--tint-weak);
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
@@ -1084,7 +1092,7 @@ a {
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.6);
-  color: var(--text-soft);
+  color: #fff;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -1163,7 +1171,7 @@ a {
   overflow: hidden;
   border: 1px solid var(--divider);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--tint-faint);
   color: var(--muted);
   font-size: 10.5px;
   font-weight: 600;
@@ -1238,7 +1246,7 @@ button.clip-upload:focus-visible {
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   background: var(--panel-raised);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 16px 40px var(--shadow-color);
   animation: popover-in 160ms var(--ease) both;
 }
 
@@ -1472,7 +1480,7 @@ button.clip-upload:focus-visible {
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 24px 64px var(--shadow-color);
   animation: modal-in 180ms var(--ease) both;
 }
 
@@ -1573,7 +1581,7 @@ button.clip-upload:focus-visible {
   border-left-width: 2px;
   border-radius: 8px;
   background: var(--panel-raised);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 32px var(--shadow-color);
   animation: toast-in 160ms var(--ease) both;
 }
 
@@ -2031,7 +2039,7 @@ button.clip-upload:focus-visible {
   padding: 2px 7px;
   border: 1px solid var(--divider);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--tint-weak);
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
@@ -2076,7 +2084,7 @@ button.clip-upload:focus-visible {
   padding: 2px 7px;
   border: 1px solid var(--divider);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--tint-weak);
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
@@ -2387,7 +2395,7 @@ button.clip-upload:focus-visible {
 .mini-spinner {
   width: 13px;
   height: 13px;
-  border: 2px solid rgba(255, 255, 255, 0.16);
+  border: 2px solid var(--tint-edge);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -2548,7 +2556,7 @@ button.clip-upload:focus-visible {
   bottom: 0;
   left: 0;
   height: 3px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--tint-strong);
 }
 
 .editor-progress span {
@@ -2688,7 +2696,7 @@ button.clip-upload:focus-visible {
   overflow: hidden;
   border: 1px solid var(--divider);
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--tint-faint);
   touch-action: none;
 }
 

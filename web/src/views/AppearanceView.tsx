@@ -263,6 +263,7 @@ interface AppearanceViewProps {
 
 export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const appearance = useAppearance();
+  const { previewTheme, restorePreview } = appearance;
   const [draft, setDraft] = useState<AppearanceTheme | null>(null);
   const [baseline, setBaseline] = useState<AppearanceTheme | null>(null);
   const [past, setPast] = useState<AppearanceTheme[]>([]);
@@ -294,8 +295,8 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   // Live CSS preview for every edit. The stylesheet supplies Kenta Original
   // values before this runs, so an unsaved draft never flashes unstyled.
   useEffect(() => {
-    if (draft) appearance.previewTheme(draft);
-  }, [draft, appearance.previewTheme]);
+    if (draft) previewTheme(draft);
+  }, [draft, previewTheme]);
 
   // Native window/tray icons and DWM title-bar colors are applied by Rust.
   // Debounce so dragging a slider does not decode an icon on every frame.
@@ -322,8 +323,10 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     wasActive.current = active;
   }, [active, appearance]);
 
-  const latest = useRef({ active: appearance.active, restore: appearance.restorePreview });
-  latest.current = { active: appearance.active, restore: appearance.restorePreview };
+  const latest = useRef({ active: appearance.active, restore: restorePreview });
+  useEffect(() => {
+    latest.current = { active: appearance.active, restore: restorePreview };
+  }, [appearance.active, restorePreview]);
   useEffect(
     () => () => {
       latest.current.restore();

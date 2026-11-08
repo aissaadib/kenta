@@ -2134,15 +2134,6 @@ pub struct MusicSource {
   pub artwork: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
-pub struct MusicPrefs {
-  pub volume: u8,
-  pub shuffle: bool,
-  pub repeat: String,
-  pub sort: String,
-  pub last_track: Option<String>,
-}
-
 fn allow_asset(app: &AppHandle, path: &Path) {
   if path.is_file() {
     let _ = app.asset_protocol_scope().allow_file(path);

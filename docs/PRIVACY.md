@@ -7,12 +7,14 @@ reporting, advertising, or an account system.
 
 - Video clips and the SQLite library database.
 - Settings, hotkeys, capture preferences, and the output folder.
+- The active appearance theme, theme assets, and music playlist indexes.
 - Thumbnails and temporary replay segments.
 - The Google Drive refresh token, stored in Windows Credential Manager under
   `Kenta/google-drive/<account id>`.
 
-Kenta does not upload the database, settings, thumbnails, logs, or audio
-samples.
+Kenta does not upload the database, settings, themes, thumbnails, logs, music,
+or audio samples. Music files are never copied: the library stores their
+existing path, and playback reads the file in place.
 
 ## Google Drive
 
@@ -47,3 +49,5 @@ the app and then delete:
 - The clip folder you chose
 - The `Kenta/google-drive/...` entries in Windows Credential Manager
 - The **Kenta** folder in Google Drive, if you want to remove the cloud copy
+
+Your music files are untouched by Kenta and are not part of its data folder.

@@ -789,19 +789,6 @@ impl Storage {
     Ok(())
   }
 
-  pub fn missing_music_tracks(&self) -> AppResult<Vec<Track>> {
-    let mut statement = self.conn.prepare(
-      "SELECT id, path, title, artist, album, duration_seconds, codec, sample_rate, channels, artwork_path, added_at, missing
-       FROM music_tracks WHERE missing = 1 ORDER BY title COLLATE NOCASE ASC",
-    )?;
-    let rows = statement.query_map([], music_track_from_row)?;
-    let mut tracks = Vec::new();
-    for row in rows {
-      tracks.push(row?);
-    }
-    Ok(tracks)
-  }
-
   fn renumber_music_playlist(&mut self, playlist_id: &str) -> AppResult<()> {
     let mut statement = self.conn.prepare(
       "SELECT track_id FROM music_playlist_tracks WHERE playlist_id = ?1 ORDER BY position ASC",

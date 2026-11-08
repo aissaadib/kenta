@@ -185,6 +185,19 @@ export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
   style.setProperty("--timeline-selection", colors.timeline_selection);
   style.setProperty("--playhead", colors.playhead);
 
+  // Neutral overlays and shadows follow the canvas: light themes darken
+  // instead of adding invisible white. `--overlay` stays as authored because it
+  // sits behind modal media, but these arbitrary UI tints do not.
+  const dark = luminance(colors.background) <= 0.45;
+  const tint = (alpha: number) =>
+    dark ? `rgba(255, 255, 255, ${alpha})` : `rgba(0, 0, 0, ${alpha})`;
+  style.setProperty("--tint-faint", tint(0.024));
+  style.setProperty("--tint-weak", tint(0.045));
+  style.setProperty("--tint", tint(0.065));
+  style.setProperty("--tint-strong", tint(0.09));
+  style.setProperty("--tint-edge", tint(0.17));
+  style.setProperty("--shadow-color", dark ? "rgba(0, 0, 0, 0.55)" : "rgba(15, 23, 42, 0.16)");
+
   const [radius, radiusSm, radiusXs] = radiusFor(theme.layout.corner_style);
   style.setProperty("--radius", radius);
   style.setProperty("--radius-sm", radiusSm);

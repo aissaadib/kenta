@@ -430,7 +430,50 @@ export function MusicProvider({ children, notify }: Props) {
     setDuration(0);
     setQueue([]);
     queueRef.current = [];
+    if ("mediaSession" in navigator) {
+      try {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = "none";
+      } catch {
+        // Media Session is best effort.
+      }
+    }
   }, []);
+
+  // Let the Windows media overlay scrub and draw a real progress bar. Both
+  // calls are optional in the Media Session API and throw on some builds, so
+  // each is guarded instead of assumed.
+  useEffect(() => {
+    if (!("mediaSession" in navigator) || duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        position: Math.max(0, Math.min(position, duration)),
+        playbackRate: 1,
+      });
+    } catch {
+      // A stale duration from the previous track is not worth reporting.
+    }
+  }, [position, duration]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.setActionHandler("seekto", (details) => {
+        const target = details.seekTime;
+        if (typeof target === "number") seek(target);
+      });
+    } catch {
+      // Older WebView2 builds do not expose seekto.
+    }
+    return () => {
+      try {
+        navigator.mediaSession.setActionHandler("seekto", null);
+      } catch {
+        // Ignore.
+      }
+    };
+  }, [seek]);
 
   const runImport = useCallback(
     async (paths: string[]): Promise<MusicImportResult | null> => {

@@ -25,6 +25,10 @@ pub const THEME_SCHEMA_VERSION: u32 = 1;
 pub const MAX_THEME_PACKAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const MAX_PACKAGE_ENTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_ARCHIVE_ENTRIES: usize = 64;
+/// Upper bound on decompressed bytes across the whole archive. Assets inside a
+/// package are limited individually, but this stops a highly compressed
+/// archive from expanding into an unbounded amount of memory.
+pub const MAX_UNPACKED_THEME_BYTES: usize = 96 * 1024 * 1024;
 pub const MAX_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
 pub const MAX_ICON_DIMENSION: u32 = 1024;
 pub const MAX_BACKGROUND_DIMENSION: u32 = 8192;
@@ -1032,14 +1036,21 @@ pub fn resolve_asset(relative: &str) -> AppResult<PathBuf> {
   validate_relative(relative)?;
   let base = assets_dir();
   let joined = base.join(relative);
-  // Reject anything that canonicalises outside the managed directory. The
-  // parent directory exists after ensure_asset_dirs.
-  let canonical_base = base
-    .canonicalize()
-    .unwrap_or_else(|_| base.clone());
-  let canonical_joined = joined
-    .canonicalize()
-    .unwrap_or_else(|_| joined.clone());
+  // Reject anything that canonicalises outside the managed directory. A file
+  // that is about to be created does not exist yet, so canonicalise its parent
+  // and keep the final name; comparing the plain joined path with a canonical
+  // base falsely rejected writes when the config folder is redirected (as
+  // %APPDATA% often is).
+  let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
+  let canonical_joined = if joined.exists() {
+    joined.canonicalize().unwrap_or_else(|_| joined.clone())
+  } else {
+    joined
+      .parent()
+      .and_then(|parent| parent.canonicalize().ok())
+      .and_then(|parent| joined.file_name().map(|name| parent.join(name)))
+      .unwrap_or_else(|| joined.clone())
+  };
   if !canonical_joined.starts_with(&canonical_base) {
     return Err(AppError::Validation(
       "Asset path escapes the managed theme folder.".into(),
@@ -1233,6 +1244,7 @@ pub fn export_package(theme: &Theme, destination: &Path) -> AppResult<()> {
     .map_err(|error| AppError::Storage(format!("Could not write the theme manifest: {error}")))?;
 
   let assets = referenced_assets(theme);
+  let mut total_bytes = 0usize;
   for relative in assets {
     let source = resolve_asset(&relative)?;
     if !source.is_file() {
@@ -1242,6 +1254,13 @@ pub fn export_package(theme: &Theme, destination: &Path) -> AppResult<()> {
     if metadata.len() as usize > MAX_PACKAGE_ENTRY_BYTES {
       return Err(AppError::Validation(format!(
         "The asset {relative} is too large to include in a theme package."
+      )));
+    }
+    total_bytes = total_bytes.saturating_add(metadata.len() as usize);
+    if total_bytes > MAX_THEME_PACKAGE_BYTES {
+      return Err(AppError::Validation(format!(
+        "The theme assets exceed the {} MB package limit.",
+        MAX_THEME_PACKAGE_BYTES / 1024 / 1024
       )));
     }
     let name = format!("assets/{}", relative.replace('\\', "/"));
@@ -1256,6 +1275,22 @@ pub fn export_package(theme: &Theme, destination: &Path) -> AppResult<()> {
     .finish()
     .map_err(|error| AppError::Storage(format!("Could not finish the theme package: {error}")))?;
   Ok(())
+}
+
+fn is_image_asset(relative: &str) -> bool {
+  let extension = Path::new(relative)
+    .extension()
+    .and_then(|extension| extension.to_str())
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+  matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "ico")
+}
+
+fn is_sound_asset(relative: &str) -> bool {
+  Path::new(relative)
+    .extension()
+    .and_then(|extension| extension.to_str())
+    .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
 }
 
 pub fn referenced_assets(theme: &Theme) -> Vec<String> {
@@ -1307,6 +1342,7 @@ pub fn import_package(source: &Path) -> AppResult<Theme> {
 
   let mut manifest = None;
   let mut assets: HashMap<String, Vec<u8>> = HashMap::new();
+  let mut unpacked_bytes = 0usize;
   for index in 0..archive.len() {
     let entry = archive
       .by_index(index)
@@ -1329,6 +1365,12 @@ pub fn import_package(source: &Path) -> AppResult<Theme> {
         .read_to_end(&mut data)?;
       if data.len() > MAX_PACKAGE_ENTRY_BYTES {
         return Err(AppError::Validation("The theme manifest is too large.".into()));
+      }
+      unpacked_bytes = unpacked_bytes.saturating_add(data.len());
+      if unpacked_bytes > MAX_UNPACKED_THEME_BYTES {
+        return Err(AppError::Validation(
+          "The theme package expands to more data than Kenta will load.".into(),
+        ));
       }
       manifest = Some(data);
     } else if let Some(relative) = name.strip_prefix("assets/") {
@@ -1355,6 +1397,12 @@ pub fn import_package(source: &Path) -> AppResult<Theme> {
       if data.len() > MAX_PACKAGE_ENTRY_BYTES {
         return Err(AppError::Validation(format!("The asset {name} is too large.")));
       }
+      unpacked_bytes = unpacked_bytes.saturating_add(data.len());
+      if unpacked_bytes > MAX_UNPACKED_THEME_BYTES {
+        return Err(AppError::Validation(
+          "The theme package expands to more data than Kenta will load.".into(),
+        ));
+      }
       assets.insert(relative.to_string(), data);
     } else {
       return Err(AppError::Validation(format!(
@@ -1379,12 +1427,15 @@ pub fn import_package(source: &Path) -> AppResult<Theme> {
 
   ensure_asset_dirs()?;
   let mut theme = manifest.theme;
-  let warnings = theme.sanitize();
+  // Restore the package's assets before sanitizing: sanitize treats a
+  // reference whose file is absent as broken, and an imported reference is
+  // only valid once the file has been written into the managed directory.
   let mut mapping = HashMap::new();
   for (relative, data) in assets {
     let Some(extension) = Path::new(&relative)
       .extension()
       .and_then(|extension| extension.to_str())
+      .map(|extension| extension.to_ascii_lowercase())
     else {
       continue;
     };
@@ -1395,18 +1446,53 @@ pub fn import_package(source: &Path) -> AppResult<Theme> {
     } else {
       "backgrounds"
     };
-    let new_relative = format!(
-      "{folder}/{}.{}",
-      uuid::Uuid::new_v4(),
-      extension.to_ascii_lowercase()
-    );
+    if folder == "sounds" {
+      if !sound::is_canonical_wav(&data) {
+        log::warn!("Theme package sound {relative} is not a canonical PCM WAV; skipping.");
+        continue;
+      }
+    } else {
+      let decoded = match image::load_from_memory(&data) {
+        Ok(image) => image,
+        Err(error) => {
+          log::warn!("Theme package image {relative} could not be decoded: {error}");
+          continue;
+        }
+      };
+      let (width, height) = (decoded.width(), decoded.height());
+      let limit = if folder == "icons" {
+        MAX_ICON_DIMENSION
+      } else {
+        MAX_BACKGROUND_DIMENSION
+      };
+      if width == 0 || height == 0 || width > limit || height > limit {
+        log::warn!(
+          "Theme package image {relative} is {width}x{height}, outside the {limit}px limit; skipping."
+        );
+        continue;
+      }
+    }
+    let new_relative = format!("{folder}/{}.{extension}", uuid::Uuid::new_v4());
     let target = resolve_asset(&new_relative)?;
-    fs::write(&target, &data)
-      .map_err(|error| AppError::Storage(format!("Could not restore {relative}: {error}")))?;
+    if let Err(error) = fs::write(&target, &data) {
+      log::warn!("Could not restore theme asset {relative}: {error}");
+      continue;
+    }
     mapping.insert(relative, new_relative);
   }
+
+  // Only references supplied by this package are kept. An imported theme can
+  // therefore never point at unrelated files that already exist in the user's
+  // managed asset directory, and a wrong asset type is dropped rather than
+  // handed to the image or sound loader.
   if let Some(image) = &theme.background.image {
-    theme.background.image = mapping.get(image).cloned();
+    theme.background.image = mapping
+      .get(image)
+      .filter(|relative| is_image_asset(relative))
+      .cloned();
+    if theme.background.image.is_none() && theme.background.kind == "image" {
+      theme.background.kind = "solid".into();
+    }
   }
   for icon in [
     &mut theme.icons.app_icon,
@@ -1414,7 +1500,10 @@ pub fn import_package(source: &Path) -> AppResult<Theme> {
     &mut theme.icons.tray_icon,
   ] {
     if let Some(relative) = icon {
-      *icon = mapping.get(relative).cloned();
+      *icon = mapping
+        .get(relative)
+        .filter(|relative| is_image_asset(relative))
+        .cloned();
     }
   }
   for event in [
@@ -1426,9 +1515,13 @@ pub fn import_package(source: &Path) -> AppResult<Theme> {
     &mut theme.sounds.upload_failed,
   ] {
     if let Some(relative) = &event.custom {
-      event.custom = mapping.get(relative).cloned();
+      event.custom = mapping
+        .get(relative)
+        .filter(|relative| is_sound_asset(relative))
+        .cloned();
     }
   }
+  let warnings = theme.sanitize();
   theme.id = format!("custom-{}", uuid::Uuid::new_v4());
   theme.builtin = false;
   theme.schema = THEME_SCHEMA_VERSION;
@@ -1512,7 +1605,8 @@ pub fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
   0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
 }
 
-/// Contrast ratio between two hex colors, exposed for future backend checks.
+/// Contrast ratio between two hex colors, used by the preset tests.
+#[cfg(test)]
 pub fn contrast_ratio(foreground: &str, background: &str) -> Option<f64> {
   let foreground = parse_hex(foreground)?;
   let background = parse_hex(background)?;
@@ -1719,5 +1813,136 @@ mod tests {
     let warnings = migrate_legacy(&mut config, &settings, false);
     assert!(warnings.is_empty());
     assert!(config.themes.is_empty());
+  }
+
+  #[test]
+  fn exported_theme_restores_its_assets_on_import() {
+    ensure_asset_dirs().unwrap();
+    let image_relative = format!("backgrounds/test-{}.png", uuid::Uuid::new_v4());
+    let image_path = resolve_asset(&image_relative).unwrap();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([10, 20, 30, 255]))
+      .save(&image_path)
+      .unwrap();
+
+    let sound_relative = format!("sounds/test-{}.wav", uuid::Uuid::new_v4());
+    let sound_path = resolve_asset(&sound_relative).unwrap();
+    std::fs::write(&sound_path, sound::sound_wav(sound::SoundKind::Beep, 80)).unwrap();
+
+    let mut theme = Theme::default();
+    theme.name = "Round trip".into();
+    theme.background.kind = "image".into();
+    theme.background.image = Some(image_relative.clone());
+    theme.sounds.clip_saved.custom = Some(sound_relative.clone());
+
+    let package = std::env::temp_dir().join(format!(
+      "kenta-theme-{}.kenta-theme",
+      uuid::Uuid::new_v4()
+    ));
+    export_package(&theme, &package).unwrap();
+
+    // Import must not depend on the source machine's managed files.
+    std::fs::remove_file(&image_path).unwrap();
+    std::fs::remove_file(&sound_path).unwrap();
+
+    let imported = import_package(&package).unwrap();
+    let imported_image = imported.background.image.clone().expect("background restored");
+    let imported_sound = imported
+      .sounds
+      .clip_saved
+      .custom
+      .clone()
+      .expect("sound restored");
+    assert_ne!(imported_image, image_relative);
+    assert_ne!(imported_sound, sound_relative);
+    assert!(resolve_asset(&imported_image).unwrap().is_file());
+    assert!(resolve_asset(&imported_sound).unwrap().is_file());
+    assert_eq!(imported.background.kind, "image");
+    assert!(!imported.builtin);
+    assert_eq!(imported.name, "Round trip");
+
+    let _ = std::fs::remove_file(resolve_asset(&imported_image).unwrap());
+    let _ = std::fs::remove_file(resolve_asset(&imported_sound).unwrap());
+    let _ = std::fs::remove_file(&package);
+  }
+
+  #[test]
+  fn imported_references_to_files_outside_the_package_are_dropped() {
+    ensure_asset_dirs().unwrap();
+    let existing = format!("backgrounds/test-{}.png", uuid::Uuid::new_v4());
+    let target = resolve_asset(&existing).unwrap();
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+      .save(&target)
+      .unwrap();
+
+    let mut theme = Theme::default();
+    theme.background.kind = "image".into();
+    theme.background.image = Some(existing.clone());
+    // Exporting writes the image into the archive; then make a package whose
+    // manifest references the managed file but whose archive omits it.
+    let package = std::env::temp_dir().join(format!(
+      "kenta-theme-{}.kenta-theme",
+      uuid::Uuid::new_v4()
+    ));
+    {
+      let file = std::fs::File::create(&package).unwrap();
+      let mut zip = zip::ZipWriter::new(file);
+      let options = zip::write::SimpleFileOptions::default();
+      zip.start_file("theme.json", options).unwrap();
+      use std::io::Write as _;
+      zip
+        .write_all(
+          &serde_json::to_vec(&ThemeManifest {
+            format: PACKAGE_FORMAT.into(),
+            version: THEME_SCHEMA_VERSION,
+            theme,
+          })
+          .unwrap(),
+        )
+        .unwrap();
+      zip.finish().unwrap();
+    }
+
+    let imported = import_package(&package).unwrap();
+    assert!(imported.background.image.is_none());
+    assert_eq!(imported.background.kind, "solid");
+    let _ = std::fs::remove_file(&target);
+    let _ = std::fs::remove_file(&package);
+  }
+
+  #[test]
+  fn unsafe_or_newer_theme_packages_are_rejected() {
+    let make_package = |entry: &str, version: u32| {
+      let package = std::env::temp_dir().join(format!(
+        "kenta-theme-{}.kenta-theme",
+        uuid::Uuid::new_v4()
+      ));
+      let file = std::fs::File::create(&package).unwrap();
+      let mut zip = zip::ZipWriter::new(file);
+      let options = zip::write::SimpleFileOptions::default();
+      zip.start_file(entry, options).unwrap();
+      use std::io::Write as _;
+      zip.write_all(b"payload").unwrap();
+      zip.start_file("theme.json", options).unwrap();
+      zip
+        .write_all(
+          &serde_json::to_vec(&ThemeManifest {
+            format: PACKAGE_FORMAT.into(),
+            version,
+            theme: Theme::default(),
+          })
+          .unwrap(),
+        )
+        .unwrap();
+      zip.finish().unwrap();
+      package
+    };
+
+    let traversal = make_package("../escape.txt", THEME_SCHEMA_VERSION);
+    assert!(import_package(&traversal).is_err());
+    let _ = std::fs::remove_file(&traversal);
+
+    let newer = make_package("assets/backgrounds/ok.png", THEME_SCHEMA_VERSION + 1);
+    assert!(import_package(&newer).is_err());
+    let _ = std::fs::remove_file(&newer);
   }
 }
