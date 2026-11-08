@@ -76,6 +76,15 @@ pub struct Settings {
   /// after the user turns this on are queued, and the local save still
   /// succeeds even if the cloud copy fails.
   pub drive_auto_upload: bool,
+  /// Local music player volume (0..=100).
+  pub music_volume: u8,
+  pub music_shuffle: bool,
+  /// "off" | "track" | "queue"
+  pub music_repeat: String,
+  /// "title" | "artist" | "album" | "added" | "duration"
+  pub music_sort: String,
+  /// Last track the user played, so the Music view can restore context.
+  pub music_last_track: Option<String>,
 }
 
 impl Default for Settings {
@@ -122,6 +131,11 @@ impl Default for Settings {
       theme_card: "#1a1a1a".to_string(),
       theme_text: "#e4e4e7".to_string(),
       drive_auto_upload: false,
+      music_volume: 80,
+      music_shuffle: false,
+      music_repeat: "off".to_string(),
+      music_sort: "title".to_string(),
+      music_last_track: None,
     }
   }
 }
@@ -289,6 +303,23 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
     warnings.push("The overlay icon was reset to the default bell.".into());
   }
 
+  let music_volume = settings.music_volume;
+  settings.music_volume = music_volume.min(100);
+  if settings.music_volume != music_volume {
+    warnings.push("The music volume was reset to 100%.".into());
+  }
+  if !matches!(settings.music_repeat.as_str(), "off" | "track" | "queue") {
+    settings.music_repeat = "off".into();
+    warnings.push("The music repeat mode was reset to off.".into());
+  }
+  if !matches!(
+    settings.music_sort.as_str(),
+    "title" | "artist" | "album" | "added" | "duration"
+  ) {
+    settings.music_sort = "title".into();
+    warnings.push("The music sort order was reset to title.".into());
+  }
+
   // Theme colors must be valid hex colors (#RRGGBB).
   let is_hex = |value: &str| {
     value.len() == 7
@@ -433,6 +464,20 @@ pub fn validate(settings: &Settings) -> AppResult<()> {
     return Err(AppError::Validation(
       "The confirmation sound volume must be between 0 and 100.".into(),
     ));
+  }
+  if settings.music_volume > 100 {
+    return Err(AppError::Validation(
+      "The music volume must be between 0 and 100.".into(),
+    ));
+  }
+  if !matches!(settings.music_repeat.as_str(), "off" | "track" | "queue") {
+    return Err(AppError::Validation("Unknown music repeat mode.".into()));
+  }
+  if !matches!(
+    settings.music_sort.as_str(),
+    "title" | "artist" | "album" | "added" | "duration"
+  ) {
+    return Err(AppError::Validation("Unknown music sort order.".into()));
   }
   if settings.voice_wake_phrase.trim().is_empty() {
     return Err(AppError::Validation(

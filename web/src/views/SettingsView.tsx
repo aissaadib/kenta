@@ -17,12 +17,15 @@ import {
   Mic,
   Monitor,
   Palette,
-  Play,
   RefreshCw,
   RotateCcw,
   Save,
+  Upload,
+  Volume2,
+  X,
 } from "lucide-react";
 import {
+  appearancePickSound,
   cancelGoogleDriveConnect,
   checkFfmpeg,
   connectGoogleDrive,
@@ -34,7 +37,7 @@ import {
   openFileLocation,
   openGoogleDrive,
   openOutputDir,
-  previewConfirmationSound,
+  previewAppearanceSound,
   recommendedCaptureBitrate,
   selectOutputDir,
   voiceStatus,
@@ -50,6 +53,7 @@ import {
 } from "../tauri";
 import { ShortcutCapture } from "../components/ShortcutCapture";
 import { Switch } from "../components/Switch";
+import { useAppearance } from "../appearance";
 
 interface Props {
   saved: Settings;
@@ -63,6 +67,7 @@ interface Props {
   onChange: (next: Settings) => void;
   onSave: () => void;
   onReset: () => void;
+  onOpenAppearance: () => void;
   onNotify: (kind: "success" | "error" | "info", title: string, message?: string) => void;
 }
 
@@ -97,6 +102,20 @@ const ADVANCED_KEYS: (keyof Settings)[] = [
 
 /** How long a test waits for speech before giving up. */
 const VOICE_TEST_SECONDS = 8;
+
+/** The built-in clip cues. Mirrors the Appearance Studio list so choosing one
+ *  here keeps the same names the theme editor uses. */
+const CLIP_SOUNDS = [
+  { value: "chime", label: "Chime" },
+  { value: "classic", label: "Classic" },
+  { value: "soft", label: "Soft" },
+  { value: "digital", label: "Digital" },
+  { value: "retro", label: "Retro" },
+  { value: "minimal", label: "Minimal" },
+  { value: "beep", label: "Beep" },
+  { value: "ding", label: "Ding" },
+  { value: "none", label: "Silent" },
+];
 
 const VOICE_STATE_LABELS: Record<VoiceStatus["state"], string> = {
   disabled: "Off",
@@ -533,6 +552,7 @@ function SettingsViewImpl({
   onChange,
   onSave,
   onReset,
+  onOpenAppearance,
   onNotify,
 }: Props) {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -550,6 +570,14 @@ function SettingsViewImpl({
   const voice = useVoiceStatus();
   const [testingVoice, setTestingVoice] = useState(false);
   const [voiceTestResult, setVoiceTestResult] = useState<VoiceTestOutcome | null>(null);
+  // The clip cue lives on the active theme, so this section reads and writes it
+  // rather than a second copy of the same setting in settings.json.
+  const appearance = useAppearance();
+  const clipSound = appearance.active?.sounds.clip_saved ?? null;
+  const [savingSound, setSavingSound] = useState(false);
+  // The volume slider keeps a local value while dragging so one drag does not
+  // write appearance.json on every pixel.
+  const [soundVolumeDraft, setSoundVolumeDraft] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -688,6 +716,61 @@ function SettingsViewImpl({
       if (picked) update("output_dir", picked);
     } catch (reason) {
       onNotify("error", "Could not open the folder picker", String(reason));
+    }
+  };
+
+  /** Write the clip cue onto the active theme. Saving a built-in preset makes
+   *  a custom copy, which is what the Appearance Studio does too. */
+  const saveClipSound = async (patch: Partial<NonNullable<typeof clipSound>>) => {
+    const theme = appearance.active;
+    if (!theme) return false;
+    setSavingSound(true);
+    try {
+      await appearance.saveTheme({
+        ...theme,
+        sounds: {
+          ...theme.sounds,
+          clip_saved: { ...theme.sounds.clip_saved, ...patch },
+        },
+      });
+      return true;
+    } catch (reason) {
+      onNotify("error", "The clip sound was not changed", String(reason));
+      return false;
+    } finally {
+      setSavingSound(false);
+    }
+  };
+
+  const handleUploadClipSound = async () => {
+    try {
+      const asset = await appearancePickSound();
+      if (!asset) return;
+      const saved = await saveClipSound({ custom: asset.relative, enabled: true });
+      if (saved) {
+        onNotify(
+          "success",
+          "Clip sound uploaded",
+          "Converted to a mono WAV and played whenever a clip is saved.",
+        );
+      }
+    } catch (reason) {
+      onNotify("error", "That sound could not be used", String(reason));
+    }
+  };
+
+  const handlePreviewClipSound = async () => {
+    if (!clipSound) return;
+    try {
+      const audible = await previewAppearanceSound({
+        event: "clip_saved",
+        kind: clipSound.kind,
+        custom: clipSound.custom,
+        volume: clipSound.volume,
+      });
+      if (!audible) onNotify("info", "That cue is silent", "The volume is set to 0%.");
+    } catch (reason) {
+      onNotify("error", "The sound could not play", String(reason));
     }
   };
 
@@ -979,74 +1062,23 @@ function SettingsViewImpl({
 
       <section className="settings-section">
         <header>
-          <Bell size={16} className="settings-icon" />
-          <h2>Save confirmation</h2>
-          <p>A short chime when a clip is on disk.</p>
+          <Palette size={16} className="settings-icon" />
+          <h2>Appearance</h2>
+          <p>Colors, type, layout, backgrounds, icons and cue sounds.</p>
         </header>
         <div className="settings-body">
-          <Switch
-            checked={draft.confirmation_sound_enabled}
-            onChange={(checked) => update("confirmation_sound_enabled", checked)}
-            label="Play a sound when a clip is saved"
-            description="Plays once, after the file is written. Failed and cancelled saves stay silent."
-          />
-          <Row
-            label="Sound"
-            hint="Choose the confirmation sound."
-          >
-            <select
-              className="select"
-              value={draft.confirmation_sound_kind}
-              disabled={!draft.confirmation_sound_enabled}
-              onChange={(event) =>
-                update("confirmation_sound_kind", event.target.value)
-              }
-            >
-              <option value="chime">Chime</option>
-              <option value="beep">Beep</option>
-              <option value="ding">Ding</option>
-              <option value="none">None</option>
-            </select>
-          </Row>
-          <Row label="Volume" hint="The chime is generated on this PC; nothing is downloaded.">
-            <div className="volume-row">
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={1}
-                value={draft.confirmation_sound_volume}
-                disabled={!draft.confirmation_sound_enabled}
-                aria-label="Confirmation sound volume"
-                aria-valuetext={`${draft.confirmation_sound_volume}%`}
-                onChange={(event) =>
-                  update("confirmation_sound_volume", Number(event.target.value))
-                }
-              />
-              <span className="mono volume-value">{draft.confirmation_sound_volume}%</span>
-                <button
-                type="button"
-                className="btn btn-quiet btn-sm"
-                disabled={draft.confirmation_sound_volume === 0}
-                onClick={() => {
-                  previewConfirmationSound(
-                    draft.confirmation_sound_kind,
-                    draft.confirmation_sound_volume,
-                  ).catch((reason) =>
-                    onNotify("error", "Could not play the sound", String(reason)),
-                  );
-                }}
-              >
-                <Play size={13} /> Preview
-              </button>
-            </div>
-          </Row>
           <div className="inline-note">
             <Info size={14} />
             <span>
-              Desktop audio is captured from the system&apos;s own output, so a clip recorded right
-              after a save can contain the chime. The clip that triggered it is never affected.
+              The Appearance Studio is separate from these recording settings, so a theme can never
+              change your capture setup. Your previous colors and confirmation sound were imported
+              into a custom theme.
             </span>
+          </div>
+          <div className="appearance-entry">
+            <button type="button" className="btn btn-primary" onClick={onOpenAppearance}>
+              <Palette size={14} /> Open Appearance Studio
+            </button>
           </div>
         </div>
       </section>
@@ -1073,13 +1105,39 @@ function SettingsViewImpl({
             label="Listen for voice commands"
             description="Uses the speech engine built into Windows. Audio is decoded on this PC and thrown away."
           />
-          <Switch
-            checked={draft.voice_single_word}
-            onChange={(checked) => update("voice_single_word", checked)}
-            label="Single-word activation"
-            description="Saying just the clip command saves a clip. When off, the wake phrase must come first."
-            disabled={!draft.voice_enabled}
-          />
+          <Row
+            label="Activation"
+            hint={
+              draft.voice_single_word
+                ? `Only the clip command is needed: “${draft.voice_clip_command.trim() || "clip that"}”.`
+                : `Both phrases are needed: “${draft.voice_wake_phrase.trim() || "Kenta"}”, then “${
+                    draft.voice_clip_command.trim() || "clip that"
+                  }”.`
+            }
+          >
+            <div className="segmented" role="tablist" aria-label="Activation phrase">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!draft.voice_single_word}
+                className={!draft.voice_single_word ? "is-active" : ""}
+                disabled={!draft.voice_enabled}
+                onClick={() => update("voice_single_word", false)}
+              >
+                Two words
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={draft.voice_single_word}
+                className={draft.voice_single_word ? "is-active" : ""}
+                disabled={!draft.voice_enabled}
+                onClick={() => update("voice_single_word", true)}
+              >
+                One word
+              </button>
+            </div>
+          </Row>
           <Row label="Wake phrase" hint="Said on its own, it waits a few seconds for the command.">
             <input
               className="input"
@@ -1194,6 +1252,121 @@ function SettingsViewImpl({
 
       <section className="settings-section">
         <header>
+          <Volume2 size={16} className="settings-icon" />
+          <h2>Clip sound</h2>
+          <p>The cue played when a clip is saved.</p>
+        </header>
+        <div className="settings-body">
+          {!clipSound ? (
+            <div className="inline-note">
+              <Loader2 size={14} className="spin" />
+              <span>Reading the cue from the active theme…</span>
+            </div>
+          ) : (
+            <>
+              <Switch
+                checked={clipSound.enabled}
+                onChange={(checked) => void saveClipSound({ enabled: checked })}
+                label="Play a cue when a clip is saved"
+                description="Played by Windows itself, so it still works while Kenta is in the background."
+                disabled={savingSound}
+              />
+              <Row
+                label="Sound"
+                hint="Upload any WAV, MP3, OGG, FLAC, M4A, AAC or Opus file. It is converted to mono WAV and cut to 8 seconds."
+              >
+                <div className="clip-sound-row">
+                  <span className="select-wrap">
+                    <select
+                      className="select select-sm"
+                      aria-label="Clip sound"
+                      value={clipSound.kind}
+                      disabled={savingSound || !clipSound.enabled}
+                      onChange={(event) => void saveClipSound({ kind: event.target.value })}
+                    >
+                      {CLIP_SOUNDS.map((sound) => (
+                        <option key={sound.value} value={sound.value}>
+                          {sound.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} className="select-chevron" />
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-quiet btn-sm"
+                    onClick={() => void handlePreviewClipSound()}
+                    disabled={savingSound}
+                    title="Play the selected cue at the volume above"
+                  >
+                    <Volume2 size={12} /> Test sound
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-quiet btn-sm"
+                    onClick={() => void handleUploadClipSound()}
+                    disabled={savingSound}
+                  >
+                    {savingSound ? (
+                      <Loader2 size={12} className="spin" />
+                    ) : (
+                      <Upload size={12} />
+                    )}
+                    Upload…
+                  </button>
+                  {clipSound.custom ? (
+                    <button
+                      type="button"
+                      className="btn btn-quiet btn-sm"
+                      onClick={() => void saveClipSound({ custom: null })}
+                      disabled={savingSound}
+                    >
+                      <X size={12} /> Use built-in
+                    </button>
+                  ) : null}
+                </div>
+                {clipSound.custom ? (
+                  <p className="field-hint">
+                    Your uploaded file is the cue. If it ever goes missing, Kenta falls back to the
+                    built-in sound.
+                  </p>
+                ) : null}
+              </Row>
+              <Row label="Volume">
+                <div className="volume-row">
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={soundVolumeDraft ?? clipSound.volume}
+                    disabled={!clipSound.enabled}
+                    aria-label="Clip sound volume"
+                    aria-valuetext={`${soundVolumeDraft ?? clipSound.volume}%`}
+                    onChange={(event) => setSoundVolumeDraft(Number(event.target.value))}
+                    onPointerUp={() => {
+                      if (soundVolumeDraft !== null) {
+                        void saveClipSound({ volume: soundVolumeDraft });
+                        setSoundVolumeDraft(null);
+                      }
+                    }}
+                    onKeyUp={() => {
+                      if (soundVolumeDraft !== null) {
+                        void saveClipSound({ volume: soundVolumeDraft });
+                        setSoundVolumeDraft(null);
+                      }
+                    }}
+                  />
+                  <span className="mono volume-value">{soundVolumeDraft ?? clipSound.volume}%</span>
+                </div>
+              </Row>
+            </>
+          )}
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <header>
           <Bell size={16} className="settings-icon" />
           <h2>Voice on-screen icon</h2>
           <p>A small icon that appears in the corner when a voice clip saves.</p>
@@ -1218,60 +1391,6 @@ function SettingsViewImpl({
               <option value="camera">Camera</option>
               <option value="clip">Clip</option>
             </select>
-          </Row>
-        </div>
-      </section>
-
-      <section className="settings-section">
-        <header>
-          <Palette size={16} className="settings-icon" />
-          <h2>Theme</h2>
-          <p>Choose the colors Kenta uses throughout the app.</p>
-        </header>
-        <div className="settings-body">
-          <Row label="Accent color" hint="Used for buttons, selected states, and active indicators.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_accent}
-                onChange={(event) => update("theme_accent", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_accent}</span>
-            </div>
-          </Row>
-          <Row label="Background color" hint="The main app background.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_background}
-                onChange={(event) => update("theme_background", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_background}</span>
-            </div>
-          </Row>
-          <Row label="Card color" hint="Used for panels and cards.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_card}
-                onChange={(event) => update("theme_card", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_card}</span>
-            </div>
-          </Row>
-          <Row label="Text color" hint="Primary text color.">
-            <div className="color-row">
-              <input
-                className="color-input"
-                type="color"
-                value={draft.theme_text}
-                onChange={(event) => update("theme_text", event.target.value)}
-              />
-              <span className="color-value">{draft.theme_text}</span>
-            </div>
           </Row>
         </div>
       </section>

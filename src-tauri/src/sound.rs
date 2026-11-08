@@ -36,6 +36,16 @@ pub enum SoundKind {
   Beep,
   /// A single higher-pitched ding at E6.
   Ding,
+  /// The original two-note Kenta cue.
+  Classic,
+  /// A quieter, longer two-note cue.
+  Soft,
+  /// Three quick digital notes.
+  Digital,
+  /// A short square-wave arpeggio.
+  Retro,
+  /// One very short high note.
+  Minimal,
   /// Silence: no sound plays.
   None,
 }
@@ -46,6 +56,11 @@ impl SoundKind {
     match kind {
       "beep" => SoundKind::Beep,
       "ding" => SoundKind::Ding,
+      "classic" => SoundKind::Classic,
+      "soft" => SoundKind::Soft,
+      "digital" => SoundKind::Digital,
+      "retro" => SoundKind::Retro,
+      "minimal" => SoundKind::Minimal,
       "none" => SoundKind::None,
       _ => SoundKind::Chime,
     }
@@ -57,6 +72,11 @@ impl SoundKind {
       SoundKind::Chime => "chime",
       SoundKind::Beep => "beep",
       SoundKind::Ding => "ding",
+      SoundKind::Classic => "classic",
+      SoundKind::Soft => "soft",
+      SoundKind::Digital => "digital",
+      SoundKind::Retro => "retro",
+      SoundKind::Minimal => "minimal",
       SoundKind::None => "none",
     }
   }
@@ -80,11 +100,6 @@ const DING_MS: u32 = 180;
 /// non-zero sample.
 const TAIL_MS: u32 = 20;
 
-/// How long the chime lasts (used by tests).
-pub fn duration_ms() -> u32 {
-  CHIME_FIRST_MS + CHIME_SECOND_MS + TAIL_MS
-}
-
 pub fn is_audible(volume: u8) -> bool {
   volume > 0
 }
@@ -92,7 +107,11 @@ pub fn is_audible(volume: u8) -> bool {
 /// Total milliseconds for a given kind (notes + tail).
 fn kind_duration_ms(kind: SoundKind) -> u32 {
   match kind {
-    SoundKind::Chime => CHIME_FIRST_MS + CHIME_SECOND_MS + TAIL_MS,
+    SoundKind::Chime | SoundKind::Classic => CHIME_FIRST_MS + CHIME_SECOND_MS + TAIL_MS,
+    SoundKind::Soft => 300 + 380 + TAIL_MS,
+    SoundKind::Digital => 70 * 3 + TAIL_MS,
+    SoundKind::Retro => 70 * 4 + TAIL_MS,
+    SoundKind::Minimal => 70 + TAIL_MS,
     SoundKind::Beep => BEEP_MS + TAIL_MS,
     SoundKind::Ding => DING_MS + TAIL_MS,
     SoundKind::None => 0,
@@ -109,17 +128,35 @@ pub fn sound_wav(kind: SoundKind, volume: u8) -> Vec<u8> {
   let volume = volume.min(100) as f64 / 100.0;
   let mut samples: Vec<i16> = Vec::with_capacity(sample_count(kind));
   match kind {
-    SoundKind::Chime => {
+    SoundKind::Chime | SoundKind::Classic => {
       push_note(&mut samples, CHIME_FIRST_HZ, CHIME_FIRST_MS);
       push_note(&mut samples, CHIME_SECOND_HZ, CHIME_SECOND_MS);
     }
+    SoundKind::Soft => {
+      push_note(&mut samples, 659.25, 300);
+      push_note(&mut samples, 880.0, 380);
+    }
+    SoundKind::Digital => {
+      push_square(&mut samples, 1046.5, 70);
+      push_square(&mut samples, 1318.51, 70);
+      push_square(&mut samples, 1567.98, 70);
+    }
+    SoundKind::Retro => {
+      push_square(&mut samples, 523.25, 70);
+      push_square(&mut samples, 659.25, 70);
+      push_square(&mut samples, 783.99, 70);
+      push_square(&mut samples, 1046.5, 70);
+    }
+    SoundKind::Minimal => push_note(&mut samples, 1567.98, 70),
     SoundKind::Beep => push_note(&mut samples, BEEP_HZ, BEEP_MS),
     SoundKind::Ding => push_note(&mut samples, DING_HZ, DING_MS),
     SoundKind::None => {}
   }
   samples.resize(sample_count(kind), 0);
+  encode_wav(&samples, PEAK * volume)
+}
 
-  let scale = PEAK * volume;
+fn encode_wav(samples: &[i16], scale: f64) -> Vec<u8> {
   let mut data = Vec::with_capacity(HEADER_BYTES + samples.len() * 2);
   data.extend_from_slice(b"RIFF");
   data.extend_from_slice(&(36 + samples.len() as u32 * 2).to_le_bytes());
@@ -136,7 +173,9 @@ pub fn sound_wav(kind: SoundKind, volume: u8) -> Vec<u8> {
   data.extend_from_slice(b"data");
   data.extend_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
   for sample in samples {
-    let value = (sample as f64 * scale).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+    let value = (*sample as f64 * scale)
+      .round()
+      .clamp(i16::MIN as f64, i16::MAX as f64) as i16;
     data.extend_from_slice(&value.to_le_bytes());
   }
   data
@@ -157,6 +196,128 @@ fn push_note(samples: &mut Vec<i16>, hz: f64, millis: u32) {
       + 0.22 * (std::f64::consts::TAU * 2.0 * hz * time).sin();
     samples.push(((tone * attack * decay / 1.22) * i16::MAX as f64) as i16);
   }
+}
+
+fn push_square(samples: &mut Vec<i16>, hz: f64, millis: u32) {
+  let count = (SAMPLE_RATE as u64 * millis as u64 / 1000) as usize;
+  let duration = millis as f64 / 1000.0;
+  for index in 0..count {
+    let time = index as f64 / SAMPLE_RATE as f64;
+    let attack = (time / 0.003).min(1.0);
+    let decay = (-5.0 * time / duration).exp();
+    let phase = (hz * time).fract();
+    let tone = if phase < 0.5 { 0.75 } else { -0.75 };
+    samples.push(((tone * attack * decay) * i16::MAX as f64 * 0.6) as i16);
+  }
+}
+
+/// Play a canonical 16-bit PCM WAV file, scaling its samples by `volume`.
+///
+/// Custom cues are transcoded to that canonical shape at import time, so this
+/// parser only has to handle the exact format Kenta writes.
+pub fn play_wav_file(path: &std::path::Path, volume: u8) {
+  if !is_audible(volume) {
+    return;
+  }
+  let path = path.to_path_buf();
+  let volume = volume.min(100);
+  std::thread::spawn(move || {
+    let bytes = match std::fs::read(&path) {
+      Ok(bytes) => bytes,
+      Err(error) => {
+        log::warn!("Could not read custom sound {}: {error}", path.display());
+        return;
+      }
+    };
+    let scaled = scale_wav(&bytes, volume);
+    if scaled.is_empty() {
+      log::warn!("Custom sound is not a supported PCM WAV: {}", path.display());
+      return;
+    }
+    // SAFETY: the buffer outlives the synchronous PlaySound call on this
+    // thread and starts with a valid RIFF/WAVE header.
+    let played = unsafe {
+      PlaySoundW(
+        scaled.as_ptr() as *const u16,
+        std::ptr::null_mut(),
+        SND_MEMORY | SND_NODEFAULT,
+      )
+    };
+    if played == 0 {
+      log::warn!("Windows rejected the custom sound buffer");
+    }
+  });
+}
+
+/// Whether `bytes` is a mono 16-bit PCM WAV at Kenta's canonical sample rate.
+///
+/// This is the only shape `scale_wav`/`PlaySoundW` is tested against, so both
+/// custom imports and theme packages are validated against it before playback.
+pub fn is_canonical_wav(bytes: &[u8]) -> bool {
+  if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+    return false;
+  }
+  let mut offset = 12;
+  let mut format_ok = false;
+  let mut has_data = false;
+  while offset + 8 <= bytes.len() {
+    let id = &bytes[offset..offset + 4];
+    let len = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+    let body = offset + 8;
+    if body.saturating_add(len) > bytes.len() {
+      return false;
+    }
+    if id == b"fmt " {
+      if len < 16 {
+        return false;
+      }
+      let format = u16::from_le_bytes([bytes[body], bytes[body + 1]]);
+      let channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]);
+      let rate = u32::from_le_bytes(bytes[body + 4..body + 8].try_into().unwrap());
+      let bits = u16::from_le_bytes([bytes[body + 14], bytes[body + 15]]);
+      format_ok = format == 1 && channels == 1 && rate == SAMPLE_RATE && bits == 16;
+    } else if id == b"data" {
+      has_data = true;
+    }
+    offset = body.saturating_add(len + (len & 1));
+  }
+  format_ok && has_data
+}
+
+/// Scale a canonical PCM WAV. Returns an empty vector for any other shape.
+fn scale_wav(bytes: &[u8], volume: u8) -> Vec<u8> {
+  if !is_canonical_wav(bytes) {
+    return Vec::new();
+  }
+  let mut offset = 12;
+  let mut data_start = None;
+  let mut data_len = 0usize;
+  while offset + 8 <= bytes.len() {
+    let id = &bytes[offset..offset + 4];
+    let len = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+    let body = offset + 8;
+    if id == b"data" {
+      data_start = Some(body);
+      data_len = len.min(bytes.len().saturating_sub(body));
+      break;
+    }
+    offset = body.saturating_add(len + (len & 1));
+  }
+  let Some(data_start) = data_start else {
+    return Vec::new();
+  };
+  let mut out = bytes.to_vec();
+  let scale = volume as f64 / 100.0;
+  let mut index = data_start;
+  while index + 1 < data_start + data_len && index + 1 < out.len() {
+    let sample = i16::from_le_bytes([out[index], out[index + 1]]);
+    let value = (sample as f64 * scale)
+      .round()
+      .clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+    out[index..index + 2].copy_from_slice(&value.to_le_bytes());
+    index += 2;
+  }
+  out
 }
 
 /// Play a confirmation sound once, without blocking the caller.
@@ -191,9 +352,49 @@ pub fn play_sound(kind: SoundKind, volume: u8) {
   });
 }
 
-/// Play the chime once, without blocking the caller.
-///
-/// Kept for any callers that still reference the old name.
-pub fn play(volume: u8) {
-  play_sound(SoundKind::Chime, volume);
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn generated_cues_are_canonical_pcm_wavs() {
+    for kind in [
+      SoundKind::Chime,
+      SoundKind::Beep,
+      SoundKind::Ding,
+      SoundKind::Classic,
+      SoundKind::Soft,
+      SoundKind::Digital,
+      SoundKind::Retro,
+      SoundKind::Minimal,
+    ] {
+      let wav = sound_wav(kind, 100);
+      assert!(is_canonical_wav(&wav), "{kind:?} was not canonical");
+      let quiet = scale_wav(&wav, 50);
+      assert_eq!(quiet.len(), wav.len());
+      assert_ne!(quiet, wav);
+    }
+  }
+
+  #[test]
+  fn foreign_or_non_mono_pcm_wavs_are_rejected() {
+    let mut stereo = sound_wav(SoundKind::Beep, 100);
+    stereo[22] = 2; // channel count in the fmt chunk
+    assert!(!is_canonical_wav(&stereo));
+    assert!(scale_wav(&stereo, 50).is_empty());
+
+    let mut wrong_rate = sound_wav(SoundKind::Beep, 100);
+    wrong_rate[24..28].copy_from_slice(&48_000u32.to_le_bytes());
+    assert!(!is_canonical_wav(&wrong_rate));
+
+    assert!(!is_canonical_wav(b"RIFF"));
+    assert!(!is_canonical_wav(&[0u8; 64]));
+  }
+
+  #[test]
+  fn the_none_cue_is_empty() {
+    assert!(sound_wav(SoundKind::None, 100).is_empty());
+  }
 }
+
+

@@ -73,17 +73,34 @@ pub trait UploadEvents: Send + Sync {
 
 pub struct AppEvents {
   app: tauri::AppHandle,
+  /// Last status reported per clip, so a progress event does not replay the
+  /// completion cue and a failed upload only chimes once.
+  last_status: Mutex<HashMap<String, String>>,
 }
 
 impl AppEvents {
   pub fn new(app: tauri::AppHandle) -> Self {
-    Self { app }
+    Self {
+      app,
+      last_status: Mutex::new(HashMap::new()),
+    }
   }
 }
 
 impl UploadEvents for AppEvents {
   fn emit(&self, update: UploadUpdate) {
     use tauri::Emitter;
+    let previous = {
+      let mut last = self.last_status.lock().unwrap();
+      last.insert(update.clip_id.clone(), update.status.clone())
+    };
+    if previous.as_deref() != Some(update.status.as_str()) {
+      match update.status.as_str() {
+        "uploaded" => crate::commands::play_event(&self.app, "upload_completed"),
+        "failed" => crate::commands::play_event(&self.app, "upload_failed"),
+        _ => {}
+      }
+    }
     let _ = self.app.emit(EVENT_NAME, update);
   }
 }

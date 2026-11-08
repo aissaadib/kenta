@@ -1,3 +1,4 @@
+mod appearance;
 mod autostart;
 mod buffer;
 mod capture;
@@ -10,6 +11,7 @@ mod hotkey;
 mod instance;
 mod migrate;
 mod monitors;
+mod music;
 mod overlay;
 mod process;
 mod settings;
@@ -36,50 +38,6 @@ const TRAY_SAVE: &str = "tray-save-replay";
 const TRAY_RECORD: &str = "tray-toggle-recording";
 const TRAY_FOLDER: &str = "tray-open-folder";
 const TRAY_QUIT: &str = "tray-quit";
-
-#[cfg(windows)]
-fn apply_window_theme(window: &tauri::WebviewWindow) {
-  use windows_sys::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
-    DWMWA_USE_IMMERSIVE_DARK_MODE,
-  };
-
-  let Ok(hwnd) = window.hwnd() else { return; };
-  let hwnd = hwnd.0 as *mut core::ffi::c_void;
-
-  // COLORREF is 0x00BBGGRR.
-  let caption: u32 = 0x0012_0e0b; // #0b0e12
-  let text: u32 = 0x00f5_f1ed; // #edf1f5
-  let border: u32 = 0x0035_2d26; // #262d35
-  let dark: i32 = 1;
-
-  unsafe {
-    let _ = DwmSetWindowAttribute(
-      hwnd,
-      DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-      &dark as *const _ as *const _,
-      std::mem::size_of::<i32>() as u32,
-    );
-    let _ = DwmSetWindowAttribute(
-      hwnd,
-      DWMWA_CAPTION_COLOR as u32,
-      &caption as *const _ as *const _,
-      4,
-    );
-    let _ = DwmSetWindowAttribute(
-      hwnd,
-      DWMWA_TEXT_COLOR as u32,
-      &text as *const _ as *const _,
-      4,
-    );
-    let _ = DwmSetWindowAttribute(
-      hwnd,
-      DWMWA_BORDER_COLOR as u32,
-      &border as *const _ as *const _,
-      4,
-    );
-  }
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -140,15 +98,57 @@ pub fn run() {
       commands::cancel_drive_upload,
       commands::get_clip_upload_status,
       commands::open_google_drive,
+      commands::music_pick_files,
+      commands::music_pick_folder,
+      commands::music_import_paths,
+      commands::music_add_folder,
+      commands::music_remove_folder,
+      commands::music_folders,
+      commands::music_list,
+      commands::music_source,
+      commands::music_check_missing,
+      commands::music_remove_track,
+      commands::music_list_playlists,
+      commands::music_create_playlist,
+      commands::music_rename_playlist,
+      commands::music_delete_playlist,
+      commands::music_playlist_tracks,
+      commands::music_add_playlist_track,
+      commands::music_remove_playlist_track,
+      commands::music_reorder_playlist,
+      commands::music_save_prefs,
+      commands::get_appearance,
+      commands::save_appearance_theme,
+      commands::delete_appearance_theme,
+      commands::duplicate_appearance_theme,
+      commands::set_appearance_theme,
+      commands::reset_appearance,
+      commands::preview_appearance_theme,
+      commands::preview_appearance_sound,
+      commands::appearance_pick_image,
+      commands::appearance_pick_sound,
+      commands::appearance_export_theme,
+      commands::appearance_import_theme,
     ])
     .setup(|app| {
       let handle = app.handle().clone();
-      #[cfg(windows)]
-      if let Some(window) = app.get_webview_window("main") {
-        apply_window_theme(&window);
-      }
       initialise(&handle)?;
       build_tray(app)?;
+      // Apply the saved theme only after the tray exists, so its icon can be
+      // replaced at the same time as the window icon.
+      {
+        let state = handle.state::<AppState>();
+        let theme = state.appearance.lock().unwrap().active();
+        if let Some(window) = app.get_webview_window("main") {
+          #[cfg(windows)]
+          appearance::apply_window_colors(&window, &theme);
+          #[cfg(not(windows))]
+          let _ = &window;
+        }
+        if let Some(warning) = appearance::apply_runtime_icons(&handle, &theme) {
+          log::warn!("{warning}");
+        }
+      }
       worker::start(handle);
       Ok(())
     })
@@ -188,6 +188,20 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
       .settings
       .lock()
       .map_err(|_| AppError::Settings("settings lock poisoned".into()))? = settings.clone();
+  }
+
+  {
+    let (mut config, mut appearance_warnings, fresh) = appearance::load();
+    appearance_warnings.extend(appearance::migrate_legacy(&mut config, &settings, fresh));
+    if let Err(error) = appearance::save(&config) {
+      appearance_warnings.push(format!("Appearance settings could not be saved: {error}"));
+    }
+    warnings.extend(appearance_warnings);
+    let state = handle.state::<AppState>();
+    *state
+      .appearance
+      .lock()
+      .map_err(|_| AppError::Settings("appearance lock poisoned".into()))? = config;
   }
 
   {
@@ -240,6 +254,14 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
 
   commands::allow_clip_scope(handle, &settings.output_dir_or_default());
   commands::allow_clip_scope(handle, &commands::thumbnail_cache_dir());
+  // Managed theme assets are the only tree the webview may read outside the
+  // clip folders. Each music track is allowed individually when it is listed.
+  let _ = handle
+    .asset_protocol_scope()
+    .allow_directory(appearance::assets_dir(), true);
+  let _ = handle
+    .asset_protocol_scope()
+    .allow_directory(appearance::config_dir().join("music-artwork"), true);
 
   // Keep the registry in sync with the persisted preference (for example after
   // the executable has been moved to a new folder).
@@ -359,7 +381,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     &[&show, &save, &record, &folder, &separator, &quit],
   )?;
 
-  let mut builder = TrayIconBuilder::new()
+  let mut builder = TrayIconBuilder::with_id(appearance::TRAY_ID)
     .menu(&menu)
     .show_menu_on_left_click(false)
     .tooltip("Kenta")

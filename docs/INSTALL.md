@@ -15,7 +15,7 @@ No Rust, Node.js, Visual Studio, or separate FFmpeg installation is required.
 
 ## Install
 
-1. Download `Kenta_0.1.0_x64-setup.exe` from the
+1. Download `Kenta_0.2.0_x64-setup.exe` from the
    [Releases page](https://github.com/aissaadib/kenta/releases).
 2. Run the installer. It installs per-user and does not require administrator
    rights.

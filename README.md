@@ -13,6 +13,8 @@ clip in a local library.
 - Records longer manual sessions when you want the whole thing.
 - Organises clips with thumbnails, search, sort, rename, preview, and delete.
 - Trims and exports clips in the built-in editor.
+- Plays your own local music, with playlists and a persistent mini player.
+- Restyles the whole app with themes you can edit, import, and export.
 - Optionally copies new clips to a Kenta folder in Google Drive.
 - Keeps the local file authoritative; a cloud failure never breaks a save.
 
@@ -30,13 +32,21 @@ clip in a local library.
 - **Clip library:** SQLite-backed, with thumbnails and missing-file reporting.
 - **Editor:** trim, reorder, mute tracks, and export a new clip while keeping
   the original.
+- **Music:** a local library that reads FFprobe metadata and embedded artwork,
+  with search, sorting, playlists, a queue, seek, volume, shuffle and repeat.
+  The player sits outside the views, so playback continues while you switch
+  sections or hide Kenta to the tray.
+- **Appearance:** semantic theme tokens applied live, seven built-in presets, a
+  colour editor with WCAG warnings, typography, density, background images or
+  gradients, icon packs, runtime window and tray icons, per-event sounds, and
+  `.kenta-theme` import/export.
 - **Google Drive:** OAuth desktop flow, resumable uploads, retry, cancel, and
   a direct "Save to Google Drive" action.
 - **Tray and startup:** close to tray and optional launch at sign-in.
 
 ## Install
 
-1. Download `Kenta_0.1.0_x64-setup.exe` from
+1. Download `Kenta_0.2.0_x64-setup.exe` from
    [Releases](https://github.com/aissaadib/kenta/releases).
 2. Run it. The installer is per-user and does not need administrator rights.
 3. Launch **Kenta** from the Start Menu.
@@ -79,6 +89,46 @@ Windows SAPI speech engine and the language packs installed on your PC. If no
 supported language is installed, Kenta reports that recognition is unavailable
 instead of failing silently.
 
+## Music
+
+Kenta plays files you already own. It stores the original path and streams the
+file in place; nothing is copied, re-encoded, or uploaded. Supported formats are
+MP3, WAV, FLAC, M4A, AAC, OGG and Opus. Add individual files or a folder, and
+Kenta reads the title, artist, album, duration and embedded artwork with
+FFprobe. A file that is moved or deleted is reported as missing instead of
+breaking the library.
+
+Playback is independent of the current section and keeps running when the
+window is minimised or hidden to the tray. Closing Kenta from the tray stops
+it. Playlists reference library entries, so removing a playlist never touches
+the files on disk.
+
+Kenta does not bypass DRM, and it does not provide a store or any audio content.
+
+## Appearance
+
+Appearance Studio edits a theme of semantic colour tokens, typography, layout
+density, corner style, motion, background, icons, and per-event sounds. Edits
+preview immediately; leaving the studio without applying restores the saved
+theme.
+
+- **Presets** — Kenta Original, Carbon, Midnight Blue, Purple Haze, Crimson,
+  Light, and High Contrast.
+- **Colour editor** — WCAG contrast warnings with a suggested fix per pairing.
+- **Backgrounds** — solid, gradient, or a PNG/JPEG/WebP image up to 8192 px.
+- **Icons** — built-in icon packs restyle the in-app brand mark; custom PNG/ICO
+  files can replace the live window and tray icons.
+- **Sounds** — built-in cues or your own WAV, MP3, OGG, FLAC, M4A, AAC or Opus
+  file, converted to mono 16-bit WAV and capped at 8 seconds.
+- **Packages** — export and import `.kenta-theme` files. Imported packages are
+  validated, bounded in size, and can only write inside Kenta's managed asset
+  folder.
+
+Editing a preset saves a copy; the preset itself stays unchanged. Theme assets
+live in `%APPDATA%\Kenta\theme-assets`. The executable and installer icon are
+compiled at build time, so a theme can change the live window and tray icon but
+not the icon Windows shows for the installed program before launch.
+
 ## Local data and privacy
 
 Kenta has no telemetry, analytics, or account system. Clips, settings, and the
@@ -86,8 +136,10 @@ SQLite library stay on your PC. Google credentials are stored in Windows
 Credential Manager, not in the repository or the database.
 
 - Settings: `%APPDATA%\Kenta\settings.json`
-- Library: `%USERPROFILE%\Videos\Kenta\library.db`
+- Appearance: `%APPDATA%\Kenta\appearance.json` and `theme-assets`
+- Library and music index: `%USERPROFILE%\Videos\Kenta\library.db`
 - Clips: the folder chosen in Settings
+- Music: your original files, referenced where they already are
 
 See [docs/PRIVACY.md](docs/PRIVACY.md) for details and removal instructions.
 
@@ -104,6 +156,10 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) for details and removal instructions.
 - Very large uploads and abrupt network loss during an upload have not been
   stress-tested.
 - Voice recognition quality depends on the installed Windows speech language.
+- Music formats are limited to what WebView2 can decode (MP3, WAV, FLAC, M4A,
+  AAC, OGG, Opus). DRM-protected files are not supported.
+- Sound cues play through Windows `PlaySound`, which has no per-application
+  volume, so Kenta applies the cue volume by scaling the samples.
 - The public Google OAuth client may require the Google Cloud project to be
   published before non-test accounts can connect.
 
