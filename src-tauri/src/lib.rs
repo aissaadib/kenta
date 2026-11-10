@@ -126,6 +126,7 @@ pub fn run() {
       commands::preview_appearance_theme,
       commands::preview_appearance_sound,
       commands::appearance_pick_image,
+       commands::appearance_analyze_wallpaper,
       commands::appearance_pick_sound,
       commands::appearance_export_theme,
       commands::appearance_import_theme,

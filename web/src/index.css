@@ -4619,3 +4619,43 @@ html[data-sidebar="icons"] .music-bar {
   margin-bottom: 16px;
   line-height: 1.5;
 }
+
+/* ---------------------------------------------------------------------------
+   Icon pack
+   The Appearance Studio exposes four icon packs. They work by changing how
+   every lucide glyph is drawn, not by swapping components, so the choice is
+   visible on every screen instead of only in the studio preview. theme.ts sets
+   data-icon-pack on the root element.
+   --------------------------------------------------------------------------- */
+:root {
+  --icon-stroke: 2;
+  --icon-cap: round;
+}
+
+svg.lucide {
+  stroke-width: var(--icon-stroke);
+  stroke-linecap: var(--icon-cap);
+  stroke-linejoin: var(--icon-cap);
+}
+
+/* Lighter, squarer strokes. */
+[data-icon-pack="outline"] {
+  --icon-stroke: 1.5;
+  --icon-cap: butt;
+}
+
+/* Heavier glyphs with a faint interior tint, so the pack reads as solid. */
+[data-icon-pack="solid"] {
+  --icon-stroke: 2.6;
+  --icon-cap: square;
+}
+
+[data-icon-pack="solid"] svg.lucide * {
+  fill: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* Slightly heavier than Kenta, with fully rounded joins. */
+[data-icon-pack="rounded"] {
+  --icon-stroke: 2.2;
+  --icon-cap: round;
+}

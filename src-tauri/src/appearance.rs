@@ -14,6 +14,7 @@
 use crate::errors::{AppError, AppResult};
 use crate::settings::Settings;
 use crate::sound;
+use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -243,12 +244,14 @@ pub struct Background {
   pub gradient_to: String,
   /// Managed relative path inside `theme-assets`.
   pub image: Option<String>,
-  /// "cover" | "contain"
+  /// "cover" | "contain" | "fill" | "center"
   pub fit: String,
   /// 0..=100
   pub opacity: u8,
   /// 0..=24 pixels.
   pub blur: u8,
+  /// When true, the wallpaper drives the theme's color tokens.
+  pub adaptive: bool,
 }
 
 impl Default for Background {
@@ -261,6 +264,7 @@ impl Default for Background {
       fit: "cover".into(),
       opacity: 100,
       blur: 0,
+      adaptive: false,
     }
   }
 }
@@ -510,9 +514,12 @@ impl Theme {
     if !is_hex(&self.background.gradient_to) {
       self.background.gradient_to = ThemeColors::default().surface;
     }
-    if !matches!(self.background.fit.as_str(), "cover" | "contain") {
+    if !matches!(self.background.fit.as_str(), "cover" | "contain" | "fill" | "center") {
       warnings.push("Background fit was reset to cover.".into());
       self.background.fit = "cover".into();
+    }
+    if self.background.adaptive && self.background.image.is_none() {
+      self.background.adaptive = false;
     }
     self.background.opacity = self.background.opacity.min(100);
     self.background.blur = self.background.blur.min(24);
@@ -1293,6 +1300,266 @@ fn is_sound_asset(relative: &str) -> bool {
     .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
 }
 
+/// Analyse a managed wallpaper image and derive a full semantic palette from
+/// it. The image is downsampled before any colour work, so a 4K source costs
+/// the same as a thumbnail. The result is deterministic for a given image.
+pub fn analyze_wallpaper(relative: &str) -> AppResult<ThemeColors> {
+  let path = resolve_asset(relative)?;
+  let image = image::open(&path)
+    .map_err(|error| AppError::Validation(format!("That image could not be decoded: {error}")))?;
+  let small = image.resize_exact(96, 96, image::imageops::FilterType::Triangle);
+  let (width, height) = small.dimensions();
+  let mut pixels: Vec<[u8; 3]> = Vec::with_capacity((width * height) as usize);
+  for (_x, _y, pixel) in small.pixels() {
+    pixels.push([pixel[0], pixel[1], pixel[2]]);
+  }
+  Ok(palette_from_pixels(&pixels))
+}
+
+/// Deterministic colour quantisation + palette derivation. Split out so it can
+/// be tested with synthetic pixel buffers without touching the filesystem.
+pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
+  if pixels.is_empty() {
+    return ThemeColors::default();
+  }
+
+  // Overall character of the image.
+  let mut sum_lum = 0.0f64;
+  let mut sum_sat = 0.0f64;
+  for pixel in pixels {
+    let (h, s, l) = rgb_to_hsl(pixel);
+    let _ = h;
+    sum_lum += l;
+    sum_sat += s;
+  }
+  let count = pixels.len() as f64;
+  let avg_lum = (sum_lum / count).clamp(0.0, 1.0);
+  let avg_sat = (sum_sat / count).clamp(0.0, 1.0);
+  let dark_theme = avg_lum < 0.5;
+
+  // 4x4x4 histogram -> top bins -> candidate colours.
+  let mut bins: HashMap<u32, (u64, [u64; 3])> = HashMap::new();
+  for pixel in pixels {
+    let key = ((pixel[0] as u32 / 64) << 10) | ((pixel[1] as u32 / 64) << 5) | (pixel[2] as u32 / 64);
+    let entry = bins.entry(key).or_insert((0, [0, 0, 0]));
+    entry.0 += 1;
+    entry.1[0] += pixel[0] as u64;
+    entry.1[1] += pixel[1] as u64;
+    entry.1[2] += pixel[2] as u64;
+  }
+  let mut ranked: Vec<(u64, [u8; 3])> = bins
+    .values()
+    .map(|(count, sum)| {
+      let c = [sum[0] as u8, sum[1] as u8, sum[2] as u8];
+      // approximate average by dividing; keep simple and deterministic.
+      let avg = [
+        (sum[0] / *count.max(&1)) as u8,
+        (sum[1] / *count.max(&1)) as u8,
+        (sum[2] / *count.max(&1)) as u8,
+      ];
+      let _ = c;
+      (*count, avg)
+    })
+    .collect();
+  ranked.sort_by(|a, b| b.0.cmp(&a.0));
+  ranked.truncate(8);
+  let candidates: Vec<[u8; 3]> = ranked.into_iter().map(|(_, c)| c).collect();
+
+  // Pick the most saturated candidate as the accent seed.
+  let accent_seed = candidates
+    .iter()
+    .max_by(|a, b| {
+      let (_, sa, _) = rgb_to_hsl(a);
+      let (_, sb, _) = rgb_to_hsl(b);
+      sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+    })
+    .copied()
+    .unwrap_or([245, 255, 46]);
+
+  // Base hue for the accent, with a fallback to Kenta's signature yellow when
+  // the image is essentially greyscale.
+  let (accent_h, accent_s, _) = rgb_to_hsl(&accent_seed);
+  let accent_h = if avg_sat < 0.08 { 55.0 } else { accent_h };
+  let accent_s = if avg_sat < 0.08 { 0.9 } else { accent_s.max(0.45) };
+
+  let mut colors = ThemeColors::default();
+
+  if dark_theme {
+    // Dark canvas derived from the darkest candidate.
+    let dark_seed = candidates
+      .iter()
+      .min_by(|a, b| {
+        let (_, _, la) = rgb_to_hsl(a);
+        let (_, _, lb) = rgb_to_hsl(b);
+        la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
+      })
+      .copied()
+      .unwrap_or([10, 10, 12]);
+    let (h, s, _) = rgb_to_hsl(&dark_seed);
+    let bg = hsl_to_rgb(h, s.min(0.25), 0.09);
+    let bg2 = hsl_to_rgb(h, s.min(0.25), 0.11);
+    let surface = hsl_to_rgb(h, s.min(0.22), 0.14);
+    let surface_raised = hsl_to_rgb(h, s.min(0.22), 0.17);
+    let surface_hover = hsl_to_rgb(h, s.min(0.22), 0.20);
+    let surface_selected = hsl_to_rgb(h, s.min(0.22), 0.24);
+    colors.background = rgb_to_hex(&bg);
+    colors.background_secondary = rgb_to_hex(&bg2);
+    colors.surface = rgb_to_hex(&surface);
+    colors.surface_raised = rgb_to_hex(&surface_raised);
+    colors.surface_hover = rgb_to_hex(&surface_hover);
+    colors.surface_selected = rgb_to_hex(&surface_selected);
+    colors.text_primary = "#f1f1ef".into();
+    colors.text_secondary = "#b9b9b4".into();
+    colors.text_muted = "#7f7f7a".into();
+    colors.border = rgb_to_hex(&hsl_to_rgb(h, s.min(0.2), 0.22));
+    colors.border_strong = rgb_to_hex(&hsl_to_rgb(h, s.min(0.2), 0.30));
+  } else {
+    let light_seed = candidates
+      .iter()
+      .max_by(|a, b| {
+        let (_, _, la) = rgb_to_hsl(a);
+        let (_, _, lb) = rgb_to_hsl(b);
+        la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
+      })
+      .copied()
+      .unwrap_or([244, 244, 241]);
+    let (h, s, _) = rgb_to_hsl(&light_seed);
+    let bg = hsl_to_rgb(h, s.min(0.18), 0.96);
+    let bg2 = hsl_to_rgb(h, s.min(0.18), 0.93);
+    let surface = hsl_to_rgb(h, s.min(0.15), 1.0);
+    let surface_raised = hsl_to_rgb(h, s.min(0.15), 0.98);
+    let surface_hover = hsl_to_rgb(h, s.min(0.15), 0.95);
+    let surface_selected = hsl_to_rgb(h, s.min(0.15), 0.92);
+    colors.background = rgb_to_hex(&bg);
+    colors.background_secondary = rgb_to_hex(&bg2);
+    colors.surface = rgb_to_hex(&surface);
+    colors.surface_raised = rgb_to_hex(&surface_raised);
+    colors.surface_hover = rgb_to_hex(&surface_hover);
+    colors.surface_selected = rgb_to_hex(&surface_selected);
+    colors.text_primary = "#161614".into();
+    colors.text_secondary = "#4c4c47".into();
+    colors.text_muted = "#777770".into();
+    colors.border = rgb_to_hex(&hsl_to_rgb(h, s.min(0.12), 0.84));
+    colors.border_strong = rgb_to_hex(&hsl_to_rgb(h, s.min(0.12), 0.72));
+  }
+
+  // Accent with contrast safeguard.
+  let accent_l = if dark_theme { 0.72 } else { 0.42 };
+  let accent = hsl_to_rgb(accent_h, accent_s.clamp(0.4, 0.85), accent_l);
+  let accent_hover = hsl_to_rgb(accent_h, accent_s.clamp(0.4, 0.85), (accent_l + 0.08).min(1.0));
+  let accent_muted = hsl_to_rgb(accent_h, (accent_s * 0.4).max(0.15), if dark_theme { 0.22 } else { 0.88 });
+  colors.accent = rgb_to_hex(&accent);
+  colors.accent_hover = rgb_to_hex(&accent_hover);
+  colors.accent_muted = rgb_to_hex(&accent_muted);
+  colors.focus_ring = colors.accent.clone();
+  colors.playhead = colors.accent.clone();
+  colors.timeline_selection = format!("{}33", &colors.accent[..7]);
+  colors.success = "#3ddc84".into();
+  colors.warning = "#ffb020".into();
+  colors.danger = "#ff5d5d".into();
+  colors.info = colors.accent.clone();
+  colors.buffer = colors.accent.clone();
+  colors.recording = "#ff4d4d".into();
+  colors.timeline_track = colors.surface.clone();
+  colors.overlay = if dark_theme { "#000000b3".into() } else { "#00000066".into() };
+
+  // Contrast safeguard: ensure primary text clears 4.5:1.
+  let mut guard = 0;
+  while guard < 8 && contrast_ratio_hex(&colors.text_primary, &colors.background) < 4.5 {
+    if dark_theme {
+      // lighten text
+      let (r, g, b) = hex_to_rgb_u8(&colors.text_primary);
+      colors.text_primary = rgb_to_hex(&[r.saturating_add(12), g.saturating_add(12), b.saturating_add(12)]);
+    } else {
+      let (r, g, b) = hex_to_rgb_u8(&colors.text_primary);
+      colors.text_primary = rgb_to_hex(&[r.saturating_sub(12), g.saturating_sub(12), b.saturating_sub(12)]);
+    }
+    guard += 1;
+  }
+  colors
+}
+
+fn rgb_to_hsl(rgb: &[u8; 3]) -> (f64, f64, f64) {
+  let r = rgb[0] as f64 / 255.0;
+  let g = rgb[1] as f64 / 255.0;
+  let b = rgb[2] as f64 / 255.0;
+  let max = r.max(g).max(b);
+  let min = r.min(g).min(b);
+  let l = (max + min) / 2.0;
+  if (max - min).abs() < f64::EPSILON {
+    return (0.0, 0.0, l);
+  }
+  let d = max - min;
+  let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+  let h = if (max - r).abs() < f64::EPSILON {
+    (g - b) / d + if g < b { 6.0 } else { 0.0 }
+  } else if (max - g).abs() < f64::EPSILON {
+    (b - r) / d + 2.0
+  } else {
+    (r - g) / d + 4.0
+  };
+  (h * 60.0, s, l)
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> [u8; 3] {
+  if s.abs() < f64::EPSILON {
+    let v = (l * 255.0).round() as u8;
+    return [v, v, v];
+  }
+  let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+  let hp = h / 60.0;
+  let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+  let (r1, g1, b1) = if hp < 1.0 {
+    (c, x, 0.0)
+  } else if hp < 2.0 {
+    (x, c, 0.0)
+  } else if hp < 3.0 {
+    (0.0, c, x)
+  } else if hp < 4.0 {
+    (0.0, x, c)
+  } else if hp < 5.0 {
+    (x, 0.0, c)
+  } else {
+    (c, 0.0, x)
+  };
+  let m = l - c / 2.0;
+  [
+    ((r1 + m) * 255.0).round() as u8,
+    ((g1 + m) * 255.0).round() as u8,
+    ((b1 + m) * 255.0).round() as u8,
+  ]
+}
+
+fn rgb_to_hex(rgb: &[u8; 3]) -> String {
+  format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+}
+
+fn hex_to_rgb_u8(hex: &str) -> (u8, u8, u8) {
+  if hex.len() >= 7 {
+    (
+      u8::from_str_radix(&hex[1..3], 16).unwrap_or(0),
+      u8::from_str_radix(&hex[3..5], 16).unwrap_or(0),
+      u8::from_str_radix(&hex[5..7], 16).unwrap_or(0),
+    )
+  } else {
+    (0, 0, 0)
+  }
+}
+
+fn contrast_ratio_hex(fg: &str, bg: &str) -> f64 {
+  let (r1, g1, b1) = hex_to_rgb_u8(fg);
+  let (r2, g2, b2) = hex_to_rgb_u8(bg);
+  fn channel(v: u8) -> f64 {
+    let n = v as f64 / 255.0;
+    if n <= 0.03928 { n / 12.92 } else { ((n + 0.055) / 1.055).powf(2.4) }
+  }
+  let l1 = 0.2126 * channel(r1) + 0.7152 * channel(g1) + 0.0722 * channel(b1);
+  let l2 = 0.2126 * channel(r2) + 0.7152 * channel(g2) + 0.0722 * channel(b2);
+  let a = l1 + 0.05;
+  let b = l2 + 0.05;
+  if a > b { a / b } else { b / a }
+}
+
 pub fn referenced_assets(theme: &Theme) -> Vec<String> {
   let mut assets = Vec::new();
   if let Some(image) = &theme.background.image {
@@ -1944,5 +2211,34 @@ mod tests {
     let newer = make_package("assets/backgrounds/ok.png", THEME_SCHEMA_VERSION + 1);
     assert!(import_package(&newer).is_err());
     let _ = std::fs::remove_file(&newer);
+  }
+
+  #[test]
+  fn adaptive_palette_is_deterministic() {
+    let pixels = vec![[10u8, 20, 40]; 100];
+    let a = palette_from_pixels(&pixels);
+    let b = palette_from_pixels(&pixels);
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn adaptive_palette_keeps_text_readable_on_dark_wallpaper() {
+    let pixels = vec![[8u8, 12, 24]; 100];
+    let colors = palette_from_pixels(&pixels);
+    // Dark canvas => light text with adequate contrast.
+    assert!(contrast_ratio(&colors.text_primary, &colors.background).unwrap_or(0.0) >= 4.5);
+  }
+
+  #[test]
+  fn adaptive_palette_keeps_text_readable_on_light_wallpaper() {
+    let pixels = vec![[230u8, 235, 240]; 100];
+    let colors = palette_from_pixels(&pixels);
+    assert!(contrast_ratio(&colors.text_primary, &colors.background).unwrap_or(0.0) >= 4.5);
+  }
+
+  #[test]
+  fn adaptive_palette_handles_empty_input() {
+    let colors = palette_from_pixels(&[]);
+    assert_eq!(colors, ThemeColors::default());
   }
 }

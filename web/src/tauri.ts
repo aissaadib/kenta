@@ -634,9 +634,10 @@ export interface ThemeBackground {
   gradient_from: string;
   gradient_to: string;
   image: string | null;
-  fit: "cover" | "contain";
+  fit: "cover" | "contain" | "fill" | "center";
   opacity: number;
   blur: number;
+  adaptive: boolean;
 }
 
 export interface ThemeIcons {
@@ -745,6 +746,10 @@ export function appearancePickImage(
 
 export function appearancePickSound(): Promise<ImportedAsset | null> {
   return invoke("appearance_pick_sound");
+}
+
+export function appearanceAnalyzeWallpaper(relative: string): Promise<ThemeColors> {
+  return invoke("appearance_analyze_wallpaper", { relative });
 }
 
 export function appearanceExportTheme(theme: AppearanceTheme): Promise<string | null> {

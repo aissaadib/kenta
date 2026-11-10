@@ -1,4 +1,4 @@
-use crate::appearance::{self, AppearanceConfig, Theme};
+use crate::appearance::{self, AppearanceConfig, Theme, ThemeColors};
 use crate::autostart;
 use crate::capture::{
   self, export_plan, CaptureBackend, CaptureConfig, CaptureEngine, CaptureState, SaveResult,
@@ -503,7 +503,7 @@ impl VoiceSink for VoiceBridge {
     if let Err(outcome) = voice_save_gate(capture_state.as_ref()) {
       return outcome;
     }
-    match perform_save_replay(&self.app, Some(seconds)) {
+    match perform_save_replay_cued(&self.app, Some(seconds), true) {
       Ok(_) => {
         // Show the on-screen clip icon if the user enabled it.
         let settings = state.settings.lock().unwrap().clone();
@@ -630,6 +630,25 @@ pub async fn voice_test(
 }
 
 pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<SaveResult, String> {
+  perform_save_replay_cued(app, seconds, false)
+}
+
+/// Which cue a successful save plays. A hands-free save can use its own cue, but
+/// only when the user enabled one: the two are alternatives, never a pair, so a
+/// single save cannot play two sounds over each other.
+fn saved_cue_event(voice: bool, voice_cue_enabled: bool) -> &'static str {
+  if voice && voice_cue_enabled {
+    "voice_clip_saved"
+  } else {
+    "clip_saved"
+  }
+}
+
+fn perform_save_replay_cued(
+  app: &AppHandle,
+  seconds: Option<u32>,
+  voice: bool,
+) -> Result<SaveResult, String> {
   let state = app.state::<AppState>();
   let state: &AppState = &state;
   wait_for_capture_start(state);
@@ -667,7 +686,23 @@ pub fn perform_save_replay(app: &AppHandle, seconds: Option<u32>) -> Result<Save
         maybe_auto_upload(state, &clip);
       }
       // Only after the file and its library row exist.
-      confirm_saved(state);
+      let voice_cue = state
+        .appearance
+        .lock()
+        .ok()
+        .and_then(|appearance| {
+          appearance
+            .active()
+            .sounds
+            .event("voice_clip_saved")
+            .map(|event| event.enabled && event.volume > 0)
+        })
+        .unwrap_or(false);
+      if saved_cue_event(voice, voice_cue) == "voice_clip_saved" {
+        play_event_for_state(state, "voice_clip_saved");
+      } else {
+        confirm_saved(state);
+      }
     }
     Err(error) => {
       let _ = app.emit("app-error", error.clone());
@@ -2765,6 +2800,12 @@ pub fn preview_appearance_sound(
 }
 
 #[tauri::command]
+pub fn appearance_analyze_wallpaper(relative: String) -> Result<ThemeColors, String> {
+  appearance::analyze_wallpaper(&relative)
+    .map_err(|error| error.message())
+}
+
+#[tauri::command]
 pub fn appearance_pick_image(
   kind: String,
 ) -> Result<Option<appearance::ImportedAsset>, String> {
@@ -2868,6 +2909,14 @@ pub fn initial_settings() -> (Settings, Vec<String>) {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn a_voice_save_uses_its_own_cue_only_when_one_is_enabled() {
+    assert_eq!(saved_cue_event(true, true), "voice_clip_saved");
+    assert_eq!(saved_cue_event(true, false), "clip_saved");
+    assert_eq!(saved_cue_event(false, true), "clip_saved");
+    assert_eq!(saved_cue_event(false, false), "clip_saved");
+  }
 
   #[test]
   fn voice_can_only_clip_a_buffering_replay() {

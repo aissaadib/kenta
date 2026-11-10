@@ -227,7 +227,13 @@ export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
   } else {
     style.setProperty("--app-bg-image", "none");
   }
-  style.setProperty("--app-bg-size", theme.background.fit);
+  const bgSize =
+    theme.background.fit === "fill"
+      ? "100% 100%"
+      : theme.background.fit === "center"
+        ? "auto"
+        : theme.background.fit;
+  style.setProperty("--app-bg-size", bgSize);
   style.setProperty("--app-bg-opacity", `${theme.background.opacity / 100}`);
   style.setProperty("--app-bg-blur", `${theme.background.blur}px`);
 }
