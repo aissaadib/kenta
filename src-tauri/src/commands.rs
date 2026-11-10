@@ -1,4 +1,4 @@
-use crate::appearance::{self, AppearanceConfig, Theme};
+use crate::appearance::{self, AppearanceConfig, Theme, ThemeColors};
 use crate::autostart;
 use crate::capture::{
   self, export_plan, CaptureBackend, CaptureConfig, CaptureEngine, CaptureState, SaveResult,
@@ -2797,6 +2797,12 @@ pub fn preview_appearance_sound(
     sound::play_sound(sound::SoundKind::from_str(&kind), volume.min(100));
   }
   Ok(volume > 0)
+}
+
+#[tauri::command]
+pub fn appearance_analyze_wallpaper(relative: String) -> Result<ThemeColors, String> {
+  appearance::analyze_wallpaper(&relative)
+    .map_err(|error| error.message())
 }
 
 #[tauri::command]
