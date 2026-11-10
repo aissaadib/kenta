@@ -198,7 +198,7 @@ a {
   flex-direction: column;
   gap: 20px;
   padding: 16px 12px;
-  background: var(--bg-soft);
+  background: transparent;
   border-right: 1px solid var(--border);
   transition: width var(--motion-duration) var(--ease), flex-basis var(--motion-duration) var(--ease);
 }
@@ -363,7 +363,7 @@ a {
   gap: 16px;
   padding: 0 calc(28px * var(--ui-scale, 1));
   border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  background: transparent;
 }
 
 .topbar-heading {
