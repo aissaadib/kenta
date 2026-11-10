@@ -191,6 +191,25 @@ a {
   z-index: 1;
 }
 
+/* When a wallpaper is active, every surface becomes a translucent scrim so the
+   image shows through the whole window; backdrop blur keeps text readable. */
+html[data-bg-image="true"] .app-shell,
+html[data-bg-image="true"] .sidebar,
+html[data-bg-image="true"] .topbar,
+html[data-bg-image="true"] .main,
+html[data-bg-image="true"] .view,
+html[data-bg-image="true"] .view-slot,
+html[data-bg-image="true"] .appearance-panel,
+html[data-bg-image="true"] .appearance-section,
+html[data-bg-image="true"] .appearance-section-body,
+html[data-bg-image="true"] .settings-section,
+html[data-bg-image="true"] .clip-card,
+html[data-bg-image="true"] .theme-card,
+html[data-bg-image="true"] .theme-preview {
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+}
+
 .sidebar {
   width: var(--sidebar-width, 248px);
   flex: 0 0 var(--sidebar-width, 248px);

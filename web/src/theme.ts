@@ -214,6 +214,8 @@ export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
   root.dataset.sidebar = theme.layout.sidebar_icon_only ? "icons" : "full";
   root.dataset.iconPack = theme.icons.pack;
   root.dataset.theme = theme.id;
+  root.dataset.bgImage =
+    theme.background.kind === "image" && !!theme.background.image ? "true" : "false";
   style.colorScheme = luminance(colors.background) > 0.45 ? "light" : "dark";
 
   if (theme.background.kind === "image" && theme.background.image) {
@@ -236,6 +238,19 @@ export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
   style.setProperty("--app-bg-size", bgSize);
   style.setProperty("--app-bg-opacity", `${theme.background.opacity / 100}`);
   style.setProperty("--app-bg-blur", `${theme.background.blur}px`);
+
+  // When a wallpaper is active, let it show through the chrome and panels so
+  // the whole window reflects the image, while the adaptive palette keeps text
+  // readable. Surfaces become translucent scrims with blur.
+  const wallpaperActive = theme.background.kind === "image" && !!theme.background.image;
+  if (wallpaperActive) {
+    style.setProperty("--bg", rgba(colors.background, 0.35));
+    style.setProperty("--bg-soft", rgba(colors.background_secondary, 0.3));
+    style.setProperty("--panel", rgba(colors.surface, 0.55));
+    style.setProperty("--panel-raised", rgba(colors.surface_raised, 0.62));
+    style.setProperty("--panel-hover", rgba(colors.surface_hover, 0.6));
+    style.setProperty("--surface-selected", rgba(colors.surface_selected, 0.62));
+  }
 }
 
 export function cloneTheme(theme: AppearanceTheme): AppearanceTheme {
