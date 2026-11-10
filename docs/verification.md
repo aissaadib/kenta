@@ -17,6 +17,7 @@ listed explicitly under "Not verified"; nothing in this file is inferred.
 | `npm run lint` (web, oxlint) | 0 errors, 7 warnings. The warnings are React Compiler advisories about effect-driven state, not correctness failures. |
 | `npm run build` (web) | Succeeds; `index-*.js` 389.90 kB (113.68 kB gzip), `index-*.css` 60.67 kB (11.18 kB gzip). |
 | `cargo test --lib` | 236 passed, 0 failed, 4 ignored. |
+| `cargo test --release --lib` | 237 passed, 0 failed, 4 ignored (release profile, 12.76 s). |
 | `cargo tauri build --bundles nsis` | Exit 0. Rust compile 5m 35s. `kenta.exe` 12,562,432 bytes. Installer 97,865,826 bytes (93.33 MiB). |
 
 ## What the tests actually cover
@@ -43,7 +44,13 @@ Rust library tests exercise behaviour, not rendering:
 - Typography, density, corner style, motion, sidebar width and icon-only mode
   all map to generated tokens or `data-*` attributes.
 - Sound events: `clip_saved`, `recording_started`, `recording_stopped`,
-  `voice_clip_saved`, each with enable, volume, and preview.
+  `voice_clip_saved`, `upload_completed`, `upload_failed`, each with enable,
+  kind, custom file, volume and preview. Every one is played by a real code
+  path: saves and manual recording starts/stops cue from the capture commands,
+  upload results cue from the uploader's status sink (de-duplicated so a
+  progress tick cannot replay the completion cue), and a hands-free save uses
+  `voice_clip_saved` instead of the generic chime when that event is enabled,
+  so one save never plays two sounds.
 - Music: one `HTMLAudioElement` created once in `MusicProvider`, mounted above
   every view in `App.tsx`, so playback survives view switches; it is torn down
   with the window.

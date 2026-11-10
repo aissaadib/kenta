@@ -95,7 +95,7 @@ const SOUND_EVENTS: { key: keyof ThemeSounds; label: string; hint: string }[] = 
   {
     key: "voice_clip_saved",
     label: "Voice clip saved",
-    hint: "When a spoken phrase saves a clip.",
+    hint: "When a spoken phrase saves a clip. When enabled it replaces the clip-saved cue for that save, so a save never plays two sounds.",
   },
   {
     key: "upload_completed",
