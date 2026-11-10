@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import {
   appearancePickImage,
+  appearanceAnalyzeWallpaper,
   appearancePickSound,
   previewAppearanceSound,
   previewAppearanceTheme,
@@ -919,6 +920,8 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
                     options={[
                       { value: "cover", label: "Cover" },
                       { value: "contain", label: "Contain" },
+                      { value: "fill", label: "Fill" },
+                      { value: "center", label: "Center" },
                     ]}
                     onChange={(value) => edit((theme) => (theme.background.fit = value))}
                   />
@@ -953,6 +956,45 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
                   />
                   <span className="mono">{draft.background.blur}px</span>
                 </label>
+
+                <div className="appearance-field-row">
+                  <span className="appearance-field-label">Adaptive colors</span>
+                  <Switch
+                    checked={draft.background.adaptive}
+                    onChange={(checked) =>
+                      edit((theme) => (theme.background.adaptive = checked))
+                    }
+                    label="Derive the palette from this wallpaper"
+                    description="When on, Kenta generates a coherent color scheme from the image. Manual color edits are kept until you recalculate."
+                  />
+                </div>
+                {draft.background.image ? (
+                  <div className="appearance-asset-actions">
+                    <button
+                      type="button"
+                      className="btn btn-quiet btn-sm"
+                      disabled={busy}
+                      onClick={async () => {
+                        if (!draft.background.image) return;
+                        setBusy(true);
+                        try {
+                          const colors = await appearanceAnalyzeWallpaper(draft.background.image);
+                          edit((theme) => {
+                            theme.colors = colors;
+                            theme.background.adaptive = true;
+                          });
+                          onNotify("success", "Palette generated", "Colors updated from the wallpaper.");
+                        } catch (reason) {
+                          onNotify("error", "Palette could not be generated", String(reason));
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} Generate palette
+                    </button>
+                  </div>
+                ) : null}
               </Section>
             </>
           ) : null}
