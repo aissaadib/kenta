@@ -43,6 +43,11 @@ Rust library tests exercise behaviour, not rendering:
 - Background: solid, gradient, or managed image asset, with fit and opacity.
 - Typography, density, corner style, motion, sidebar width and icon-only mode
   all map to generated tokens or `data-*` attributes.
+- Icon packs are four real choices, drawn in CSS rather than by swapping
+  components: each pack sets stroke width and cap style, and Solid adds a faint
+  interior tint to every lucide glyph. Checked against the built stylesheet by
+  reading computed style for a lucide-shaped SVG: Kenta 2px/round, Outline
+  1.5px/butt, Solid 2.6px/square with tint, Rounded 2.2px/round.
 - Sound events: `clip_saved`, `recording_started`, `recording_stopped`,
   `voice_clip_saved`, `upload_completed`, `upload_failed`, each with enable,
   kind, custom file, volume and preview. Every one is played by a real code
@@ -107,3 +112,11 @@ These need a running native window or a separate machine:
 - System media transport controls (not implemented).
 - Behaviour of the workflow in `.github/workflows/release.yml`, which was never
   executed.
+
+## Installer
+
+`Kenta-Release/Kenta_Installer.exe` — 97,923,666 bytes (93.39 MiB), product and
+file version 0.2.0, built from `21067f5`, SHA-256
+`19f8f83fffe9e958f11bc16bc02405ddf824059c9eb5dd1d17b7503e223b2b0e`. Checked
+with `sha256sum -c` and `Get-FileHash`, which agree. Installing it, upgrading an
+existing install and uninstalling were not performed here.
