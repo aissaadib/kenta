@@ -1,4 +1,4 @@
-import type { AppearanceTheme, ThemeColors } from "./tauri";
+import type { AppearanceTheme, ThemeColors, Wallpaper } from "./tauri";
 import { themeAssetSrc } from "./tauri";
 
 export interface ColorTokenMeta {
@@ -78,9 +78,13 @@ export function contrastLevel(ratio: number): ContrastLevel {
   return "Fail";
 }
 
-/** Text that reads clearly on any accent fill. */
+/** Text that reads clearly on any accent fill. Compare both candidates instead
+ * of guessing from luminance: saturated mid-tones such as pink can prefer dark
+ * ink even though the surface is not formally "light". */
 export function readableInk(background: string): string {
-  return luminance(background) > 0.45 ? "#111111" : "#ffffff";
+  const dark = "#111111";
+  const light = "#ffffff";
+  return contrastRatio(dark, background) >= contrastRatio(light, background) ? dark : light;
 }
 
 /** Nudge a foreground toward white or black until it clears 4.5:1. */
@@ -141,21 +145,139 @@ function radiusFor(style: string): [string, string, string] {
   return ["10px", "7px", "5px"];
 }
 
-/** Apply the entire semantic token set to the document. */
-export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
+/** Apply the entire semantic token set to the document.
+ *
+ * `wallpaper` is app-wide, not part of the theme. When an image is active it
+ * decides whether surfaces are translucent and which palette is in force.
+ * Manual accent overrides win in both preset and wallpaper color modes. */
+export function applyTheme(
+  theme: AppearanceTheme,
+  assetsDir: string,
+  wallpaper?: Wallpaper | null,
+): void {
   const root = document.documentElement;
-  const colors = theme.colors;
   const style = root.style;
+  const wallpaperActive = Boolean(wallpaper?.image);
+  // A preset solid or gradient is a real backdrop, not just paint behind the
+  // shell. When it is allowed through (the default), the same material engine
+  // that handles an image also reveals it through every surface. High Contrast
+  // opts out so its panels stay fully opaque.
+  const canvasActive = !wallpaperActive && theme.background.show_through !== false;
+  const glassActive = wallpaperActive || canvasActive;
+  const paletteActive = Boolean(
+    wallpaperActive &&
+      wallpaper?.mode === "wallpaper" &&
+      wallpaper.adaptive &&
+      wallpaper.palette,
+  );
+  const colors: ThemeColors = paletteActive && wallpaper?.palette
+    ? { ...wallpaper.palette }
+    : { ...theme.colors };
 
-  style.setProperty("--bg", colors.background);
-  style.setProperty("--bg-soft", colors.background_secondary);
-  style.setProperty("--panel", colors.surface);
-  style.setProperty("--panel-raised", colors.surface_raised);
-  style.setProperty("--panel-hover", colors.surface_hover);
-  style.setProperty("--surface-selected", colors.surface_selected);
-  style.setProperty("--divider", colors.border);
-  style.setProperty("--border", colors.border);
-  style.setProperty("--border-strong", colors.border_strong);
+  if (wallpaperActive && wallpaper?.accent) {
+    const accent = wallpaper.accent.slice(0, 7);
+    colors.accent = accent;
+    colors.focus_ring = accent;
+    colors.playhead = accent;
+    const rgb = hexToRgb(accent);
+    if (rgb) {
+      const mix = (target: number, amount: number) =>
+        `#${rgb
+          .map((value) =>
+            Math.round(value + (target - value) * amount)
+              .toString(16)
+              .padStart(2, "0"),
+          )
+          .join("")}`;
+      colors.accent_hover = mix(255, 0.18);
+      colors.accent_muted = mix(0, 0.62);
+      colors.timeline_selection = `${accent}33`;
+    }
+  }
+
+  // Surface alpha is literal: 0 = the image alone, 100 = a solid surface.
+  // Named transparency modes are a promise about legibility, so they carry a
+  // per-surface floor. The manual slider can go higher; only disabling the
+  // safeguard removes the floor and lets the image show through unmodified.
+  const baseAlpha = glassActive
+    ? Math.min(1, Math.max(0, (wallpaper?.surface_opacity ?? 55) / 100))
+    : 1;
+  const transparencyMode = wallpaper?.transparency ?? "balanced";
+  const safeguard = glassActive && wallpaper?.safeguard !== false;
+  const floors =
+    transparencyMode === "readable"
+      ? { root: 0.8, sidebar: 0.88, nav: 0.88, panel: 0.94, strong: 0.98, menu: 1, dialog: 1, input: 0.96, hover: 0.9, selected: 0.94 }
+      : transparencyMode === "immersive"
+        ? { root: 0.62, sidebar: 0.68, nav: 0.68, panel: 0.74, strong: 0.82, menu: 0.86, dialog: 0.9, input: 0.78, hover: 0.68, selected: 0.74 }
+        : { root: 0.68, sidebar: 0.72, nav: 0.72, panel: 0.78, strong: 0.86, menu: 0.9, dialog: 0.94, input: 0.82, hover: 0.72, selected: 0.78 };
+  const alpha = (key: keyof typeof floors, delta = 0) => {
+    const raw = Math.min(1, baseAlpha + delta);
+    return safeguard ? Math.max(raw, floors[key]) : raw;
+  };
+  const solid = (value: string) => value;
+  const translucent = (value: string, amount: number) =>
+    amount >= 0.999 ? value : rgba(value.slice(0, 7), amount);
+
+  const surfaceRoot = glassActive
+    ? translucent(colors.background, alpha("root"))
+    : solid(colors.background);
+  const surfaceSidebar = glassActive
+    ? translucent(colors.background_secondary, alpha("sidebar", 0.06))
+    : solid(colors.background_secondary);
+  const surfaceNav = glassActive
+    ? translucent(colors.background, alpha("nav", 0.06))
+    : solid(colors.background);
+  const surfacePanel = glassActive
+    ? translucent(colors.surface, alpha("panel", 0.12))
+    : solid(colors.surface);
+  const surfacePanelStrong = glassActive
+    ? translucent(colors.surface_raised, alpha("strong", 0.18))
+    : solid(colors.surface_raised);
+  const surfaceMenu = glassActive
+    ? translucent(colors.surface_raised, alpha("menu", 0.22))
+    : solid(colors.surface_raised);
+  const surfaceDialog = glassActive
+    ? translucent(colors.surface_raised, alpha("dialog", 0.26))
+    : solid(colors.surface_raised);
+  const surfaceInput = glassActive
+    ? translucent(colors.background_secondary, alpha("input", 0.15))
+    : solid(colors.background_secondary);
+  const surfaceHover = glassActive
+    ? translucent(colors.surface_hover, alpha("hover", 0.1))
+    : solid(colors.surface_hover);
+  const surfaceSelected = glassActive
+    ? translucent(colors.surface_selected, alpha("selected", 0.14))
+    : solid(colors.surface_selected);
+  const surfaceBorder = glassActive
+    ? rgba(colors.border, Math.min(1, 0.42 + baseAlpha * 0.3))
+    : solid(colors.border);
+  const surfaceDivider = glassActive
+    ? rgba(colors.border, 0.24 + baseAlpha * 0.16)
+    : solid(colors.border);
+
+  style.setProperty("--surface-root", surfaceRoot);
+  style.setProperty("--surface-sidebar", surfaceSidebar);
+  style.setProperty("--surface-nav", surfaceNav);
+  style.setProperty("--surface-panel", surfacePanel);
+  style.setProperty("--surface-panel-strong", surfacePanelStrong);
+  style.setProperty("--surface-menu", surfaceMenu);
+  style.setProperty("--surface-dialog", surfaceDialog);
+  style.setProperty("--surface-input", surfaceInput);
+  style.setProperty("--surface-hover", surfaceHover);
+  style.setProperty("--surface-selected", surfaceSelected);
+  style.setProperty("--surface-border", surfaceBorder);
+  style.setProperty("--surface-divider", surfaceDivider);
+
+  // Existing component tokens are aliases of the material tokens above, so a
+  // surface never has to know whether a wallpaper is active.
+  style.setProperty("--bg", surfaceRoot);
+  style.setProperty("--bg-soft", surfaceSidebar);
+  style.setProperty("--panel", surfacePanel);
+  style.setProperty("--panel-raised", surfacePanelStrong);
+  style.setProperty("--panel-hover", surfaceHover);
+  style.setProperty("--divider", surfaceDivider);
+  style.setProperty("--border", surfaceBorder);
+  style.setProperty("--border-strong", glassActive ? rgba(colors.border_strong, 0.72) : colors.border_strong);
   style.setProperty("--text", colors.text_primary);
   style.setProperty("--text-soft", colors.text_secondary);
   style.setProperty("--muted", colors.text_muted);
@@ -167,16 +289,16 @@ export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
   // light theme would keep dark-on-dark button labels.
   style.setProperty("--danger-ink", readableInk(colors.danger));
   style.setProperty("--warn-ink", readableInk(colors.warning));
-  style.setProperty("--accent-soft", rgba(colors.accent, 0.12));
+  style.setProperty("--accent-soft", rgba(colors.accent, glassActive ? 0.2 : 0.12));
   style.setProperty("--accent-muted", colors.accent_muted);
   style.setProperty("--danger", colors.danger);
-  style.setProperty("--danger-soft", rgba(colors.danger, 0.12));
+  style.setProperty("--danger-soft", rgba(colors.danger, glassActive ? 0.2 : 0.12));
   style.setProperty("--warn", colors.warning);
-  style.setProperty("--warn-soft", rgba(colors.warning, 0.12));
+  style.setProperty("--warn-soft", rgba(colors.warning, glassActive ? 0.2 : 0.12));
   style.setProperty("--info", colors.info);
-  style.setProperty("--info-soft", rgba(colors.info, 0.12));
+  style.setProperty("--info-soft", rgba(colors.info, glassActive ? 0.2 : 0.12));
   style.setProperty("--success", colors.success);
-  style.setProperty("--success-soft", rgba(colors.success, 0.12));
+  style.setProperty("--success-soft", rgba(colors.success, glassActive ? 0.2 : 0.12));
   style.setProperty("--recording", colors.recording);
   style.setProperty("--buffer", colors.buffer);
   style.setProperty("--focus-ring", colors.focus_ring);
@@ -189,14 +311,53 @@ export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
   // instead of adding invisible white. `--overlay` stays as authored because it
   // sits behind modal media, but these arbitrary UI tints do not.
   const dark = luminance(colors.background) <= 0.45;
-  const tint = (alpha: number) =>
-    dark ? `rgba(255, 255, 255, ${alpha})` : `rgba(0, 0, 0, ${alpha})`;
+  const tint = (alphaValue: number) =>
+    dark ? `rgba(255, 255, 255, ${alphaValue})` : `rgba(0, 0, 0, ${alphaValue})`;
   style.setProperty("--tint-faint", tint(0.024));
   style.setProperty("--tint-weak", tint(0.045));
   style.setProperty("--tint", tint(0.065));
   style.setProperty("--tint-strong", tint(0.09));
   style.setProperty("--tint-edge", tint(0.17));
   style.setProperty("--shadow-color", dark ? "rgba(0, 0, 0, 0.55)" : "rgba(15, 23, 42, 0.16)");
+
+  // The scrim is always present, but only when a wallpaper is active. It gives
+  // every transparency mode a minimum readability floor while the image stays
+  // visible. Contrast strengthens it; dimming also darkens the image itself.
+  const dim = wallpaper?.dim ?? 0;
+  const contrast = wallpaper?.contrast ?? 55;
+  const scrimBias =
+    transparencyMode === "immersive" ? -0.04 : transparencyMode === "readable" ? 0.08 : 0;
+  const scrimFloor = safeguard
+    ? transparencyMode === "immersive"
+      ? 0.26
+      : transparencyMode === "readable"
+        ? 0.4
+        : 0.33
+    : 0;
+  const scrimAlpha = wallpaperActive
+    ? Math.min(
+        0.72,
+        Math.max(
+          scrimFloor,
+          0.12 + (contrast / 100) * 0.35 + (dim / 100) * 0.18 + scrimBias,
+        ),
+      )
+    : 0;
+  style.setProperty(
+    "--wallpaper-scrim",
+    wallpaperActive ? rgba(colors.background, scrimAlpha) : "transparent",
+  );
+  // Solid fallback under the crossfading frames. It uses the wallpaper palette
+  // when one is active and the preset canvas otherwise.
+  style.setProperty(
+    "--wallpaper-fallback",
+    wallpaperActive ? colors.background : "transparent",
+  );
+  const blur = wallpaper?.blur ?? 0;
+  style.setProperty(
+    "--wallpaper-image-filter",
+    `blur(${blur}px) saturate(1.06) brightness(${(1 - (dim / 100) * 0.5).toFixed(3)})`,
+  );
 
   const [radius, radiusSm, radiusXs] = radiusFor(theme.layout.corner_style);
   style.setProperty("--radius", radius);
@@ -214,42 +375,42 @@ export function applyTheme(theme: AppearanceTheme, assetsDir: string): void {
   root.dataset.sidebar = theme.layout.sidebar_icon_only ? "icons" : "full";
   root.dataset.iconPack = theme.icons.pack;
   root.dataset.theme = theme.id;
+  root.dataset.wallpaper = wallpaperActive ? "true" : "false";
+  // The preset canvas gets the same backdrop blur on floating surfaces, but it
+  // stays distinct from the image wallpaper in the data model.
+  root.dataset.canvas = canvasActive ? "true" : "false";
+  root.dataset.wallpaperMode = wallpaper?.mode ?? "preset";
+  root.dataset.wallpaperTransparency = wallpaper?.transparency ?? "balanced";
   root.dataset.bgImage =
-    theme.background.kind === "image" && !!theme.background.image ? "true" : "false";
+    wallpaperActive || (theme.background.kind === "image" && !!theme.background.image)
+      ? "true"
+      : "false";
   style.colorScheme = luminance(colors.background) > 0.45 ? "light" : "dark";
 
-  if (theme.background.kind === "image" && theme.background.image) {
+  // The app canvas only shows a preset background when no global wallpaper is
+  // active. Wallpaper always takes precedence, and selecting another preset
+  // cannot hide it.
+  if (wallpaperActive) {
+    style.setProperty("--app-canvas", "transparent");
+  } else if (theme.background.kind === "image" && theme.background.image) {
     const url = themeAssetSrc(assetsDir, theme.background.image);
-    style.setProperty("--app-bg-image", url ? `url("${url}")` : "none");
+    const bgSize =
+      theme.background.fit === "fill"
+        ? "100% 100%"
+        : theme.background.fit === "center"
+          ? "auto"
+          : theme.background.fit;
+    style.setProperty(
+      "--app-canvas",
+      url ? `url("${url}") center / ${bgSize} no-repeat` : colors.background,
+    );
   } else if (theme.background.kind === "gradient") {
     style.setProperty(
-      "--app-bg-image",
+      "--app-canvas",
       `linear-gradient(160deg, ${theme.background.gradient_from}, ${theme.background.gradient_to})`,
     );
   } else {
-    style.setProperty("--app-bg-image", "none");
-  }
-  const bgSize =
-    theme.background.fit === "fill"
-      ? "100% 100%"
-      : theme.background.fit === "center"
-        ? "auto"
-        : theme.background.fit;
-  style.setProperty("--app-bg-size", bgSize);
-  style.setProperty("--app-bg-opacity", `${theme.background.opacity / 100}`);
-  style.setProperty("--app-bg-blur", `${theme.background.blur}px`);
-
-  // When a wallpaper is active, let it show through the chrome and panels so
-  // the whole window reflects the image, while the adaptive palette keeps text
-  // readable. Surfaces become translucent scrims with blur.
-  const wallpaperActive = theme.background.kind === "image" && !!theme.background.image;
-  if (wallpaperActive) {
-    style.setProperty("--bg", rgba(colors.background, 0.35));
-    style.setProperty("--bg-soft", rgba(colors.background_secondary, 0.3));
-    style.setProperty("--panel", rgba(colors.surface, 0.55));
-    style.setProperty("--panel-raised", rgba(colors.surface_raised, 0.62));
-    style.setProperty("--panel-hover", rgba(colors.surface_hover, 0.6));
-    style.setProperty("--surface-selected", rgba(colors.surface_selected, 0.62));
+    style.setProperty("--app-canvas", colors.background);
   }
 }
 

@@ -23,6 +23,10 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 pub const THEME_SCHEMA_VERSION: u32 = 1;
+/// The appearance store gained a global wallpaper layer in schema 2. Themes
+/// keep their own solid/gradient canvas so a preset can still be exported on
+/// its own, but the wallpaper is app-wide and survives preset changes.
+pub const APPEARANCE_SCHEMA_VERSION: u32 = 2;
 pub const MAX_THEME_PACKAGE_BYTES: usize = 48 * 1024 * 1024;
 pub const MAX_PACKAGE_ENTRY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_ARCHIVE_ENTRIES: usize = 64;
@@ -30,7 +34,10 @@ pub const MAX_ARCHIVE_ENTRIES: usize = 64;
 /// package are limited individually, but this stops a highly compressed
 /// archive from expanding into an unbounded amount of memory.
 pub const MAX_UNPACKED_THEME_BYTES: usize = 96 * 1024 * 1024;
-pub const MAX_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
+/// Wallpaper originals are never re-encoded. A 4K photographic PNG can be
+/// larger than the old 12 MB limit, so give full-quality imports room while
+/// keeping the bounded decode below.
+pub const MAX_IMAGE_BYTES: u64 = 48 * 1024 * 1024;
 pub const MAX_ICON_DIMENSION: u32 = 1024;
 pub const MAX_BACKGROUND_DIMENSION: u32 = 8192;
 pub const MAX_CUSTOM_SOUND_BYTES: u64 = 6 * 1024 * 1024;
@@ -252,6 +259,11 @@ pub struct Background {
   pub blur: u8,
   /// When true, the wallpaper drives the theme's color tokens.
   pub adaptive: bool,
+  /// When true (the default), the preset canvas behaves like a wallpaper: it
+  /// stays behind every surface and the interface materials become translucent
+  /// over it. High Contrast disables this to keep its flat, maximally separated
+  /// panels. Only applies while no global wallpaper image is active.
+  pub show_through: bool,
 }
 
 impl Default for Background {
@@ -265,7 +277,149 @@ impl Default for Background {
       opacity: 100,
       blur: 0,
       adaptive: false,
+      show_through: true,
     }
+  }
+}
+
+/// App-wide wallpaper. This lives on `AppearanceConfig` instead of on a theme so
+/// selecting another preset can never hide or delete the user's image. The
+/// palette is generated once from a small downsample of the original and cached
+/// here; no tab ever decodes or analyses the image on its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Wallpaper {
+  /// Managed relative path inside `theme-assets/backgrounds`.
+  pub image: Option<String>,
+  /// "cover" | "contain" | "fill" | "center"
+  pub fit: String,
+  /// Focal position, 0..=100. Used for object-position and zoom origin.
+  pub position_x: u8,
+  pub position_y: u8,
+  /// 100..=200 percent. Cover keeps the aspect ratio; fill deliberately does
+  /// not, and the UI labels that before the user picks it.
+  pub zoom: u8,
+  /// 0..=80. A small readability scrim also stays active below this value.
+  pub dim: u8,
+  /// 0..=24. Off by default; retained for older configurations.
+  pub blur: u8,
+  /// "preset" | "wallpaper". Preset keeps the selected theme's colors while the
+  /// image remains visible; wallpaper applies the derived palette.
+  pub mode: String,
+  pub adaptive: bool,
+  /// "immersive" | "balanced" | "readable" | "custom"
+  pub transparency: String,
+  /// 0..=100. Higher values make surfaces more opaque. The three named modes
+  /// set sensible values; the slider can fine-tune them as "custom".
+  pub surface_opacity: u8,
+  /// 0..=100. Controls the strength of the adaptive readability scrim.
+  pub contrast: u8,
+  /// Keeps text-bearing surfaces above a contrast floor even in Immersive mode.
+  /// Turn it off for a fully manual, potentially less legible wallpaper.
+  pub safeguard: bool,
+  /// Optional manual accent override. Automatic when absent.
+  pub accent: Option<String>,
+  /// Cached semantic palette derived from the image. Persisted so startup never
+  /// has to analyse the wallpaper again.
+  pub palette: Option<ThemeColors>,
+}
+
+impl Default for Wallpaper {
+  fn default() -> Self {
+    Self {
+      image: None,
+      fit: "cover".into(),
+      position_x: 50,
+      position_y: 50,
+      zoom: 100,
+      dim: 18,
+      blur: 0,
+      mode: "wallpaper".into(),
+      adaptive: true,
+      transparency: "balanced".into(),
+      surface_opacity: 55,
+      contrast: 55,
+      safeguard: true,
+      accent: None,
+      palette: None,
+    }
+  }
+}
+
+impl Wallpaper {
+  pub fn is_active(&self) -> bool {
+    self.image.is_some()
+  }
+
+  /// Whether the derived palette is actually driving the interface.
+  pub fn palette_active(&self) -> bool {
+    self.is_active() && self.mode == "wallpaper" && self.adaptive && self.palette.is_some()
+  }
+
+  pub fn sanitize(&mut self) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if !matches!(self.fit.as_str(), "cover" | "contain" | "fill" | "center") {
+      warnings.push("Wallpaper fit was reset to cover.".into());
+      self.fit = "cover".into();
+    }
+    if !matches!(self.mode.as_str(), "preset" | "wallpaper") {
+      warnings.push("Wallpaper color mode was reset to wallpaper.".into());
+      self.mode = "wallpaper".into();
+    }
+    if !matches!(
+      self.transparency.as_str(),
+      "immersive" | "balanced" | "readable" | "custom"
+    ) {
+      warnings.push("Wallpaper transparency was reset to balanced.".into());
+      self.transparency = "balanced".into();
+    }
+    self.position_x = self.position_x.min(100);
+    self.position_y = self.position_y.min(100);
+    self.zoom = self.zoom.clamp(100, 200);
+    self.dim = self.dim.min(80);
+    self.blur = self.blur.min(24);
+    self.surface_opacity = self.surface_opacity.min(100);
+    self.contrast = self.contrast.min(100);
+
+    if let Some(accent) = self.accent.clone() {
+      if !is_hex(&accent) || accent.len() != 7 {
+        warnings.push("The manual wallpaper accent was invalid and was removed.".into());
+        self.accent = None;
+      } else {
+        self.accent = Some(hex(&accent));
+      }
+    }
+
+    if let Some(palette) = &mut self.palette {
+      warnings.extend(palette.sanitize());
+    }
+
+    if let Some(image) = self.image.clone() {
+      let path = validate_relative(&image)
+        .ok()
+        .filter(|_| is_image_asset(&image))
+        .and_then(|_| resolve_asset(&image).ok());
+      let exists = path.as_ref().map(|path| path.is_file()).unwrap_or(false);
+      // Existence is not enough: a renamed text file, a truncated download or a
+      // damaged disk can leave a `.jpg` that no decoder can read. Checking the
+      // header here is cheap and keeps a dead image from becoming a blank,
+      // fully transparent window at startup.
+      let valid = exists && path.as_ref().map(|path| decodable_image(path)).unwrap_or(false);
+      if !valid {
+        warnings.push(if exists {
+          "The wallpaper image could not be read and was removed.".into()
+        } else {
+          "The wallpaper image is missing and was removed.".into()
+        });
+        self.image = None;
+        self.palette = None;
+      }
+    }
+    if self.image.is_none() {
+      self.palette = None;
+      self.adaptive = false;
+    }
+    warnings
   }
 }
 
@@ -751,7 +905,10 @@ fn high_contrast() -> Theme {
   colors.timeline_track = "#404040".into();
   colors.timeline_selection = "#ffff0066".into();
   colors.playhead = "#ffff00".into();
-  preset("high-contrast", "High Contrast", colors)
+  let mut theme = preset("high-contrast", "High Contrast", colors);
+  // Accessibility preset: keep every panel fully opaque over the black canvas.
+  theme.background.show_through = false;
+  theme
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -761,14 +918,17 @@ pub struct AppearanceConfig {
   pub active_theme: String,
   /// User themes only. Built-ins are always generated.
   pub themes: Vec<Theme>,
+  /// One app-wide wallpaper shared by every tab and every preset.
+  pub wallpaper: Wallpaper,
 }
 
 impl Default for AppearanceConfig {
   fn default() -> Self {
     Self {
-      schema: THEME_SCHEMA_VERSION,
+      schema: APPEARANCE_SCHEMA_VERSION,
       active_theme: DEFAULT_THEME_ID.into(),
       themes: Vec::new(),
+      wallpaper: Wallpaper::default(),
     }
   }
 }
@@ -795,6 +955,28 @@ impl AppearanceConfig {
       .unwrap_or_else(Theme::default)
   }
 
+  /// The colors the running window actually uses. In wallpaper mode the cached
+  /// wallpaper palette replaces the preset palette, then an explicit manual
+  /// accent override wins over both. Kept in Rust as well as TypeScript so the
+  /// native title bar and the webview cannot disagree about the active colors.
+  pub fn effective_theme(&self) -> Theme {
+    let mut theme = self.active();
+    if self.wallpaper.palette_active() {
+      if let Some(palette) = &self.wallpaper.palette {
+        theme.colors = palette.clone();
+      }
+    }
+    if let Some(accent) = &self.wallpaper.accent {
+      theme.colors.accent = accent.clone();
+      theme.colors.accent_hover = shift_lightness(accent, 1.12);
+      theme.colors.accent_muted = shift_lightness(accent, 0.38);
+      theme.colors.focus_ring = accent.clone();
+      theme.colors.playhead = accent.clone();
+      theme.colors.timeline_selection = format!("{}33", &accent[..7]);
+    }
+    theme
+  }
+
   /// Built-ins first, then user themes. The UI uses this list directly.
   pub fn all_themes(&self) -> Vec<Theme> {
     let mut themes = builtin_themes();
@@ -804,13 +986,14 @@ impl AppearanceConfig {
 
   pub fn sanitize(&mut self) -> Vec<String> {
     let mut warnings = Vec::new();
-    if self.schema > THEME_SCHEMA_VERSION {
+    if self.schema > APPEARANCE_SCHEMA_VERSION {
       warnings.push(format!(
         "Appearance schema {} is newer than this build ({}).",
-        self.schema, THEME_SCHEMA_VERSION
+        self.schema, APPEARANCE_SCHEMA_VERSION
       ));
     }
-    self.schema = THEME_SCHEMA_VERSION;
+    self.schema = APPEARANCE_SCHEMA_VERSION;
+    warnings.extend(self.wallpaper.sanitize());
     self.themes.retain(|theme| {
       if theme.id.trim().is_empty() || builtin_themes().iter().any(|b| b.id == theme.id) {
         warnings.push(format!(
@@ -915,6 +1098,60 @@ pub fn ensure_asset_dirs() -> AppResult<()> {
   Ok(())
 }
 
+/// Schema 1 stored the wallpaper inside the active theme. Move it into the new
+/// global layer exactly once, leaving the original file on disk. A user who
+/// later removes the wallpaper is not fighting an automatic re-import, because
+/// the config schema has already advanced.
+pub fn migrate_wallpaper(config: &mut AppearanceConfig) -> Vec<String> {
+  if config.schema >= APPEARANCE_SCHEMA_VERSION || config.wallpaper.image.is_some() {
+    return Vec::new();
+  }
+  let active_id = config.active_theme.clone();
+  let Some(theme) = config.themes.iter_mut().find(|theme| theme.id == active_id) else {
+    return Vec::new();
+  };
+  let Some(image) = theme.background.image.clone() else {
+    return Vec::new();
+  };
+  config.wallpaper = Wallpaper {
+    image: Some(image),
+    fit: theme.background.fit.clone(),
+    blur: theme.background.blur,
+    adaptive: theme.background.adaptive,
+    mode: if theme.background.adaptive { "wallpaper" } else { "preset" }.into(),
+    ..Wallpaper::default()
+  };
+  // Keep the theme's other canvas fields as a fallback, but stop pointing at an
+  // image the global layer now owns.
+  theme.background.image = None;
+  if theme.background.kind == "image" {
+    theme.background.kind = "solid".into();
+  }
+  if config.wallpaper.adaptive {
+    if let Some(relative) = config.wallpaper.image.clone() {
+      if let Ok(palette) = analyze_wallpaper(&relative) {
+        config.wallpaper.palette = Some(palette);
+      }
+    }
+  }
+  vec!["The previous background image was moved to Kenta's global wallpaper layer.".into()]
+}
+
+/// Read the stored configuration while the app state is being constructed,
+/// before any window can ask for it. This is deliberately read-only: corrupt
+/// files are left for `load` to recover so its warning is not lost, and the
+/// result is sanitized so the first paint can never apply an out-of-range
+/// value. The legacy wallpaper migration is in-memory only and safe to repeat.
+pub fn load_early() -> AppearanceConfig {
+  let mut config = fs::read_to_string(store_path())
+    .ok()
+    .and_then(|data| serde_json::from_str::<AppearanceConfig>(&data).ok())
+    .unwrap_or_default();
+  let _ = migrate_wallpaper(&mut config);
+  let _ = config.sanitize();
+  config
+}
+
 pub fn load() -> (AppearanceConfig, Vec<String>, bool) {
   let path = store_path();
   let fresh = !path.exists();
@@ -945,6 +1182,7 @@ pub fn load() -> (AppearanceConfig, Vec<String>, bool) {
       AppearanceConfig::default()
     }
   };
+  warnings.extend(migrate_wallpaper(&mut config));
   warnings.extend(config.sanitize());
   let _ = ensure_asset_dirs();
   (config, warnings, fresh)
@@ -958,7 +1196,7 @@ pub fn save(config: &AppearanceConfig) -> AppResult<()> {
       .map_err(|error| AppError::Storage(format!("Could not create config folder: {error}")))?;
   }
   let mut stored = config.clone();
-  stored.schema = THEME_SCHEMA_VERSION;
+  stored.schema = APPEARANCE_SCHEMA_VERSION;
   let data = serde_json::to_string_pretty(&stored)?;
   let temporary = path.with_extension("json.tmp");
   fs::write(&temporary, data)
@@ -1230,11 +1468,34 @@ pub struct ThemeManifest {
 
 pub const PACKAGE_FORMAT: &str = "kenta-theme";
 
-pub fn export_package(theme: &Theme, destination: &Path) -> AppResult<()> {
+/// Build the theme that goes into a `.kenta-theme` package. The wallpaper is
+/// excluded by default because it can be a large personal photo; the caller
+/// must opt in explicitly before it is added to the theme background.
+pub fn theme_for_package(theme: &Theme, wallpaper: Option<&Wallpaper>) -> Theme {
+  let mut packaged = theme.clone();
+  if let Some(wallpaper) = wallpaper {
+    if let Some(image) = &wallpaper.image {
+      packaged.background.kind = "image".into();
+      packaged.background.image = Some(image.clone());
+      packaged.background.fit = wallpaper.fit.clone();
+      packaged.background.blur = wallpaper.blur;
+      packaged.background.adaptive = wallpaper.adaptive;
+    }
+  }
+  packaged
+}
+
+pub fn export_package(
+  theme: &Theme,
+  wallpaper: Option<&Wallpaper>,
+  destination: &Path,
+) -> AppResult<()> {
+  let packaged_theme = theme_for_package(theme, wallpaper);
+  let assets = referenced_assets(&packaged_theme);
   let manifest = ThemeManifest {
     format: PACKAGE_FORMAT.into(),
     version: THEME_SCHEMA_VERSION,
-    theme: theme.clone(),
+    theme: packaged_theme,
   };
   let file = fs::File::create(destination)
     .map_err(|error| AppError::Storage(format!("Could not create the theme package: {error}")))?;
@@ -1250,7 +1511,6 @@ pub fn export_package(theme: &Theme, destination: &Path) -> AppResult<()> {
     .write_all(&manifest_json)
     .map_err(|error| AppError::Storage(format!("Could not write the theme manifest: {error}")))?;
 
-  let assets = referenced_assets(theme);
   let mut total_bytes = 0usize;
   for relative in assets {
     let source = resolve_asset(&relative)?;
@@ -1291,6 +1551,17 @@ fn is_image_asset(relative: &str) -> bool {
     .unwrap_or_default()
     .to_ascii_lowercase();
   matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "ico")
+}
+
+/// Cheap structural check: reads the image header, not every pixel. A full
+/// decode belongs to palette generation; this only has to prove that the file
+/// is a real image before it is allowed to cover the window.
+fn decodable_image(path: &Path) -> bool {
+  image::ImageReader::open(path)
+    .ok()
+    .and_then(|reader| reader.with_guessed_format().ok())
+    .and_then(|reader| reader.into_dimensions().ok())
+    .is_some()
 }
 
 fn is_sound_asset(relative: &str) -> bool {
@@ -1409,8 +1680,8 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
     colors.surface_hover = rgb_to_hex(&surface_hover);
     colors.surface_selected = rgb_to_hex(&surface_selected);
     colors.text_primary = "#f1f1ef".into();
-    colors.text_secondary = "#b9b9b4".into();
-    colors.text_muted = "#7f7f7a".into();
+    colors.text_secondary = "#c7c7c2".into();
+    colors.text_muted = "#b3b2ac".into();
     colors.border = rgb_to_hex(&hsl_to_rgb(h, s.min(0.2), 0.22));
     colors.border_strong = rgb_to_hex(&hsl_to_rgb(h, s.min(0.2), 0.30));
   } else {
@@ -1437,8 +1708,8 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
     colors.surface_hover = rgb_to_hex(&surface_hover);
     colors.surface_selected = rgb_to_hex(&surface_selected);
     colors.text_primary = "#161614".into();
-    colors.text_secondary = "#4c4c47".into();
-    colors.text_muted = "#777770".into();
+    colors.text_secondary = "#41413c".into();
+    colors.text_muted = "#62625b".into();
     colors.border = rgb_to_hex(&hsl_to_rgb(h, s.min(0.12), 0.84));
     colors.border_strong = rgb_to_hex(&hsl_to_rgb(h, s.min(0.12), 0.72));
   }
@@ -1463,20 +1734,45 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
   colors.timeline_track = colors.surface.clone();
   colors.overlay = if dark_theme { "#000000b3".into() } else { "#00000066".into() };
 
-  // Contrast safeguard: ensure primary text clears 4.5:1.
+  // Contrast safeguard: the three text tiers must all clear 4.5:1 against the
+  // strongest neutral surface there is, otherwise translucency would erode the
+  // guarantee further. Primary text is adjusted against the canvas, secondary
+  // and muted text against panels, where they are actually used.
   let mut guard = 0;
   while guard < 8 && contrast_ratio_hex(&colors.text_primary, &colors.background) < 4.5 {
-    if dark_theme {
-      // lighten text
-      let (r, g, b) = hex_to_rgb_u8(&colors.text_primary);
-      colors.text_primary = rgb_to_hex(&[r.saturating_add(12), g.saturating_add(12), b.saturating_add(12)]);
-    } else {
-      let (r, g, b) = hex_to_rgb_u8(&colors.text_primary);
-      colors.text_primary = rgb_to_hex(&[r.saturating_sub(12), g.saturating_sub(12), b.saturating_sub(12)]);
-    }
+    colors.text_primary = nudge_contrast(&colors.text_primary, dark_theme, 12);
+    guard += 1;
+  }
+  let mut guard = 0;
+  while guard < 8 && contrast_ratio_hex(&colors.text_secondary, &colors.surface) < 4.5 {
+    colors.text_secondary = nudge_contrast(&colors.text_secondary, dark_theme, 8);
+    guard += 1;
+  }
+  let mut guard = 0;
+  while guard < 8 && contrast_ratio_hex(&colors.text_muted, &colors.surface) < 4.5 {
+    colors.text_muted = nudge_contrast(&colors.text_muted, dark_theme, 8);
     guard += 1;
   }
   colors
+}
+
+/// Move a text colour toward white (dark themes) or black (light themes). The
+/// loop in `palette_from_pixels` stops as soon as the contrast target is met.
+fn nudge_contrast(value: &str, toward_light: bool, step: u8) -> String {
+  let (r, g, b) = hex_to_rgb_u8(value);
+  if toward_light {
+    rgb_to_hex(&[
+      r.saturating_add(step),
+      g.saturating_add(step),
+      b.saturating_add(step),
+    ])
+  } else {
+    rgb_to_hex(&[
+      r.saturating_sub(step),
+      g.saturating_sub(step),
+      b.saturating_sub(step),
+    ])
+  }
 }
 
 fn rgb_to_hsl(rgb: &[u8; 3]) -> (f64, f64, f64) {
@@ -1532,6 +1828,14 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> [u8; 3] {
 
 fn rgb_to_hex(rgb: &[u8; 3]) -> String {
   format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+}
+
+/// Scale a hex color's HSL lightness while keeping its hue and saturation.
+/// Used for the hover/muted companions of a manual accent override.
+fn shift_lightness(hex_value: &str, factor: f64) -> String {
+  let (r, g, b) = hex_to_rgb_u8(hex_value);
+  let (h, s, l) = rgb_to_hsl(&[r, g, b]);
+  rgb_to_hex(&hsl_to_rgb(h, s, (l * factor).clamp(0.08, 0.94)))
 }
 
 fn hex_to_rgb_u8(hex: &str) -> (u8, u8, u8) {
@@ -2105,7 +2409,7 @@ mod tests {
       "kenta-theme-{}.kenta-theme",
       uuid::Uuid::new_v4()
     ));
-    export_package(&theme, &package).unwrap();
+    export_package(&theme, None, &package).unwrap();
 
     // Import must not depend on the source machine's managed files.
     std::fs::remove_file(&image_path).unwrap();
@@ -2240,5 +2544,199 @@ mod tests {
   fn adaptive_palette_handles_empty_input() {
     let colors = palette_from_pixels(&[]);
     assert_eq!(colors, ThemeColors::default());
+  }
+
+  #[test]
+  fn wallpaper_sanitize_clamps_values_and_drops_a_missing_image() {
+    let mut wallpaper = Wallpaper {
+      image: Some("backgrounds/does-not-exist.png".into()),
+      fit: "stretch".into(),
+      position_x: 180,
+      position_y: 40,
+      zoom: 10,
+      dim: 200,
+      blur: 99,
+      mode: "sepia".into(),
+      transparency: "glassy".into(),
+      surface_opacity: 200,
+      contrast: 200,
+      accent: Some("red".into()),
+      palette: Some(ThemeColors::default()),
+      ..Wallpaper::default()
+    };
+    let warnings = wallpaper.sanitize();
+    assert_eq!(wallpaper.fit, "cover");
+    assert_eq!(wallpaper.mode, "wallpaper");
+    assert_eq!(wallpaper.transparency, "balanced");
+    assert_eq!(wallpaper.position_x, 100);
+    assert_eq!(wallpaper.position_y, 40);
+    assert_eq!(wallpaper.zoom, 100);
+    assert_eq!(wallpaper.dim, 80);
+    assert_eq!(wallpaper.blur, 24);
+    assert_eq!(wallpaper.surface_opacity, 100);
+    assert_eq!(wallpaper.contrast, 100);
+    assert!(wallpaper.accent.is_none());
+    assert!(wallpaper.image.is_none());
+    assert!(wallpaper.palette.is_none());
+    assert!(!wallpaper.adaptive);
+    assert_eq!(warnings.len(), 5, "{warnings:?}");
+  }
+
+  #[test]
+  fn wallpaper_sanitize_drops_an_undecodable_image() {
+    ensure_asset_dirs().unwrap();
+    let relative = format!("backgrounds/corrupt-{}.jpg", uuid::Uuid::new_v4());
+    let path = resolve_asset(&relative).unwrap();
+    std::fs::write(&path, b"this is not an image").unwrap();
+
+    let mut wallpaper = Wallpaper {
+      image: Some(relative),
+      palette: Some(ThemeColors::default()),
+      ..Wallpaper::default()
+    };
+    let warnings = wallpaper.sanitize();
+    assert!(wallpaper.image.is_none());
+    assert!(wallpaper.palette.is_none());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("could not be read"), "{warnings:?}");
+    let _ = std::fs::remove_file(path);
+  }
+
+  #[test]
+  fn wallpaper_sanitize_keeps_a_managed_image_and_normalizes_its_accent() {
+    ensure_asset_dirs().unwrap();
+    let relative = format!("backgrounds/wallpaper-{}.png", uuid::Uuid::new_v4());
+    let path = resolve_asset(&relative).unwrap();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([30, 90, 160, 255]))
+      .save(&path)
+      .unwrap();
+
+    let mut wallpaper = Wallpaper {
+      image: Some(relative.clone()),
+      accent: Some("#FF3366".into()),
+      ..Wallpaper::default()
+    };
+    let warnings = wallpaper.sanitize();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(wallpaper.image.as_deref(), Some(relative.as_str()));
+    assert_eq!(wallpaper.accent.as_deref(), Some("#ff3366"));
+    let _ = std::fs::remove_file(path);
+  }
+
+  #[test]
+  fn schema_one_background_migrates_into_the_global_wallpaper_once() {
+    ensure_asset_dirs().unwrap();
+    let relative = format!("backgrounds/migrate-{}.png", uuid::Uuid::new_v4());
+    let path = resolve_asset(&relative).unwrap();
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([190, 45, 55, 255]))
+      .save(&path)
+      .unwrap();
+
+    let mut config = AppearanceConfig::default();
+    config.schema = 1;
+    let mut theme = Theme::default();
+    theme.id = "custom-migrated".into();
+    theme.builtin = false;
+    theme.background.kind = "image".into();
+    theme.background.image = Some(relative.clone());
+    theme.background.adaptive = true;
+    config.themes.push(theme);
+    config.active_theme = "custom-migrated".into();
+
+    let warnings = migrate_wallpaper(&mut config);
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(config.wallpaper.image.as_deref(), Some(relative.as_str()));
+    assert_eq!(config.wallpaper.mode, "wallpaper");
+    assert!(config.wallpaper.adaptive);
+    assert!(
+      config.wallpaper.palette.is_some(),
+      "the migrated wallpaper should cache its palette"
+    );
+    assert!(config.themes[0].background.image.is_none());
+    assert_eq!(config.themes[0].background.kind, "solid");
+
+    // Sanitizing advances the schema, so a later run must not re-import the
+    // image after the user deliberately removes it.
+    config.sanitize();
+    config.wallpaper = Wallpaper::default();
+    let again = migrate_wallpaper(&mut config);
+    assert!(again.is_empty());
+    assert!(config.wallpaper.image.is_none());
+
+    let _ = std::fs::remove_file(path);
+  }
+
+  #[test]
+  fn wallpaper_mode_uses_the_derived_palette_and_manual_accent() {
+    let mut config = AppearanceConfig::default();
+    let palette = palette_from_pixels(&vec![[12u8, 30, 60]; 100]);
+    config.wallpaper = Wallpaper {
+      image: Some("backgrounds/palette.png".into()),
+      palette: Some(palette.clone()),
+      mode: "wallpaper".into(),
+      adaptive: true,
+      accent: Some("#ff3366".into()),
+      ..Wallpaper::default()
+    };
+    let effective = config.effective_theme();
+    assert_eq!(effective.colors.background, palette.background);
+    assert_eq!(effective.colors.surface, palette.surface);
+    assert_eq!(effective.colors.accent, "#ff3366");
+    assert_eq!(effective.colors.focus_ring, "#ff3366");
+    assert_eq!(effective.colors.timeline_selection, "#ff336633");
+
+    // Preset mode keeps the selected theme's colors while the wallpaper stays
+    // visible; the explicit accent still wins.
+    config.wallpaper.mode = "preset".into();
+    let preset = config.active();
+    let effective = config.effective_theme();
+    assert_eq!(effective.colors.background, preset.colors.background);
+    assert_eq!(effective.colors.surface, preset.colors.surface);
+    assert_eq!(effective.colors.accent, "#ff3366");
+  }
+
+  #[test]
+  fn wallpaper_is_excluded_from_packages_unless_requested() {
+    ensure_asset_dirs().unwrap();
+    let relative = format!("backgrounds/packaged-{}.png", uuid::Uuid::new_v4());
+    let path = resolve_asset(&relative).unwrap();
+    image::RgbaImage::from_pixel(6, 6, image::Rgba([40, 120, 200, 255]))
+      .save(&path)
+      .unwrap();
+    let wallpaper = Wallpaper {
+      image: Some(relative.clone()),
+      adaptive: true,
+      palette: Some(palette_from_pixels(&vec![[40u8, 120, 200]; 64])),
+      ..Wallpaper::default()
+    };
+    let theme = Theme::default();
+
+    let plain = theme_for_package(&theme, None);
+    assert!(plain.background.image.is_none());
+
+    let packaged = theme_for_package(&theme, Some(&wallpaper));
+    assert_eq!(packaged.background.image.as_deref(), Some(relative.as_str()));
+    assert_eq!(packaged.background.kind, "image");
+    assert!(packaged.background.adaptive);
+
+    let package = std::env::temp_dir().join(format!(
+      "kenta-theme-{}.kenta-theme",
+      uuid::Uuid::new_v4()
+    ));
+    export_package(&theme, Some(&wallpaper), &package).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    let imported = import_package(&package).unwrap();
+    let imported_image = imported
+      .background
+      .image
+      .clone()
+      .expect("packaged wallpaper restored");
+    assert_ne!(imported_image, relative);
+    assert!(resolve_asset(&imported_image).unwrap().is_file());
+    assert_eq!(imported.background.kind, "image");
+
+    let _ = std::fs::remove_file(resolve_asset(&imported_image).unwrap());
+    let _ = std::fs::remove_file(&package);
   }
 }

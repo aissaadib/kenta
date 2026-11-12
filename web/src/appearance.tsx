@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  appearanceAnalyzeWallpaper,
   appearanceExportTheme,
   appearanceImportTheme,
   deleteAppearanceTheme,
@@ -15,9 +16,12 @@ import {
   getAppearance,
   resetAppearance,
   saveAppearanceTheme,
+  saveWallpaper as saveWallpaperCommand,
   setAppearanceTheme,
   type AppearancePayload,
   type AppearanceTheme,
+  type ThemeColors,
+  type Wallpaper,
 } from "./tauri";
 import { applyTheme } from "./theme";
 
@@ -35,9 +39,16 @@ interface AppearanceContextValue {
   duplicateTheme: (id: string, name?: string) => Promise<AppearancePayload | null>;
   resetTheme: () => Promise<AppearancePayload | null>;
   importTheme: () => Promise<AppearancePayload | null>;
-  exportTheme: (theme: AppearanceTheme) => Promise<string | null>;
+  exportTheme: (theme: AppearanceTheme, includeWallpaper: boolean) => Promise<string | null>;
   previewTheme: (theme: AppearanceTheme) => void;
   restorePreview: () => void;
+  /** Persisted wallpaper. */
+  wallpaper: Wallpaper | null;
+  /** Wallpaper currently painted by the WallpaperLayer (preview or persisted). */
+  displayWallpaper: Wallpaper | null;
+  previewWallpaper: (wallpaper: Wallpaper) => void;
+  saveWallpaper: (wallpaper: Wallpaper) => Promise<AppearancePayload | null>;
+  analyzeWallpaper: (relative: string) => Promise<ThemeColors>;
 }
 
 const AppearanceContext = createContext<AppearanceContextValue | null>(null);
@@ -52,6 +63,11 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const [payload, setPayload] = useState<AppearancePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [previewThemeState, setPreviewThemeState] = useState<AppearanceTheme | null>(null);
+  const [previewWallpaperState, setPreviewWallpaperState] = useState<Wallpaper | null>(null);
+
+  const displayTheme = previewThemeState ?? payload?.active ?? null;
+  const displayWallpaper = previewWallpaperState ?? payload?.wallpaper ?? null;
 
   const refresh = useCallback(async () => {
     try {
@@ -68,15 +84,20 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     void refresh().finally(() => setLoading(false));
   }, [refresh]);
 
-  // Apply the active theme once it arrives. The stylesheet already contains
-  // the Kenta Original values, so there is no unstyled flash before this runs.
+  // Apply the previewed or persisted theme together with the wallpaper that is
+  // currently on screen. The stylesheet already contains Kenta Original values,
+  // so there is no unstyled flash before this runs.
   useEffect(() => {
-    if (payload) applyTheme(payload.active, payload.assets_dir);
-  }, [payload]);
+    if (displayTheme && payload) {
+      applyTheme(displayTheme, payload.assets_dir, displayWallpaper);
+    }
+  }, [displayTheme, displayWallpaper, payload]);
 
   const adopt = useCallback((next: AppearancePayload) => {
     setPayload(next);
-    applyTheme(next.active, next.assets_dir);
+    setPreviewThemeState(null);
+    setPreviewWallpaperState(null);
+    applyTheme(next.active, next.assets_dir, next.wallpaper);
     return next;
   }, []);
 
@@ -154,25 +175,46 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     }
   }, [adopt]);
 
-  const exportTheme = useCallback(async (theme: AppearanceTheme) => {
+  const exportTheme = useCallback(async (theme: AppearanceTheme, includeWallpaper: boolean) => {
     try {
-      return await appearanceExportTheme(theme);
+      return await appearanceExportTheme(theme, includeWallpaper);
     } catch (reason) {
       setError(String(reason));
       throw reason;
     }
   }, []);
 
-  const previewTheme = useCallback(
-    (theme: AppearanceTheme) => {
-      applyTheme(theme, payload?.assets_dir ?? "");
-    },
-    [payload?.assets_dir],
-  );
+  const previewTheme = useCallback((theme: AppearanceTheme) => {
+    setPreviewThemeState(theme);
+  }, []);
 
   const restorePreview = useCallback(() => {
-    if (payload) applyTheme(payload.active, payload.assets_dir);
+    setPreviewThemeState(null);
+    setPreviewWallpaperState(null);
+    if (payload) applyTheme(payload.active, payload.assets_dir, payload.wallpaper);
   }, [payload]);
+
+  const previewWallpaper = useCallback((wallpaper: Wallpaper) => {
+    setPreviewWallpaperState(wallpaper);
+  }, []);
+
+  const saveWallpaper = useCallback(
+    async (wallpaper: Wallpaper) => {
+      try {
+        const next = await saveWallpaperCommand(wallpaper);
+        return adopt(next);
+      } catch (reason) {
+        setError(String(reason));
+        throw reason;
+      }
+    },
+    [adopt],
+  );
+
+  const analyzeWallpaper = useCallback(
+    (relative: string) => appearanceAnalyzeWallpaper(relative),
+    [],
+  );
 
   const value = useMemo<AppearanceContextValue>(
     () => ({
@@ -192,6 +234,11 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       exportTheme,
       previewTheme,
       restorePreview,
+      wallpaper: payload?.wallpaper ?? null,
+      displayWallpaper,
+      previewWallpaper,
+      saveWallpaper,
+      analyzeWallpaper,
     }),
     [
       payload,
@@ -207,6 +254,10 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       exportTheme,
       previewTheme,
       restorePreview,
+      displayWallpaper,
+      previewWallpaper,
+      saveWallpaper,
+      analyzeWallpaper,
     ],
   );
 

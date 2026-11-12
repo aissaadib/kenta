@@ -123,6 +123,7 @@ pub fn run() {
       commands::duplicate_appearance_theme,
       commands::set_appearance_theme,
       commands::reset_appearance,
+      commands::save_wallpaper,
       commands::preview_appearance_theme,
       commands::preview_appearance_sound,
       commands::appearance_pick_image,

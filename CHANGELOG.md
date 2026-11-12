@@ -4,6 +4,44 @@ All notable changes to Kenta are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Appearance Studio: one global wallpaper behind every tab, panel, menu and
+  dialog. PNG, JPEG and WebP originals up to 48 MB are copied into Kenta's
+  managed folder without re-encoding. Cover, contain, fill and center framing,
+  focal X/Y, zoom, dimming and optional blur are persisted in `appearance.json`
+  and survive preset changes.
+- Adaptive wallpaper palette: a deterministic palette derived once from a 96×96
+  downsample, cached with the wallpaper and exposed as the full semantic token
+  set. Preset-colors and wallpaper-colors modes, plus an optional manual accent.
+- Semantic material tokens for the root canvas, sidebar, navigation, panels,
+  menus, dialogs, inputs, hover and selected states. Immersive, Balanced and
+  Readable transparency modes, a manual surface-opacity slider, an optional
+  minimum-readability safeguard, and a contrast-aware scrim. Ink colours are
+  chosen for WCAG contrast on both light and dark wallpapers.
+- Solid and gradient preset canvases now behave like a wallpaper: the canvas
+  stays behind every surface and the interface becomes translucent over it. A
+  per-theme Show through switch keeps panels opaque, and High Contrast defaults
+  to opaque.
+- A single fixed wallpaper layer with a 650 ms crossfade and reduced-motion
+  handling. Small floating surfaces get a backdrop blur; large screens do not,
+  so the wallpaper stays sharp and recording is unaffected.
+
+### Changed
+
+- The appearance schema is now 2. A legacy active-theme background image is
+  migrated once into the global wallpaper, and the theme background remains the
+  preset canvas fallback. Imported references outside the managed asset folder
+  are rejected or dropped.
+- `.kenta-theme` exports omit the wallpaper unless the user explicitly confirms
+  including it.
+- Appearance state is read from disk before the first paint, so a fast launch
+  cannot show the default theme or hide the wallpaper until a reload.
+- Wallpaper saves validate that the file is a decodable image, not merely that
+  the path exists. Unreadable files are removed and the preset canvas returns.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added

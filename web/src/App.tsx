@@ -32,7 +32,6 @@ import { EditorView } from "./views/EditorView";
 import { MusicView } from "./views/MusicView";
 import { AppearanceView } from "./views/AppearanceView";
 import { SettingsView } from "./views/SettingsView";
-import { AppearanceProvider } from "./appearance";
 import { MusicProvider } from "./music";
 import { MusicBar } from "./components/MusicBar";
 import { Popover } from "./components/Popover";
@@ -353,9 +352,8 @@ export default function App() {
   }
 
   return (
-    <AppearanceProvider>
-      <MusicProvider notify={addToast}>
-        <div className="app-shell">
+    <MusicProvider notify={addToast}>
+      <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark"><Clapperboard size={18} /></span>
@@ -568,6 +566,5 @@ export default function App() {
         <MusicBar onOpen={() => showView("music")} />
         </div>
       </MusicProvider>
-    </AppearanceProvider>
   );
 }

@@ -24,7 +24,6 @@ import {
 } from "lucide-react";
 import {
   appearancePickImage,
-  appearanceAnalyzeWallpaper,
   appearancePickSound,
   previewAppearanceSound,
   previewAppearanceTheme,
@@ -33,6 +32,7 @@ import {
   type ThemeColors,
   type ThemeSoundEvent,
   type ThemeSounds,
+  type Wallpaper,
 } from "../tauri";
 import { useAppearance } from "../appearance";
 import {
@@ -272,6 +272,11 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const [tab, setTab] = useState<EditorTab>("colors");
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [wallpaperDraft, setWallpaperDraft] = useState<Wallpaper | null>(null);
+  const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  const wallpaperTimer = useRef<number | null>(null);
+  const wallpaperRef = useRef<Wallpaper | null>(null);
+  const wallpaperSaveSeq = useRef(0);
 
   const dirty = useMemo(() => {
     if (!draft || !baseline) return false;
@@ -285,6 +290,15 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
       setBaseline(cloneTheme(appearance.active));
     }
   }, [appearance.active, draft]);
+
+  // The wallpaper is separate from the theme, so it has its own draft. It is
+  // seeded once and then kept in sync by successful saves.
+  useEffect(() => {
+    if (!wallpaperDraft && appearance.wallpaper) {
+      setWallpaperDraft(appearance.wallpaper);
+      wallpaperRef.current = appearance.wallpaper;
+    }
+  }, [appearance.wallpaper, wallpaperDraft]);
 
   const loadTheme = (theme: AppearanceTheme) => {
     setDraft(cloneTheme(theme));
@@ -345,6 +359,133 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     setPast((previous) => [...previous.slice(-59), cloneTheme(draft)]);
     setFuture([]);
     setDraft(next);
+  };
+
+  // Wallpaper edits are persisted separately from the theme, debounced while a
+  // slider is moving. The preview is immediate so the whole window follows the
+  // controls, not just the small swatch in the studio.
+  const persistWallpaper = async (next: Wallpaper) => {
+    const sequence = ++wallpaperSaveSeq.current;
+    try {
+      const payload = await appearance.saveWallpaper(next);
+      if (!payload) return;
+      if (sequence === wallpaperSaveSeq.current) {
+        setWallpaperDraft(payload.wallpaper);
+        wallpaperRef.current = payload.wallpaper;
+      }
+    } catch (reason) {
+      onNotify("error", "The wallpaper was not saved", String(reason));
+    }
+  };
+
+  const commitWallpaper = (next: Wallpaper, immediate = false) => {
+    setWallpaperDraft(next);
+    wallpaperRef.current = next;
+    appearance.previewWallpaper(next);
+    if (wallpaperTimer.current !== null) {
+      window.clearTimeout(wallpaperTimer.current);
+      wallpaperTimer.current = null;
+    }
+    if (immediate) {
+      void persistWallpaper(next);
+      return;
+    }
+    wallpaperTimer.current = window.setTimeout(() => {
+      wallpaperTimer.current = null;
+      const pending = wallpaperRef.current;
+      if (pending) void persistWallpaper(pending);
+    }, 320);
+  };
+
+  const editWallpaper = (mutator: (wallpaper: Wallpaper) => void) => {
+    const current = wallpaperRef.current ?? wallpaperDraft;
+    if (!current) return;
+    const next: Wallpaper = { ...current, palette: current.palette };
+    mutator(next);
+    commitWallpaper(next);
+  };
+
+  const analyzeForWallpaper = async (
+    relative: string,
+    base: Wallpaper,
+  ): Promise<Wallpaper> => {
+    setWallpaperBusy(true);
+    try {
+      const palette = await appearance.analyzeWallpaper(relative);
+      return { ...base, palette };
+    } catch (reason) {
+      onNotify("info", "Palette generation skipped", String(reason));
+      return { ...base, palette: null };
+    } finally {
+      setWallpaperBusy(false);
+    }
+  };
+
+  const pickWallpaper = async () => {
+    const current = wallpaperRef.current ?? wallpaperDraft;
+    if (!current) return;
+    try {
+      const asset = await appearancePickImage("background");
+      if (!asset) return;
+      let next: Wallpaper = { ...current, image: asset.relative, palette: null };
+      if (next.mode === "wallpaper" && next.adaptive) {
+        next = await analyzeForWallpaper(asset.relative, next);
+      }
+      commitWallpaper(next, true);
+      onNotify("success", "Wallpaper updated", `${asset.width} × ${asset.height}`);
+    } catch (reason) {
+      onNotify("error", "The wallpaper was not added", String(reason));
+    }
+  };
+
+  const removeWallpaper = () => {
+    const current = wallpaperRef.current ?? wallpaperDraft;
+    if (!current) return;
+    commitWallpaper(
+      { ...current, image: null, palette: null, adaptive: false },
+      true,
+    );
+  };
+
+  const setWallpaperMode = async (mode: Wallpaper["mode"]) => {
+    const current = wallpaperRef.current ?? wallpaperDraft;
+    if (!current) return;
+    let next: Wallpaper = { ...current, mode };
+    if (mode === "wallpaper" && next.adaptive && next.image && !next.palette) {
+      next = await analyzeForWallpaper(next.image, next);
+    }
+    commitWallpaper(next, true);
+  };
+
+  const setWallpaperAdaptive = async (checked: boolean) => {
+    const current = wallpaperRef.current ?? wallpaperDraft;
+    if (!current) return;
+    let next: Wallpaper = { ...current, adaptive: checked };
+    if (checked && next.mode === "wallpaper" && next.image && !next.palette) {
+      next = await analyzeForWallpaper(next.image, next);
+    }
+    commitWallpaper(next);
+  };
+
+  const generateWallpaperPalette = async () => {
+    const current = wallpaperRef.current ?? wallpaperDraft;
+    if (!current?.image) return;
+    const next = await analyzeForWallpaper(current.image, current);
+    commitWallpaper(next, true);
+    if (next.palette) {
+      onNotify("success", "Palette generated", "Colors updated from the wallpaper.");
+    }
+  };
+
+  const setTransparencyMode = (
+    mode: "immersive" | "balanced" | "readable" | "custom",
+  ) => {
+    if (mode === "custom") return;
+    const opacity = mode === "immersive" ? 25 : mode === "readable" ? 78 : 55;
+    editWallpaper((wallpaper) => {
+      wallpaper.transparency = mode;
+      wallpaper.surface_opacity = opacity;
+    });
   };
 
   const undo = () => {
@@ -428,8 +569,13 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
 
   const handleExport = async () => {
     if (!draft) return;
+    const includeWallpaper =
+      Boolean(wallpaperRef.current?.image) &&
+      window.confirm(
+        "Include the current wallpaper in this package?\n\nOK includes the image. Cancel exports the theme without it.",
+      );
     try {
-      const path = await appearance.exportTheme(draft);
+      const path = await appearance.exportTheme(draft, includeWallpaper);
       if (path) onNotify("success", "Theme exported", path);
     } catch (reason) {
       onNotify("error", "The theme was not exported", String(reason));
@@ -457,20 +603,6 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     if (next) {
       loadTheme(next.active);
       onNotify("info", "Kenta Original is active");
-    }
-  };
-
-  const pickBackground = async () => {
-    try {
-      const asset = await appearancePickImage("background");
-      if (!asset) return;
-      edit((theme) => {
-        theme.background.image = asset.relative;
-        theme.background.kind = "image";
-      });
-      onNotify("success", "Background added", `${asset.width} × ${asset.height}`);
-    } catch (reason) {
-      onNotify("error", "The image was not added", String(reason));
     }
   };
 
@@ -561,7 +693,7 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     );
   }
 
-  const backgroundUrl = themeAssetSrc(appearance.assetsDir, draft.background.image);
+  const wallpaperUrl = themeAssetSrc(appearance.assetsDir, wallpaperDraft?.image ?? null);
   const selectedIsActive = appearance.active?.id === draft.id;
 
   return (
@@ -830,24 +962,386 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
           {tab === "background" ? (
             <>
               <Section
-                title="Background style"
-                description="A solid canvas, a two-stop gradient, or one of your own images."
+                title="Global wallpaper"
+                description="One image behind every tab, panel and dialog. The original is copied into Kenta's managed folder and is never re-encoded."
+              >
+                <div className="appearance-asset-row">
+                  {wallpaperUrl ? (
+                    <img className="appearance-bg-thumb" src={wallpaperUrl} alt="" />
+                  ) : (
+                    <span className="appearance-bg-thumb is-empty">
+                      <ImageIcon size={18} />
+                    </span>
+                  )}
+                  <div className="appearance-asset-copy">
+                    <strong>{wallpaperDraft?.image ? "Wallpaper active" : "No wallpaper selected"}</strong>
+                    <span>
+                      {wallpaperDraft?.image
+                        ? wallpaperDraft.image
+                        : "PNG, JPEG or WebP · up to 48 MB. The preset canvas is used until you add one."}
+                    </span>
+                  </div>
+                  <div className="appearance-asset-actions">
+                    <button
+                      type="button"
+                      className="btn btn-quiet btn-sm"
+                      onClick={() => void pickWallpaper()}
+                      disabled={wallpaperBusy}
+                    >
+                      {wallpaperBusy ? <Loader2 size={13} className="spin" /> : <Upload size={13} />} Choose image
+                    </button>
+                    {wallpaperDraft?.image ? (
+                      <button
+                        type="button"
+                        className="btn btn-quiet btn-sm"
+                        onClick={removeWallpaper}
+                      >
+                        <X size={12} /> Remove
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                {wallpaperDraft?.image ? (
+                  <div className="appearance-asset-actions">
+                    <button
+                      type="button"
+                      className="btn btn-quiet btn-sm"
+                      onClick={() => void generateWallpaperPalette()}
+                      disabled={wallpaperBusy}
+                    >
+                      {wallpaperBusy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} Generate palette
+                    </button>
+                    <span className="appearance-hint">
+                      Derived from a small downsample. The image itself stays untouched.
+                    </span>
+                  </div>
+                ) : null}
+              </Section>
+
+              <Section
+                title="Live app treatment"
+                description="A miniature of the real materials: sidebar, navigation, content, panel and dialog all share the wallpaper or preset canvas."
+              >
+                <div className="wallpaper-preview" aria-hidden="true">
+                  <div className="wallpaper-preview-media">
+                    {wallpaperUrl ? (
+                      <img
+                        src={wallpaperUrl}
+                        alt=""
+                        style={{
+                          objectFit:
+                            wallpaperDraft?.fit === "fill"
+                              ? "fill"
+                              : wallpaperDraft?.fit === "center"
+                                ? "none"
+                                : wallpaperDraft?.fit ?? "cover",
+                          objectPosition: `${wallpaperDraft?.position_x ?? 50}% ${wallpaperDraft?.position_y ?? 50}%`,
+                          transform: `scale(${Math.max(100, wallpaperDraft?.zoom ?? 100) / 100})`,
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                  <div className="wallpaper-preview-scrim" />
+                  <div className="wallpaper-preview-ui">
+                    <aside className="wp-preview-sidebar">
+                      <span className="wp-preview-brand" />
+                      <span className="wp-preview-nav is-active">Capture</span>
+                      <span className="wp-preview-nav">Clips</span>
+                      <span className="wp-preview-nav">Music</span>
+                      <span className="wp-preview-nav">Appearance</span>
+                    </aside>
+                    <div className="wp-preview-main">
+                      <div className="wp-preview-topbar">
+                        <strong>Appearance Studio</strong>
+                        <span className="wp-preview-chip" />
+                      </div>
+                      <div className="wp-preview-body">
+                        <div className="wp-preview-panel">
+                          <strong>Surfaces</strong>
+                          <span />
+                          <span className="is-short" />
+                          <span className="wp-preview-button">Accent</span>
+                        </div>
+                        <div className="wp-preview-dialog">
+                          <strong>Dialog</strong>
+                          <span />
+                          <span className="is-short" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Section>
+
+              {wallpaperDraft?.image ? (
+                <>
+                  <Section
+                    title="Framing"
+                    description="Cover keeps the aspect ratio, contain shows the whole image, fill stretches, and center uses its natural size."
+                  >
+                    <div className="appearance-field-row">
+                      <span className="appearance-field-label">Fit</span>
+                      <Segmented
+                        label="Wallpaper fit"
+                        value={wallpaperDraft.fit}
+                        options={[
+                          { value: "cover", label: "Cover" },
+                          { value: "contain", label: "Contain" },
+                          { value: "fill", label: "Fill" },
+                          { value: "center", label: "Center" },
+                        ]}
+                        onChange={(value) => editWallpaper((wallpaper) => (wallpaper.fit = value))}
+                      />
+                    </div>
+                    <label className="appearance-slider">
+                      <span>Focal X</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={wallpaperDraft.position_x}
+                        onChange={(event) =>
+                          editWallpaper(
+                            (wallpaper) => (wallpaper.position_x = Number(event.target.value)),
+                          )
+                        }
+                        aria-label="Wallpaper focal point X"
+                      />
+                      <span className="mono">{wallpaperDraft.position_x}%</span>
+                    </label>
+                    <label className="appearance-slider">
+                      <span>Focal Y</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={wallpaperDraft.position_y}
+                        onChange={(event) =>
+                          editWallpaper(
+                            (wallpaper) => (wallpaper.position_y = Number(event.target.value)),
+                          )
+                        }
+                        aria-label="Wallpaper focal point Y"
+                      />
+                      <span className="mono">{wallpaperDraft.position_y}%</span>
+                    </label>
+                    <label className="appearance-slider">
+                      <span>Zoom</span>
+                      <input
+                        type="range"
+                        min={100}
+                        max={200}
+                        step={1}
+                        value={wallpaperDraft.zoom}
+                        onChange={(event) =>
+                          editWallpaper(
+                            (wallpaper) => (wallpaper.zoom = Number(event.target.value)),
+                          )
+                        }
+                        aria-label="Wallpaper zoom"
+                      />
+                      <span className="mono">{wallpaperDraft.zoom}%</span>
+                    </label>
+                  </Section>
+
+                  <Section
+                    title="Image treatment"
+                    description="Dimming darkens the image itself. Blur is optional and stays inside the wallpaper layer."
+                  >
+                    <label className="appearance-slider">
+                      <span>Dim</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={80}
+                        step={1}
+                        value={wallpaperDraft.dim}
+                        onChange={(event) =>
+                          editWallpaper(
+                            (wallpaper) => (wallpaper.dim = Number(event.target.value)),
+                          )
+                        }
+                        aria-label="Wallpaper dimming"
+                      />
+                      <span className="mono">{wallpaperDraft.dim}%</span>
+                    </label>
+                    <label className="appearance-slider">
+                      <span>Blur</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={24}
+                        step={1}
+                        value={wallpaperDraft.blur}
+                        onChange={(event) =>
+                          editWallpaper(
+                            (wallpaper) => (wallpaper.blur = Number(event.target.value)),
+                          )
+                        }
+                        aria-label="Wallpaper blur"
+                      />
+                      <span className="mono">{wallpaperDraft.blur}px</span>
+                    </label>
+                  </Section>
+
+                  <Section
+                    title="Wallpaper colors"
+                    description="Preset mode keeps this theme's colors while the image stays visible. Wallpaper mode derives a semantic palette from the image."
+                  >
+                    <div className="appearance-field-row">
+                      <span className="appearance-field-label">Colors</span>
+                      <Segmented
+                        label="Wallpaper color mode"
+                        value={wallpaperDraft.mode}
+                        options={[
+                          { value: "preset", label: "Preset colors" },
+                          { value: "wallpaper", label: "From wallpaper" },
+                        ]}
+                        onChange={(value) => void setWallpaperMode(value)}
+                      />
+                    </div>
+                    <div className="appearance-field-row">
+                      <span className="appearance-field-label">Adaptive palette</span>
+                      <Switch
+                        checked={wallpaperDraft.adaptive}
+                        onChange={(checked) => void setWallpaperAdaptive(checked)}
+                        label="Let the image drive the semantic palette"
+                        description="Only applies in From wallpaper mode. A cached palette keeps startup instant."
+                      />
+                    </div>
+                    <div className="appearance-field-row">
+                      <span className="appearance-field-label">Accent override</span>
+                      <Switch
+                        checked={Boolean(wallpaperDraft.accent)}
+                        onChange={(checked) =>
+                          editWallpaper((wallpaper) => {
+                            wallpaper.accent = checked
+                              ? (
+                                  wallpaper.accent ??
+                                  wallpaper.palette?.accent ??
+                                  draft.colors.accent
+                                ).slice(0, 7)
+                              : null;
+                          })
+                        }
+                        label="Use one accent instead of the derived accent"
+                        description="Applies in both preset and wallpaper color modes."
+                      />
+                    </div>
+                    {wallpaperDraft.accent ? (
+                      <div className="appearance-field-row">
+                        <span className="appearance-field-label">Accent</span>
+                        <HexField
+                          value={wallpaperDraft.accent}
+                          label="Wallpaper accent"
+                          onChange={(next) =>
+                            editWallpaper(
+                              (wallpaper) => (wallpaper.accent = next.slice(0, 7)),
+                            )
+                          }
+                        />
+                      </div>
+                    ) : null}
+                  </Section>
+                </>
+              ) : null}
+
+              <Section
+                title="Interface materials"
+                description={
+                  wallpaperDraft?.image
+                    ? "The image sits behind every surface. These controls decide how much of it each material reveals."
+                    : draft.background.show_through !== false
+                      ? "The preset canvas sits behind every surface. These controls decide how much of it each material reveals."
+                      : "Show through is off for this preset, so the canvas stays behind opaque panels. Turn it on under Preset canvas."
+                }
+              >
+                <div className="appearance-field-row">
+                  <span className="appearance-field-label">Transparency</span>
+                  <Segmented
+                    label="Surface transparency"
+                    value={wallpaperDraft?.transparency ?? "balanced"}
+                    options={[
+                      { value: "immersive", label: "Immersive" },
+                      { value: "balanced", label: "Balanced" },
+                      { value: "readable", label: "Readable" },
+                    ]}
+                    onChange={setTransparencyMode}
+                  />
+                </div>
+                <label className="appearance-slider">
+                  <span>Surface opacity</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={wallpaperDraft?.surface_opacity ?? 55}
+                    onChange={(event) =>
+                      editWallpaper((wallpaper) => {
+                        wallpaper.surface_opacity = Number(event.target.value);
+                        wallpaper.transparency = "custom";
+                      })
+                    }
+                    aria-label="Surface opacity"
+                  />
+                  <span className="mono">
+                    {wallpaperDraft?.surface_opacity ?? 55}%
+                    {wallpaperDraft?.transparency === "custom" ? " · Custom" : ""}
+                  </span>
+                </label>
+                {wallpaperDraft?.image ? (
+                  <label className="appearance-slider">
+                    <span>Readability scrim</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={wallpaperDraft.contrast}
+                      onChange={(event) =>
+                        editWallpaper(
+                          (wallpaper) => (wallpaper.contrast = Number(event.target.value)),
+                        )
+                      }
+                      aria-label="Readability scrim strength"
+                    />
+                    <span className="mono">{wallpaperDraft.contrast}%</span>
+                  </label>
+                ) : null}
+                <div className="appearance-field-row">
+                  <span className="appearance-field-label">Minimum readability</span>
+                  <Switch
+                    checked={wallpaperDraft?.safeguard !== false}
+                    onChange={(checked) =>
+                      editWallpaper((wallpaper) => (wallpaper.safeguard = checked))
+                    }
+                    label="Keep text surfaces above a contrast floor"
+                    description="On by default. Immersive still reveals more of the backdrop; turn this off for fully manual opacity."
+                  />
+                </div>
+                <p className="appearance-hint">
+                  {wallpaperDraft?.image
+                    ? "The readability floor keeps body and hint text above WCAG AA even over bright photos. Dialogs and menus add extra opacity on top of it."
+                    : "The readability floor keeps body and hint text above WCAG AA while the canvas stays visible. Dialogs and menus add extra opacity on top of it."}
+                </p>
+              </Section>
+
+              <Section
+                title="Preset canvas"
+                description="The canvas behind the interface when no global wallpaper is active. With Show through on it behaves like a wallpaper: every surface becomes translucent over it. Choosing another preset never removes your wallpaper."
               >
                 <Segmented
-                  label="Background kind"
-                  value={draft.background.kind}
+                  label="Preset background kind"
+                  value={draft.background.kind === "gradient" ? "gradient" : "solid"}
                   options={[
                     { value: "solid", label: "Solid" },
                     { value: "gradient", label: "Gradient" },
-                    { value: "image", label: "Image" },
                   ]}
                   onChange={(value) => edit((theme) => (theme.background.kind = value))}
                 />
-                {draft.background.kind === "solid" ? (
-                  <p className="appearance-hint">
-                    The canvas uses the Background color token from the Colors tab.
-                  </p>
-                ) : null}
                 {draft.background.kind === "gradient" ? (
                   <div className="appearance-gradient-fields">
                     <div className="appearance-field-row">
@@ -871,127 +1365,40 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
                       />
                     </div>
                   </div>
-                ) : null}
-              </Section>
-
-              <Section title="Image" description="The file is copied into Kenta's managed theme folder.">
-                <div className="appearance-asset-row">
-                  {backgroundUrl ? (
-                    <img className="appearance-bg-thumb" src={backgroundUrl} alt="" />
-                  ) : (
-                    <span className="appearance-bg-thumb is-empty">
-                      <ImageIcon size={18} />
-                    </span>
-                  )}
-                  <div className="appearance-asset-copy">
-                    <strong>{draft.background.image ? "Image selected" : "No image selected"}</strong>
-                    <span>
-                      {draft.background.image
-                        ? draft.background.image
-                        : "PNG, JPEG, WebP or ICO · up to 12 MB and 8192 × 8192."}
-                    </span>
-                  </div>
-                  <div className="appearance-asset-actions">
-                    <button type="button" className="btn btn-quiet btn-sm" onClick={() => void pickBackground()}>
-                      Choose
-                    </button>
-                    {draft.background.image ? (
-                      <button
-                        type="button"
-                        className="btn btn-quiet btn-sm"
-                        onClick={() =>
-                          edit((theme) => {
-                            theme.background.image = null;
-                            if (theme.background.kind === "image") theme.background.kind = "solid";
-                          })
-                        }
-                      >
-                        <X size={12} /> Remove
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-
+                ) : (
+                  <p className="appearance-hint">
+                    The canvas uses the Background color token from the Colors tab.
+                  </p>
+                )}
                 <div className="appearance-field-row">
-                  <span className="appearance-field-label">Fit</span>
-                  <Segmented
-                    label="Background fit"
-                    value={draft.background.fit}
-                    options={[
-                      { value: "cover", label: "Cover" },
-                      { value: "contain", label: "Contain" },
-                      { value: "fill", label: "Fill" },
-                      { value: "center", label: "Center" },
-                    ]}
-                    onChange={(value) => edit((theme) => (theme.background.fit = value))}
-                  />
-                </div>
-                <label className="appearance-slider">
-                  <span>Opacity</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={draft.background.opacity}
-                    onChange={(event) =>
-                      edit((theme) => (theme.background.opacity = Number(event.target.value)))
-                    }
-                    aria-label="Background opacity"
-                  />
-                  <span className="mono">{draft.background.opacity}%</span>
-                </label>
-                <label className="appearance-slider">
-                  <span>Blur</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={24}
-                    step={1}
-                    value={draft.background.blur}
-                    onChange={(event) =>
-                      edit((theme) => (theme.background.blur = Number(event.target.value)))
-                    }
-                    aria-label="Background blur"
-                  />
-                  <span className="mono">{draft.background.blur}px</span>
-                </label>
-
-                <div className="appearance-field-row">
-                  <span className="appearance-field-label">Adaptive colors</span>
+                  <span className="appearance-field-label">Show through</span>
                   <Switch
-                    checked={draft.background.adaptive}
+                    checked={draft.background.show_through !== false}
                     onChange={(checked) =>
-                      edit((theme) => (theme.background.adaptive = checked))
+                      edit((theme) => (theme.background.show_through = checked))
                     }
-                    label="Derive the palette from this wallpaper"
-                    description="When on, Kenta generates a coherent color scheme from the image. Manual color edits are kept until you recalculate."
+                    label="Show the preset canvas through the interface"
+                    description="Applies when no global wallpaper is active. Turn it off for fully opaque panels, like High Contrast."
                   />
                 </div>
-                {draft.background.image ? (
-                  <div className="appearance-asset-actions">
+                {draft.background.kind === "image" ? (
+                  <div className="inline-note">
+                    <ImageIcon size={14} />
+                    <span>
+                      This theme still has a legacy preset image. The global wallpaper takes
+                      precedence; remove the legacy image to keep exports small.
+                    </span>
                     <button
                       type="button"
-                      className="btn btn-quiet btn-sm"
-                      disabled={busy}
-                      onClick={async () => {
-                        if (!draft.background.image) return;
-                        setBusy(true);
-                        try {
-                          const colors = await appearanceAnalyzeWallpaper(draft.background.image);
-                          edit((theme) => {
-                            theme.colors = colors;
-                            theme.background.adaptive = true;
-                          });
-                          onNotify("success", "Palette generated", "Colors updated from the wallpaper.");
-                        } catch (reason) {
-                          onNotify("error", "Palette could not be generated", String(reason));
-                        } finally {
-                          setBusy(false);
-                        }
-                      }}
+                      className="btn btn-quiet btn-xs"
+                      onClick={() =>
+                        edit((theme) => {
+                          theme.background.image = null;
+                          theme.background.kind = "solid";
+                        })
+                      }
                     >
-                      {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} Generate palette
+                      Remove
                     </button>
                   </div>
                 ) : null}

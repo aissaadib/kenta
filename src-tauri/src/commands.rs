@@ -78,7 +78,11 @@ impl AppState {
       voice: Mutex::new(None),
       drive: Mutex::new(None),
       uploads: Mutex::new(None),
-      appearance: Mutex::new(AppearanceConfig::default()),
+      // The window can be alive before `initialise` runs, and its first
+      // `get_appearance` must not see the built-in defaults: that would paint
+      // the wrong theme and hide the wallpaper until a reload. Seed from disk
+      // without the recovery/migration side effects, which stay in `load`.
+      appearance: Mutex::new(appearance::load_early()),
     }
   }
 }
@@ -2653,6 +2657,11 @@ pub struct AppearancePayload {
   pub config: AppearanceConfig,
   pub themes: Vec<Theme>,
   pub active: Theme,
+  /// The colors the running interface actually uses. Equal to `active` in
+  /// preset mode, or the cached wallpaper palette / manual accent in wallpaper
+  /// mode.
+  pub effective: Theme,
+  pub wallpaper: appearance::Wallpaper,
   pub assets_dir: String,
 }
 
@@ -2660,6 +2669,8 @@ fn appearance_payload(config: AppearanceConfig) -> AppearancePayload {
   AppearancePayload {
     themes: config.all_themes(),
     active: config.active(),
+    effective: config.effective_theme(),
+    wallpaper: config.wallpaper.clone(),
     config,
     assets_dir: appearance::assets_dir().to_string_lossy().to_string(),
   }
@@ -2683,6 +2694,11 @@ fn apply_theme_runtime(app: &AppHandle, theme: &Theme) {
   }
 }
 
+/// Apply the effective (wallpaper-aware) palette to the native window.
+fn apply_config_runtime(app: &AppHandle, config: &AppearanceConfig) {
+  apply_theme_runtime(app, &config.effective_theme());
+}
+
 #[tauri::command]
 pub fn get_appearance(state: State<'_, AppState>) -> AppearancePayload {
   let config = state.appearance.lock().unwrap().clone();
@@ -2699,7 +2715,7 @@ pub fn save_appearance_theme(
   let saved = config.save_theme(theme);
   config.active_theme = saved.id.clone();
   persist_appearance(&state, config.clone())?;
-  apply_theme_runtime(&app, &saved);
+  apply_config_runtime(&app, &config);
   Ok(appearance_payload(config))
 }
 
@@ -2740,9 +2756,9 @@ pub fn set_appearance_theme(
   id: String,
 ) -> Result<AppearancePayload, String> {
   let mut config = state.appearance.lock().unwrap().clone();
-  let theme = config.set_active(&id).map_err(|error| error.message())?;
+  config.set_active(&id).map_err(|error| error.message())?;
   persist_appearance(&state, config.clone())?;
-  apply_theme_runtime(&app, &theme);
+  apply_config_runtime(&app, &config);
   Ok(appearance_payload(config))
 }
 
@@ -2758,17 +2774,50 @@ pub fn reset_appearance(
   state: State<'_, AppState>,
 ) -> Result<AppearancePayload, String> {
   let mut config = state.appearance.lock().unwrap().clone();
-  let theme = config
+  config
     .set_active(appearance::DEFAULT_THEME_ID)
     .map_err(|error| error.message())?;
   persist_appearance(&state, config.clone())?;
-  apply_theme_runtime(&app, &theme);
+  apply_config_runtime(&app, &config);
+  Ok(appearance_payload(config))
+}
+
+/// Persist the app-wide wallpaper. The image itself is already a managed file;
+/// this validates the reference and settings before writing appearance.json.
+#[tauri::command]
+pub fn save_wallpaper(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  wallpaper: appearance::Wallpaper,
+) -> Result<AppearancePayload, String> {
+  let mut config = state.appearance.lock().unwrap().clone();
+  let mut next = wallpaper;
+  next.sanitize();
+  config.wallpaper = next;
+  persist_appearance(&state, config.clone())?;
+  apply_config_runtime(&app, &config);
   Ok(appearance_payload(config))
 }
 
 #[tauri::command]
-pub fn preview_appearance_theme(app: AppHandle, theme: Theme) {
-  apply_theme_runtime(&app, &theme);
+pub fn preview_appearance_theme(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  theme: Theme,
+) {
+  let config = state.appearance.lock().unwrap().clone();
+  let mut effective = theme;
+  if config.wallpaper.palette_active() {
+    if let Some(palette) = &config.wallpaper.palette {
+      effective.colors = palette.clone();
+    }
+  }
+  if let Some(accent) = &config.wallpaper.accent {
+    effective.colors.accent = accent.clone();
+    effective.colors.focus_ring = accent.clone();
+    effective.colors.playhead = accent.clone();
+  }
+  apply_theme_runtime(&app, &effective);
 }
 
 #[tauri::command]
@@ -2838,7 +2887,16 @@ pub fn appearance_pick_sound() -> Result<Option<appearance::ImportedAsset>, Stri
 }
 
 #[tauri::command]
-pub fn appearance_export_theme(theme: Theme) -> Result<Option<String>, String> {
+pub fn appearance_export_theme(
+  state: State<'_, AppState>,
+  theme: Theme,
+  include_wallpaper: bool,
+) -> Result<Option<String>, String> {
+  let wallpaper = if include_wallpaper {
+    state.appearance.lock().unwrap().wallpaper.clone()
+  } else {
+    appearance::Wallpaper::default()
+  };
   let safe = theme
     .name
     .chars()
@@ -2869,7 +2927,7 @@ pub fn appearance_export_theme(theme: Theme) -> Result<Option<String>, String> {
   } else {
     path
   };
-  appearance::export_package(&theme, &path).map_err(|error| error.message())?;
+  appearance::export_package(&theme, Some(&wallpaper), &path).map_err(|error| error.message())?;
   Ok(Some(path.to_string_lossy().to_string()))
 }
 
@@ -2884,12 +2942,36 @@ pub fn appearance_import_theme(
   else {
     return Ok(None);
   };
-  let theme = appearance::import_package(&path).map_err(|error| error.message())?;
+  let mut theme = appearance::import_package(&path).map_err(|error| error.message())?;
   let mut config = state.appearance.lock().unwrap().clone();
+
+  // A packaged wallpaper is explicit: lift it into the app-wide layer so this
+  // import follows the same model as a locally chosen image. A theme without
+  // one leaves the user's current wallpaper untouched.
+  if let Some(image) = theme.background.image.clone() {
+    let mut wallpaper = appearance::Wallpaper {
+      image: Some(image.clone()),
+      fit: theme.background.fit.clone(),
+      blur: theme.background.blur,
+      adaptive: theme.background.adaptive,
+      mode: if theme.background.adaptive { "wallpaper" } else { "preset" }.into(),
+      ..appearance::Wallpaper::default()
+    };
+    if wallpaper.adaptive {
+      wallpaper.palette = appearance::analyze_wallpaper(&image).ok();
+    }
+    config.wallpaper = wallpaper;
+    theme.background.image = None;
+    if theme.background.kind == "image" {
+      theme.background.kind = "solid".into();
+    }
+  }
+
   let saved = config.save_theme(theme);
   config.active_theme = saved.id.clone();
+  config.sanitize();
   persist_appearance(&state, config.clone())?;
-  apply_theme_runtime(&app, &saved);
+  apply_config_runtime(&app, &config);
   Ok(Some(appearance_payload(config)))
 }
 

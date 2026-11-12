@@ -638,6 +638,7 @@ export interface ThemeBackground {
   opacity: number;
   blur: number;
   adaptive: boolean;
+  show_through: boolean;
 }
 
 export interface ThemeIcons {
@@ -681,12 +682,37 @@ export interface AppearanceConfig {
   schema: number;
   active_theme: string;
   themes: AppearanceTheme[];
+  wallpaper: Wallpaper;
+}
+
+/** App-wide wallpaper settings. The image is managed inside Kenta's theme folder
+ * and the cached palette is generated from a downsampled copy of it. */
+export interface Wallpaper {
+  image: string | null;
+  fit: "cover" | "contain" | "fill" | "center";
+  position_x: number;
+  position_y: number;
+  zoom: number;
+  dim: number;
+  blur: number;
+  mode: "preset" | "wallpaper";
+  adaptive: boolean;
+  transparency: "immersive" | "balanced" | "readable" | "custom";
+  surface_opacity: number;
+  contrast: number;
+  /** Keep text surfaces above a contrast floor even in Immersive mode. */
+  safeguard: boolean;
+  accent: string | null;
+  palette: ThemeColors | null;
 }
 
 export interface AppearancePayload {
   config: AppearanceConfig;
   themes: AppearanceTheme[];
   active: AppearanceTheme;
+  /** Equal to `active` in preset mode, or the wallpaper palette / manual accent. */
+  effective: AppearanceTheme;
+  wallpaper: Wallpaper;
   assets_dir: string;
 }
 
@@ -752,8 +778,17 @@ export function appearanceAnalyzeWallpaper(relative: string): Promise<ThemeColor
   return invoke("appearance_analyze_wallpaper", { relative });
 }
 
-export function appearanceExportTheme(theme: AppearanceTheme): Promise<string | null> {
-  return invoke("appearance_export_theme", { theme });
+/** Persist the app-wide wallpaper. The backend validates the managed image and
+ * returns the sanitized payload, which becomes the new visible state. */
+export function saveWallpaper(wallpaper: Wallpaper): Promise<AppearancePayload> {
+  return invoke("save_wallpaper", { wallpaper });
+}
+
+export function appearanceExportTheme(
+  theme: AppearanceTheme,
+  includeWallpaper: boolean,
+): Promise<string | null> {
+  return invoke("appearance_export_theme", { theme, includeWallpaper });
 }
 
 export function appearanceImportTheme(): Promise<AppearancePayload | null> {

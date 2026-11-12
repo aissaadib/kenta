@@ -114,8 +114,18 @@ theme.
 
 - **Presets** — Kenta Original, Carbon, Midnight Blue, Purple Haze, Crimson,
   Light, and High Contrast.
+- **Wallpaper** — one PNG/JPEG/WebP image behind every screen, with cover,
+  contain, fill or center framing, focal point, zoom, dimming and optional blur.
+  Selecting another preset never removes it.
+- **Materials** — Immersive, Balanced and Readable transparency, a manual
+  surface-opacity slider, and a minimum-readability safeguard. They apply to a
+  wallpaper image or a solid/gradient canvas. The derived palette can drive the
+  interface, or the preset colours can stay in charge with a manual accent
+  override.
 - **Colour editor** — WCAG contrast warnings with a suggested fix per pairing.
-- **Backgrounds** — solid, gradient, or a PNG/JPEG/WebP image up to 8192 px.
+- **Preset canvas** — a solid or gradient backdrop used when no wallpaper is
+  active, shown through the interface like an image. Show through can be turned
+  off per theme; High Contrast starts opaque.
 - **Icons** — built-in icon packs restyle the in-app brand mark; custom PNG/ICO
   files can replace the live window and tray icons.
 - **Sounds** — built-in cues or your own WAV, MP3, OGG, FLAC, M4A, AAC or Opus

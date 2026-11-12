@@ -59,10 +59,25 @@
   --font-scale: 1;
   --font-weight: 400;
   --row-pad: 8px;
-  --app-bg-image: none;
-  --app-bg-size: cover;
-  --app-bg-opacity: 1;
-  --app-bg-blur: 0px;
+
+  /* Central semantic material tokens. The theme engine overwrites these with
+     solid colors or RGBA scrims depending on the wallpaper and transparency
+     mode. Components use these names instead of raw surface values. */
+  --surface-root: var(--bg);
+  --surface-sidebar: var(--bg-soft);
+  --surface-nav: var(--bg);
+  --surface-panel: var(--panel);
+  --surface-panel-strong: var(--panel-raised);
+  --surface-menu: var(--panel-raised);
+  --surface-dialog: var(--panel-raised);
+  --surface-input: var(--bg-soft);
+  --surface-hover: var(--panel-hover);
+  --surface-border: var(--border);
+  --surface-divider: var(--divider);
+  --app-canvas: transparent;
+  --wallpaper-fallback: transparent;
+  --wallpaper-scrim: transparent;
+  --wallpaper-image-filter: none;
 
   /* Synthetic tokens derived by the theme engine. */
   --danger-ink: #2b0610;
@@ -92,7 +107,7 @@ body,
 }
 
 body {
-  background: var(--bg);
+  background: var(--surface-root);
   color: var(--text);
   font-family: var(--font-ui);
   font-size: calc(13.5px * var(--font-scale, 1) * var(--ui-scale, 1));
@@ -161,53 +176,84 @@ a {
 
 .app-shell {
   position: relative;
+  z-index: 1;
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--app-canvas);
 }
 
-/* The theme background sits behind the entire shell, including the sidebar.
-   Panels keep their own surfaces, so the image shows through the canvas and
-   the gaps instead of reducing readability. */
-.app-shell::before {
-  content: "";
-  position: absolute;
+/* One wallpaper layer for the whole window. It sits behind the app shell and
+   every screen, and crossfades between images so a change never flashes black. */
+.wallpaper-layer {
+  position: fixed;
   inset: 0;
   z-index: 0;
+  overflow: hidden;
   pointer-events: none;
-  background-image: var(--app-bg-image);
-  background-position: center;
-  background-size: var(--app-bg-size);
-  background-repeat: no-repeat;
-  opacity: var(--app-bg-opacity);
-  filter: blur(var(--app-bg-blur));
-  transform: scale(1.03);
+  /* A solid palette base sits behind the frames, so the initial fade-in and
+     any compositor gap never reveal the WebView's own background. */
+  background: var(--wallpaper-fallback, var(--app-canvas, transparent));
+}
+
+.wallpaper-frames {
+  position: absolute;
+  inset: 0;
+}
+
+.wallpaper-frame {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  will-change: opacity, transform;
+}
+
+.wallpaper-frame.is-current {
+  animation: wallpaper-in 650ms var(--ease) both;
+}
+
+.wallpaper-frame.is-previous {
+  animation: wallpaper-out 650ms var(--ease) both;
+}
+
+.wallpaper-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--wallpaper-scrim);
+  transition: background 320ms var(--ease);
+}
+
+@keyframes wallpaper-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes wallpaper-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* Small floating surfaces get a backdrop blur; large screens do not, so the
+   wallpaper stays sharp and recording never pays for a full-window filter. */
+html[data-wallpaper="true"] .popover,
+html[data-wallpaper="true"] .modal,
+html[data-wallpaper="true"] .toast,
+html[data-wallpaper="true"] .music-menu,
+html[data-canvas="true"] .popover,
+html[data-canvas="true"] .modal,
+html[data-canvas="true"] .toast,
+html[data-canvas="true"] .music-menu {
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
 }
 
 .sidebar,
 .main {
   position: relative;
   z-index: 1;
-}
-
-/* When a wallpaper is active, every surface becomes a translucent scrim so the
-   image shows through the whole window; backdrop blur keeps text readable. */
-html[data-bg-image="true"] .app-shell,
-html[data-bg-image="true"] .sidebar,
-html[data-bg-image="true"] .topbar,
-html[data-bg-image="true"] .main,
-html[data-bg-image="true"] .view,
-html[data-bg-image="true"] .view-slot,
-html[data-bg-image="true"] .appearance-panel,
-html[data-bg-image="true"] .appearance-section,
-html[data-bg-image="true"] .appearance-section-body,
-html[data-bg-image="true"] .settings-section,
-html[data-bg-image="true"] .clip-card,
-html[data-bg-image="true"] .theme-card,
-html[data-bg-image="true"] .theme-preview {
-  backdrop-filter: blur(14px) saturate(1.1);
-  -webkit-backdrop-filter: blur(14px) saturate(1.1);
 }
 
 .sidebar {
@@ -217,8 +263,8 @@ html[data-bg-image="true"] .theme-preview {
   flex-direction: column;
   gap: 20px;
   padding: 16px 12px;
-  background: transparent;
-  border-right: 1px solid var(--border);
+  background: var(--surface-sidebar);
+  border-right: 1px solid var(--surface-border);
   transition: width var(--motion-duration) var(--ease), flex-basis var(--motion-duration) var(--ease);
 }
 
@@ -381,8 +427,8 @@ html[data-bg-image="true"] .theme-preview {
   justify-content: space-between;
   gap: 16px;
   padding: 0 calc(28px * var(--ui-scale, 1));
-  border-bottom: 1px solid var(--border);
-  background: transparent;
+  border-bottom: 1px solid var(--surface-border);
+  background: var(--surface-nav);
 }
 
 .topbar-heading {
@@ -415,6 +461,9 @@ html[data-bg-image="true"] .theme-preview {
   overflow-y: auto;
   padding: calc(24px * var(--ui-scale, 1)) calc(28px * var(--ui-scale, 1))
     calc(32px * var(--ui-scale, 1));
+  /* One shared, translucent canvas for every tab. The wallpaper still shows
+     through, but text that sits directly on the page keeps a stable floor. */
+  background: var(--surface-root);
 }
 
 /* Music and Appearance own the full content height and scroll internally. */
@@ -719,8 +768,11 @@ html[data-bg-image="true"] .theme-preview {
 }
 
 .notice-warn {
-  border-color: rgba(251, 191, 36, 0.28);
-  background: var(--warn-soft);
+  border-color: rgba(251, 191, 36, 0.38);
+  /* Tint over a real plate, not a 20%-alpha wash: bright wallpapers must not
+     turn warning copy into low-contrast text. */
+  background: linear-gradient(var(--warn-soft), var(--warn-soft)),
+    var(--surface-panel-strong);
 }
 
 .notice-warn > svg {
@@ -728,8 +780,9 @@ html[data-bg-image="true"] .theme-preview {
 }
 
 .notice-error {
-  border-color: rgba(251, 113, 133, 0.3);
-  background: var(--danger-soft);
+  border-color: rgba(251, 113, 133, 0.4);
+  background: linear-gradient(var(--danger-soft), var(--danger-soft)),
+    var(--surface-panel-strong);
 }
 
 .notice-error > svg {
@@ -990,9 +1043,9 @@ html[data-bg-image="true"] .theme-preview {
   width: 100%;
   height: 34px;
   padding: 0 30px 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--surface-border);
   border-radius: 6px;
-  background: var(--bg-soft);
+  background: var(--surface-input);
   color: var(--text-soft);
   font-size: 12.5px;
   outline: none;
@@ -1262,9 +1315,9 @@ button.clip-upload:focus-visible {
   right: 0;
   z-index: 60;
   padding: 4px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--surface-border);
   border-radius: 8px;
-  background: var(--panel-raised);
+  background: var(--surface-menu);
   box-shadow: 0 16px 40px var(--shadow-color);
   animation: popover-in 160ms var(--ease) both;
 }
@@ -1396,7 +1449,7 @@ button.clip-upload:focus-visible {
   max-width: 360px;
   margin: 40px auto;
   padding: 24px;
-  color: var(--muted);
+  color: var(--text-soft);
   text-align: center;
 }
 
@@ -1477,7 +1530,7 @@ button.clip-upload:focus-visible {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(4, 5, 7, 0.72);
+  background: var(--overlay);
   animation: fade-in 160ms var(--ease) both;
 }
 
@@ -1496,9 +1549,9 @@ button.clip-upload:focus-visible {
   max-height: 88vh;
   overflow-y: auto;
   padding: 18px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--surface-border);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface-dialog);
   box-shadow: 0 24px 64px var(--shadow-color);
   animation: modal-in 180ms var(--ease) both;
 }
@@ -1596,10 +1649,10 @@ button.clip-upload:focus-visible {
   align-items: flex-start;
   gap: 9px;
   padding: 10px 10px 10px 12px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--surface-border);
   border-left-width: 2px;
   border-radius: 8px;
-  background: var(--panel-raised);
+  background: var(--surface-menu);
   box-shadow: 0 12px 32px var(--shadow-color);
   animation: toast-in 160ms var(--ease) both;
 }
@@ -1790,9 +1843,9 @@ button.clip-upload:focus-visible {
   width: 100%;
   height: 34px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--surface-border);
   border-radius: 6px;
-  background: var(--bg-soft);
+  background: var(--surface-input);
   color: var(--text-soft);
   font-size: 12.5px;
   outline: none;
@@ -1820,9 +1873,9 @@ button.clip-upload:focus-visible {
 .input-with-suffix {
   display: flex;
   align-items: center;
-  border: 1px solid var(--border);
+  border: 1px solid var(--surface-border);
   border-radius: 6px;
-  background: var(--bg-soft);
+  background: var(--surface-input);
 }
 
 .input-with-suffix:focus-within {
@@ -2275,8 +2328,8 @@ button.clip-upload:focus-visible {
   gap: 16px;
   margin: 24px -28px 0;
   padding: 12px 28px;
-  border-top: 1px solid var(--border);
-  background: rgba(8, 9, 12, 0.94);
+  border-top: 1px solid var(--surface-border);
+  background: var(--surface-menu);
   backdrop-filter: blur(8px);
 }
 
@@ -2368,13 +2421,15 @@ button.clip-upload:focus-visible {
 /* ------------------------------------------------------------------- boot */
 
 .boot-screen {
+  position: relative;
+  z-index: 1;
   height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: var(--bg);
+  background: var(--surface-root);
   color: var(--muted);
   font-size: 13px;
 }
@@ -2875,9 +2930,9 @@ button.clip-upload:focus-visible {
 .select {
   height: 34px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--surface-border);
   border-radius: var(--radius-sm);
-  background: var(--bg-soft);
+  background: var(--surface-input);
   color: var(--text-soft);
   font-size: 12.5px;
   outline: none;
@@ -3070,6 +3125,7 @@ html[data-motion="none"] *::after {
   min-width: 0;
   min-height: 0;
   border-right: 1px solid var(--border);
+  background: var(--surface-panel);
 }
 
 .music-toolbar {
@@ -3255,9 +3311,9 @@ html[data-motion="none"] *::after {
   flex-direction: column;
   min-width: 196px;
   padding: 4px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--surface-border);
   border-radius: var(--radius-sm);
-  background: var(--panel-raised);
+  background: var(--surface-menu);
   box-shadow: 0 12px 28px color-mix(in srgb, var(--bg) 70%, transparent);
 }
 
@@ -3509,7 +3565,7 @@ html[data-motion="none"] *::after {
 
 .music-side-empty {
   padding: 8px 4px;
-  color: var(--faint);
+  color: var(--text-soft);
   font-size: 11.5px;
   line-height: 1.5;
 }
@@ -3725,8 +3781,8 @@ html[data-music-bar="true"] .toast-stack {
   gap: 16px;
   height: var(--music-bar-h, 56px);
   padding: 0 16px;
-  border-top: 1px solid var(--border-strong);
-  background: var(--panel);
+  border-top: 1px solid var(--surface-border);
+  background: var(--surface-menu);
 }
 
 html[data-sidebar="icons"] .music-bar {
@@ -3997,6 +4053,7 @@ html[data-sidebar="icons"] .music-bar {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  background: var(--surface-panel);
 }
 
 .appearance-editor-head {
@@ -4311,6 +4368,166 @@ html[data-sidebar="icons"] .music-bar {
   flex: 0 0 auto;
 }
 
+/* A miniature of the real app materials. It uses the same semantic tokens as
+   the live window, so the preview cannot drift from the actual interface. */
+.wallpaper-preview {
+  position: relative;
+  height: clamp(190px, 26vh, 260px);
+  overflow: hidden;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius);
+  background: var(--app-canvas);
+  isolation: isolate;
+}
+
+.wallpaper-preview-media,
+.wallpaper-preview-scrim {
+  position: absolute;
+  inset: 0;
+}
+
+.wallpaper-preview-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.wallpaper-preview-scrim {
+  background: var(--wallpaper-scrim);
+}
+
+.wallpaper-preview-ui {
+  position: relative;
+  display: flex;
+  height: 100%;
+}
+
+.wp-preview-sidebar {
+  width: 104px;
+  flex: 0 0 104px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--surface-border);
+  background: var(--surface-sidebar);
+}
+
+.wp-preview-brand {
+  width: 17px;
+  height: 17px;
+  margin-bottom: 6px;
+  border-radius: 5px;
+  background: var(--accent);
+}
+
+.wp-preview-nav {
+  padding: 4px 7px;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.wp-preview-nav.is-active {
+  background: var(--accent-soft);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.wp-preview-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.wp-preview-topbar {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--surface-border);
+  background: var(--surface-nav);
+}
+
+.wp-preview-topbar strong {
+  font-size: 8.5px;
+  letter-spacing: -0.01em;
+}
+
+.wp-preview-chip {
+  width: 26px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--tint-weak);
+}
+
+.wp-preview-body {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+}
+
+.wp-preview-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--surface-border);
+  border-radius: 7px;
+  background: var(--surface-panel);
+}
+
+.wp-preview-dialog {
+  width: 38%;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--surface-border);
+  border-radius: 7px;
+  background: var(--surface-dialog);
+  box-shadow: 0 10px 24px var(--shadow-color);
+}
+
+.wp-preview-panel strong,
+.wp-preview-dialog strong {
+  color: var(--text);
+  font-size: 8.5px;
+}
+
+.wp-preview-panel > span:not(.wp-preview-button),
+.wp-preview-dialog > span {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--tint-weak);
+}
+
+.wp-preview-panel > span.is-short,
+.wp-preview-dialog > span.is-short {
+  width: 62%;
+}
+
+.wp-preview-button {
+  align-self: flex-start;
+  margin-top: auto;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 7.5px;
+  font-weight: 700;
+}
+
 .appearance-issues {
   margin-bottom: 18px;
   padding: 12px;
@@ -4582,10 +4799,7 @@ html[data-sidebar="icons"] .music-bar {
 .music-view {
   width: 100%;
   height: 100%;
-  background: var(--bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  min-height: 0;
 }
 
 .music-iframe {
@@ -4593,7 +4807,7 @@ html[data-sidebar="icons"] .music-bar {
   height: 100%;
   border: 0;
   border-radius: var(--radius);
-  background: var(--bg);
+  background: var(--surface-root);
 }
 
 .music-loading,
