@@ -390,6 +390,13 @@ export function applyTheme(
   // The app canvas only shows a preset background when no global wallpaper is
   // active. Wallpaper always takes precedence, and selecting another preset
   // cannot hide it.
+  // The canvas sits between the desktop and the app. When glass is active it
+  // keeps the palette tint but stays translucent, so the real desktop is
+  // visible through the shell. High Contrast (show_through === false) keeps an
+  // opaque canvas.
+  const canvasAlpha = glassActive ? alpha("root") : 1;
+  const canvasColor = (value: string) => translucent(value, canvasAlpha);
+
   if (wallpaperActive) {
     style.setProperty("--app-canvas", "transparent");
   } else if (theme.background.kind === "image" && theme.background.image) {
@@ -402,15 +409,15 @@ export function applyTheme(
           : theme.background.fit;
     style.setProperty(
       "--app-canvas",
-      url ? `url("${url}") center / ${bgSize} no-repeat` : colors.background,
+      url ? `url("${url}") center / ${bgSize} no-repeat` : canvasColor(colors.background),
     );
   } else if (theme.background.kind === "gradient") {
     style.setProperty(
       "--app-canvas",
-      `linear-gradient(160deg, ${theme.background.gradient_from}, ${theme.background.gradient_to})`,
+      `linear-gradient(160deg, ${canvasColor(theme.background.gradient_from)}, ${canvasColor(theme.background.gradient_to)})`,
     );
   } else {
-    style.setProperty("--app-canvas", colors.background);
+    style.setProperty("--app-canvas", canvasColor(colors.background));
   }
 }
 

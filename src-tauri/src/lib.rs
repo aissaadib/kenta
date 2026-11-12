@@ -19,6 +19,7 @@ mod sound;
 mod storage;
 mod timeline;
 mod voice;
+mod window_shell;
 mod worker;
 
 use capture::{CaptureConfig, CaptureEngine};
@@ -146,6 +147,7 @@ pub fn run() {
           appearance::apply_window_colors(&window, &theme);
           #[cfg(not(windows))]
           let _ = &window;
+          window_shell::apply(&window);
         }
         if let Some(warning) = appearance::apply_runtime_icons(&handle, &theme) {
           log::warn!("{warning}");

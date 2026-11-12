@@ -346,3 +346,62 @@ These need a native window, a real audio device or a separate machine:
   branch.
 - System media transport controls (not implemented).
 - `.github/workflows/release.yml`, which was not executed.
+
+## Frameless window shell (`feature/frameless-shell`)
+
+### Architecture
+
+- The `main` window is now `decorations: false`, `transparent: true`,
+  `shadow: true`, with an 880x560 minimum in `tauri.conf.json`.
+- **True WebView2 per-pixel transparency** is used, not Mica or Acrylic. Mica
+  only samples the wallpaper through a system material, and Acrylic blurs the
+  desktop and has a documented resize/drag cost on Windows 11 22621. True
+  transparency is the only option that shows the real desktop content, unblurred,
+  through the app. The trade-off is that there is no system blur.
+- `window_shell.rs` asks DWM for `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND`
+  and `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`. `WS_THICKFRAME` is deliberately
+  kept: it is the invisible resize frame that provides native edge resizing,
+  Aero Snap and the standard maximized rect. Its 7px thickness lives outside the
+  client area, so the visible shell still fills the work area exactly.
+- The React shell adds `--shell-radius: 16px`, a 1px border and a drop shadow to
+  `.app-shell`; `.wallpaper-layer` is clipped to the same radius. `body` is
+  transparent. `html[data-maximized="true"]` removes the radius, border and
+  shadow. `WindowControls.tsx` drives minimize / toggle-maximize / close through
+  `@tauri-apps/api/window`; the topbar and brand are `data-tauri-drag-region`
+  surfaces. `ResizeHandles.tsx` adds 6px edge and 12px corner strips that call
+  `startResizeDragging`.
+- The existing material engine already renders every surface as a
+  palette-tinted RGBA scrim. `--app-canvas` is now translucent for solid and
+  gradient presets when `show_through` is enabled, so the desktop shows through
+  the canvas instead of an opaque colour. High Contrast (`show_through: false`)
+  keeps fully opaque surfaces, and Immersive / Balanced / Readable still set the
+  per-surface alpha floors.
+
+### Verified on the release binary (1920x1080 physical, 125% DPI)
+
+- **Restored**: frameless, 16px rounded silhouette, custom minimize / maximize /
+  close at the top right, desktop (a browser page) visible through the sidebar,
+  nav and panels. Client area measured 1040x720.
+- **Maximized**: client area measured `0,0,1920x1020` physical — the full work
+  area above the 48px taskbar — with `IsZoomed` true and the controls still
+  visible. The outer rect reads `-7,-7,1543,823` at 100% logical scale; that is
+  the invisible `WS_THICKFRAME`, not clipped content.
+- **Restore**: returns to 1040x720 at the previous position.
+- **Drag**: a synthetic drag on the topbar moved the window (77,77 -> 100,137 at
+  the 125%-aware scale).
+- **Builds**: `npx tsc --noEmit`, `npm run lint`, `npm run build`,
+  `cargo check --release` and `cargo build --release` all pass.
+
+### Not verified
+
+- Native edge/corner resizing and Aero Snap could not be driven reliably with
+  synthetic mouse input (`mouse_event` does not enter the non-client resize
+  loop). The native frame and `startResizeDragging` are wired but need a real
+  pointer test.
+- Minimize and close were rendered but not clicked; close would terminate the
+  session under test.
+- High Contrast, Immersive / Readable modes, image wallpapers, recording and the
+  editor were not re-exercised in this pass.
+- Memory was not re-measured for this shell; it adds no webview, no second
+  background layer and no animation loop, so the existing baseline is expected
+  to hold, but that is not a measurement.
