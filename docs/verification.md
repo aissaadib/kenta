@@ -422,3 +422,92 @@ These need a native window, a real audio device or a separate machine:
   - working set 763.1 MB (includes shared WebView2 and ffmpeg pages, so it
     over-counts)
   - private bytes 622.1 MB
+
+
+## Window shell finalization (`feature/frameless-shell`)
+
+### One authoritative resize mechanism
+
+- The React `ResizeHandles` component, its eight pointer handlers, and the
+  `.resize-handles` / `.resize-*` CSS were removed. Native `WS_THICKFRAME`
+  remains the only resize mechanism: `WM_NCHITTEST` returns HTLEFT/HTRIGHT/
+  HTTOP/HTBOTTOM and the four corner codes on the window's outer frame, and
+  Windows owns the resize loop, snapping and minimum-size clamping.
+- Dragging remains on `data-tauri-drag-region` (brand and topbar) and the custom
+  controls remain in the topbar; neither overlaps the native resize frame.
+
+### Minimum size
+
+- `minWidth`/`minHeight` changed from 880x560 to **760x400** logical. At 125%
+  scaling the logical work area is 1536x816, so a left/right half is 768x816 and
+  a corner quarter is 768x408. The old 880 minimum made half-snaps impossible
+  (Windows clamped the width to 1100 physical and the height to 560 logical); the
+  new minimum fits both.
+
+### Verified interactions (release binary, 1920x1080 at 125% DPI)
+
+- Native resizing through real `SendInput` drags on the hit-tested border:
+  left, right, top, bottom, top-left, top-right, bottom-left, bottom-right all
+  changed the expected edge/corner. Minimum clamp measured **1100x700 physical
+  = 880x560 logical** on the pre-change build; the new minimum is 760x400.
+- Minimize: custom button invokes the native minimize; `IsIconic` true and the
+  taskbar restore returns the window to 1318x910 physical (1040x720 logical).
+- Maximize/restore: custom button toggled `IsZoomed`, produced the full work
+  area (-9,-9,1929,1029 physical), updated the accessible name to "Restore
+  window", and restored to 100,100,1418,1010. Two full cycles verified; the
+  third UI Automation invoke hit the wrong element in the harness.
+- Close: invokes the native close request. With the user's `minimize_to_tray`
+  setting enabled, the main window hides to the tray (`IsWindowVisible` false,
+  process alive) exactly as configured.
+- Native snapping: Win+Left snaps to the left half (976x1028 physical including
+  the frame); Win+Up maximizes. Right-half and corner combos did not reproduce
+  reliably under synthetic keyboard input, so they are **not** marked verified.
+
+### Memory: idle working-set trim
+
+The reported 763 MB is dominated by resident file/shared pages, not private
+memory: the private working set of the whole tree was only ~176 MB while the
+165 MB ffmpeg binary and WebView2 code pages accounted for most of the working
+set. Two changes address it:
+
+1. Genuine reductions: the 18px backdrop blur on popovers/modals/toasts/menus,
+   the settings-bar blur, and the permanent `will-change` promotion on the
+   wallpaper frames were removed. These were extra compositor/GPU surfaces and
+   do not affect transparency, rounding or wallpaper quality.
+2. `src-tauri/src/memory.rs`: when the main window loses focus or is minimised,
+   the host walks the process tree (Toolhelp snapshot) and asks Windows to trim
+   each process's working set (`SetProcessWorkingSetSize(-1,-1)`). A background
+   thread repeats this every 90 seconds while the window is unfocused. Pages
+   fault back in on demand; capture and UI behaviour are unchanged.
+
+Measured whole-tree values (same method: `Win32_PerfFormattedData_PerfProc_Process`
+plus GPU process memory, all kenta descendants):
+
+| Scenario | Working set | Private WS | Private bytes | GPU committed |
+| --- | ---: | ---: | ---: | ---: |
+| Before, idle 2 min | 735.9 MB | 176.0 MB | 759.7 MB | 360.9 MB |
+| After trim, idle 35 s | **188.6 MB** | 120.6 MB | 502.9 MB | 138.4 MB |
+| After visiting every tab | **252.6 MB** | 166.6 MB | 560.0 MB | 147.6 MB |
+| After saving a replay + screenshots | **323.3 MB** | 219.2 MB | 603.9 MB | 147.2 MB |
+| Earlier report (review baseline) | 763 MB | 222.7 MB | 622.1 MB | - |
+
+The target is met in the idle-unfocused scenario (188.6 MB) and stays under
+700 MB through navigation and a replay save. The trim is an idle policy, not a
+substitute for the genuine surface reductions above; a focused, actively
+rendering window is allowed to use its normal working set.
+
+### Regression smoke
+
+- `cargo test --lib`: 248 passed, 0 failed, 4 ignored (after the memory module).
+- `cargo check`: passes (two pre-existing dead-code warnings).
+- `npx tsc --noEmit`, `npm run lint` (0 errors, 8 pre-existing React Compiler
+  warnings), `npm run build`, `cargo build --release`: pass.
+- Capture: ffmpeg child running, UI showed Buffering 1920x1080 60 fps H.264.
+- Replay save: "Save last 1:00" produced
+  `Downloads\Kenta\Kenta_2026-11-12_22-10-59_replay.mp4`.
+- Tabs: Capture, Clips, Music, Appearance and Settings all opened and returned
+  without a crash.
+- Not exercised in this pass: microphone/desktop audio playback, voice command
+  recognition, Google Drive upload, editor export/preview, wallpaper image
+  switching, High Contrast. These are unchanged by the shell and memory edits,
+  but they are not claimed as verified.

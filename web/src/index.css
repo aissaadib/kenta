@@ -213,7 +213,6 @@ a {
   width: 100%;
   height: 100%;
   user-select: none;
-  will-change: opacity, transform;
 }
 
 .wallpaper-frame.is-current {
@@ -239,20 +238,6 @@ a {
 @keyframes wallpaper-out {
   from { opacity: 1; }
   to { opacity: 0; }
-}
-
-/* Small floating surfaces get a backdrop blur; large screens do not, so the
-   wallpaper stays sharp and recording never pays for a full-window filter. */
-html[data-wallpaper="true"] .popover,
-html[data-wallpaper="true"] .modal,
-html[data-wallpaper="true"] .toast,
-html[data-wallpaper="true"] .music-menu,
-html[data-canvas="true"] .popover,
-html[data-canvas="true"] .modal,
-html[data-canvas="true"] .toast,
-html[data-canvas="true"] .music-menu {
-  backdrop-filter: blur(18px) saturate(1.12);
-  -webkit-backdrop-filter: blur(18px) saturate(1.12);
 }
 
 .sidebar,
@@ -2335,7 +2320,6 @@ button.clip-upload:focus-visible {
   padding: 12px 28px;
   border-top: 1px solid var(--surface-border);
   background: var(--surface-menu);
-  backdrop-filter: blur(8px);
 }
 
 .settings-savebar-copy {
@@ -4957,84 +4941,3 @@ html[data-maximized="true"] .wallpaper-layer {
   user-select: none;
 }
 
-/* ---------------------------------------------------- window resize edges */
-
-.resize-handles {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  pointer-events: none;
-}
-
-.resize-handle {
-  position: absolute;
-  pointer-events: auto;
-}
-
-.resize-n {
-  top: 0;
-  left: 8px;
-  right: 8px;
-  height: 6px;
-  cursor: ns-resize;
-}
-
-.resize-s {
-  bottom: 0;
-  left: 8px;
-  right: 8px;
-  height: 6px;
-  cursor: ns-resize;
-}
-
-.resize-e {
-  top: 8px;
-  bottom: 8px;
-  right: 0;
-  width: 6px;
-  cursor: ew-resize;
-}
-
-.resize-w {
-  top: 8px;
-  bottom: 8px;
-  left: 0;
-  width: 6px;
-  cursor: ew-resize;
-}
-
-.resize-ne,
-.resize-nw,
-.resize-se,
-.resize-sw {
-  width: 12px;
-  height: 12px;
-}
-
-.resize-ne {
-  top: 0;
-  right: 0;
-  cursor: nesw-resize;
-}
-
-.resize-nw {
-  top: 0;
-  left: 0;
-  cursor: nwse-resize;
-}
-
-.resize-se {
-  bottom: 0;
-  right: 0;
-  cursor: nwse-resize;
-}
-
-.resize-sw {
-  bottom: 0;
-  left: 0;
-  cursor: nesw-resize;
-}
-
-html[data-maximized="true"] .resize-handles {
-  display: none;
-}

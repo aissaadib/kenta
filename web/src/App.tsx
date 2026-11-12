@@ -35,7 +35,6 @@ import { SettingsView } from "./views/SettingsView";
 import { MusicProvider } from "./music";
 import { MusicBar } from "./components/MusicBar";
 import { WindowControls } from "./components/WindowControls";
-import { ResizeHandles } from "./components/ResizeHandles";
 import { Popover } from "./components/Popover";
 import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
 import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
@@ -355,7 +354,6 @@ export default function App() {
 
   return (
     <MusicProvider notify={addToast}>
-      <ResizeHandles />
       <div className="app-shell">
       <aside className="sidebar">
         <div className="brand" data-tauri-drag-region>

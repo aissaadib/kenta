@@ -9,6 +9,7 @@ mod errors;
 mod ffmpeg;
 mod hotkey;
 mod instance;
+mod memory;
 mod migrate;
 mod monitors;
 mod music;
@@ -148,15 +149,45 @@ pub fn run() {
           #[cfg(not(windows))]
           let _ = &window;
           window_shell::apply(&window);
+          // The shell owns its chrome, so make visibility explicit: a window
+          // restored from a tray session must still appear on a fresh launch.
+          let _ = window.show();
+          let _ = window.set_focus();
         }
         if let Some(warning) = appearance::apply_runtime_icons(&handle, &theme) {
           log::warn!("{warning}");
         }
       }
-      worker::start(handle);
+      worker::start(handle.clone());
+      // A replay recorder lives in the background. Trim the tree's working set
+      // when the user is elsewhere so the ffmpeg and WebView2 file pages are
+      // not held resident for hours. Monitor the window in a small thread.
+      #[cfg(windows)]
+      {
+        let app = handle;
+        std::thread::spawn(move || {
+          std::thread::sleep(std::time::Duration::from_secs(20));
+          loop {
+            let unfocused = app
+              .get_webview_window("main")
+              .and_then(|window| window.is_focused().ok())
+              .map(|focused| !focused)
+              .unwrap_or(true);
+            if unfocused {
+              memory::trim_process_tree();
+            }
+            std::thread::sleep(std::time::Duration::from_secs(90));
+          }
+        });
+      }
       Ok(())
     })
     .on_window_event(|window, event| {
+      // Focus loss is the natural idle point: page out the recorder and webview
+      // working sets instead of keeping them resident behind another app.
+      if let WindowEvent::Focused(false) = event {
+        memory::trim_process_tree();
+      }
       if let WindowEvent::CloseRequested { api, .. } = event {
         let app = window.app_handle();
         let state = app.state::<AppState>();
