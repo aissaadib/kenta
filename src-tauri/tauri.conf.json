@@ -21,25 +21,6 @@
         "minimizable": true,
         "maximizable": true,
         "closable": true
-      },
-      {
-        "label": "overlay",
-        "title": "Kenta Clip",
-        "url": "overlay.html",
-        "width": 120,
-        "height": 120,
-        "theme": "Dark",
-        "resizable": false,
-        "fullscreen": false,
-        "minimizable": false,
-        "maximizable": false,
-        "closable": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "focus": false
       }
     ],
     "security": {
