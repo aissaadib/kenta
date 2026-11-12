@@ -405,3 +405,20 @@ These need a native window, a real audio device or a separate machine:
 - Memory was not re-measured for this shell; it adds no webview, no second
   background layer and no animation loop, so the existing baseline is expected
   to hold, but that is not a measurement.
+
+### Footprint and cleanup
+
+- Repository before cleanup: **5.8 GB**, of which `src-tauri/target` was
+  **5.0 GB** of build artifacts.
+- After `rm -rf src-tauri/target`: **776 MB** total (`.git` 206 MB, `web` 132 MB,
+  `src-tauri` 317 MB, `Kenta-Release` 106 MB, `docs` 18 MB).
+- The runnable release build is staged in `Kenta-Release/app/` (gitignored). Its
+  `ffmpeg.exe` / `ffprobe.exe` are **hardlinks** to the copies in
+  `src-tauri/binaries`, so the 330 MB is stored once, not twice.
+- Running release app with the 60 s replay buffer full, measured across the whole
+  process tree (kenta + 6 WebView2 helpers + ffmpeg + conhost):
+  - **private working set 222.7 MB** (the per-process Memory column; under the
+    700 MB target)
+  - working set 763.1 MB (includes shared WebView2 and ffmpeg pages, so it
+    over-counts)
+  - private bytes 622.1 MB
