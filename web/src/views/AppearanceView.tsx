@@ -451,8 +451,13 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     const current = wallpaperRef.current ?? wallpaperDraft;
     if (!current) return;
     let next: Wallpaper = { ...current, mode };
-    if (mode === "wallpaper" && next.adaptive && next.image && !next.palette) {
-      next = await analyzeForWallpaper(next.image, next);
+    if (mode === "wallpaper" && next.image) {
+      // Choosing wallpaper colors is a request to use the derived palette, so
+      // keep the adaptive switch in sync instead of making the choice a no-op.
+      next.adaptive = true;
+      if (!next.palette) {
+        next = await analyzeForWallpaper(next.image, next);
+      }
     }
     commitWallpaper(next, true);
   };
@@ -471,10 +476,14 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     const current = wallpaperRef.current ?? wallpaperDraft;
     if (!current?.image) return;
     const next = await analyzeForWallpaper(current.image, current);
-    commitWallpaper(next, true);
-    if (next.palette) {
-      onNotify("success", "Palette generated", "Colors updated from the wallpaper.");
+    if (!next.palette) {
+      commitWallpaper(next, true);
+      return;
     }
+    // Generating is an explicit request to use the new colors. Without both
+    // flags the palette is only cached and the interface stays unchanged.
+    commitWallpaper({ ...next, mode: "wallpaper", adaptive: true }, true);
+    onNotify("success", "Palette generated", "Colors updated from the wallpaper.");
   };
 
   const setTransparencyMode = (

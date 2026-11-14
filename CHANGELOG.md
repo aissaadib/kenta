@@ -42,6 +42,13 @@ All notable changes to Kenta are documented here. The format follows
 - Wallpaper saves validate that the file is a decodable image, not merely that
   the path exists. Unreadable files are removed and the preset canvas returns.
 
+### Fixed
+
+- Generate palette now activates the colors it produces: on success it switches
+  Wallpaper colors to **From wallpaper** and enables **Adaptive palette**, so the
+  generated palette is applied immediately instead of only being cached. Choosing
+  **From wallpaper** also enables the adaptive palette when an image is active.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added
