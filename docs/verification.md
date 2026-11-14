@@ -1,9 +1,256 @@
 # Verification record
 
-Everything below was executed on the development machine. Anything not run is
-listed explicitly under "Not verified"; nothing in this file is inferred.
+The current build is recorded first; the earlier memory-optimization record
+follows as history. Everything here was executed on the development machine.
+Anything not run is listed explicitly under "Not verified"; nothing in this
+file is inferred.
 
-## Environment
+## Current build: frameless shell (`feature/frameless-shell`)
+
+This section is the current verification record. It supersedes the two shell
+sections that were previously at the end of this file.
+
+### Environment and build
+
+- Windows 11 x64, NVIDIA GeForce RTX 3050 Ti Laptop plus Intel Iris Xe.
+- Display 1920x1080 physical at 125% scaling: 1536x816 logical work area above
+  the taskbar.
+- Branch `feature/frameless-shell`, on top of `6fb4aa6`, `f43e2b5` and
+  `cc4b14d`.
+- Release build: `cargo build --release`, 4m23s. `kenta.exe` is 12,694,528
+  bytes, SHA-256
+  `C795362F67BBB38802A3291AC903B3ECC233AE248C0CFC0E71361EFE5BB432EA`.
+- The runnable build is staged in `Kenta-Release/app/` (gitignored). The NSIS
+  installer was not rebuilt.
+
+### Commands
+
+| Command | Result |
+| --- | --- |
+| `cargo test --lib` | 248 passed, 0 failed, 4 ignored. |
+| `cargo check` | Succeeds; only the two pre-existing `VoiceConfig::show_overlay` / `VoiceSink::show_overlay` dead-code warnings. |
+| `npx tsc --noEmit` | Succeeds. |
+| `npm run lint` | 0 errors, 8 pre-existing React Compiler warnings. |
+| `npm run build` | Succeeds; JS 420.24 kB (121.65 kB gzip), CSS 65.68 kB (12.12 kB gzip). |
+| `cargo build --release` | Succeeds; one pre-existing linker warning (`.rsrc merge failure: multiple non-default manifests`). |
+
+### Architecture
+
+- `src-tauri/tauri.conf.json` creates the main window with
+  `decorations: false`, `transparent: true`, `shadow: true` and a minimum of
+  **760x400 logical** pixels. `additionalBrowserArgs` replaces wry's defaults,
+  so it explicitly keeps `msWebOOUI,msPdfOOUI,msSmartScreenProtection,
+  BackForwardCache` and adds `--js-flags=--max-semi-space-size=2`.
+- `src-tauri/src/window_shell.rs` asks DWM for
+  `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` and
+  `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`. `WS_THICKFRAME` is deliberately
+  retained: it is the invisible native frame that owns edge resizing, Aero Snap
+  and the standard maximized rectangle. Its thickness lies outside the client
+  area, so the visible shell fills the work area exactly.
+- **True WebView2 per-pixel transparency** is used, not Mica or Acrylic. Mica
+  only samples the wallpaper through a system material, and Acrylic blurs the
+  desktop and has a documented resize/drag cost. Per-pixel transparency is the
+  only option that shows real desktop content, unblurred, through the app. The
+  trade-off is that there is no system blur.
+- The React shell uses `--shell-radius: 16px`, a 1px border and no CSS shadow
+  (the clipped shadow was removed). `.wallpaper-layer` is clipped to the same
+  radius. `body` is transparent. `html[data-maximized="true"]` removes the
+  radius and border.
+- `web/src/components/WindowControls.tsx` drives minimize, toggle-maximize and
+  close through `@tauri-apps/api/window`. The topbar and brand are
+  `data-tauri-drag-region` surfaces. The brand logo/wordmark and the topbar
+  heading have `pointer-events: none`, so text does not intercept the native
+  drag or double-click handler; interactive children opt back in. Tauri's
+  drag script implements `start_dragging` and `internal_toggle_maximize`.
+- The React `ResizeHandles` component and its CSS were removed. Native
+  `WS_THICKFRAME` is the only resize mechanism; there is no duplicate
+  pointer-driven resize path.
+- The material engine renders every surface as a palette-tinted RGBA scrim.
+  `--app-canvas` is translucent for solid and gradient presets when
+  `show_through` is enabled. A Kenta wallpaper is a **translucent sheet** over
+  the real desktop, not an opaque picture: the theme engine sets
+  `--wallpaper-layer-opacity` to 0.70 / 0.80 / 0.90 for Immersive / Balanced /
+  Readable with the contrast safeguard on, and 0.58 / 0.70 / 0.82 with it off.
+  High Contrast (`show_through: false`) forces an opaque canvas and opaque
+  surfaces even when an image wallpaper is active.
+
+### Desktop transparency evidence
+
+`docs/screenshots/desktop-transparency.png` is a full-desktop capture of the
+final build over a live editor/browser window at 1220x760 physical. The browser
+tabs, headings and body text behind Kenta are legible through the entire
+window, while Kenta's Purple Haze wallpaper is visible at 70% opacity. The
+underlying content is not part of Kenta's assets, so this is real desktop
+content, not a painted wallpaper. `docs/screenshots/frameless-restored.png` is
+a 1252x792 crop of the same capture.
+
+Live computed values in that session, read over the WebView2 DevTools protocol:
+
+| Token | Value |
+| --- | --- |
+| `--wallpaper-layer-opacity` | `0.7` |
+| computed opacity of `.wallpaper-layer` | `0.7` |
+| `--app-canvas` | `transparent` |
+| `--shell-radius` | `16px` |
+| `.topbar-heading` `pointer-events` | `none` |
+| hit target at the heading centre | `HEADER.topbar[data-tauri-drag-region]` |
+| `html[data-maximized]` | `false` |
+
+### Window controls, geometry and snapping
+
+These interactions were driven with real `SendInput` mouse/keyboard events on
+the release shell binary (1920x1080 physical, 125% DPI). The final rebuild
+changed material tokens, drag pass-through CSS and browser startup arguments;
+the control, resize and snap code paths are unchanged.
+
+- **Minimize / restore**: the custom minimize button set `IsIconic` true; the
+  taskbar restore returned the window to its previous bounds.
+- **Maximize / restore**: three complete cycles. Maximized DWM frame and client
+  were exactly `0,0,1920x1020` inside the `0,0,1920,1020` work area; the outer
+  window rectangle was `-9,-9,1929,1029` (the invisible frame). Restore returned
+  exactly to `950x500` physical at the previous position, with `IsZoomed` false.
+  The accessible button name changed between "Maximize window" and "Restore
+  window".
+- **Snap left / right**: `Win+Left` produced a DWM frame of `0,0,960,1020`
+  (window `-8,0,968,1028`); `Win+Right` produced `960,0,1920,1020`
+  (`952,0,1928,1028`).
+- **Quarter snaps**: all four corners produced a 960x510 DWM frame in the
+  expected quadrant (`0,0`, `960,0`, `0,510`, `960,510`), with the window
+  rectangle 976x518 including the frame.
+- **Drag-to-snap**: dragging the topbar to the left edge produced the left half;
+  dragging to each corner produced the corresponding quarter. `Win+Up`
+  maximized and `Win+Down` restored.
+- **Close**: with `minimize_to_tray` enabled, the close button hides the window
+  to the tray (`IsWindowVisible` false, process alive). With it disabled, the
+  process exits and the FFmpeg child is finalized.
+
+### Native resize and minimum size
+
+- All eight directions were driven with real `SendInput` drags on the hit-tested
+  frame: left, right, top, bottom, top-left, top-right, bottom-left and
+  bottom-right. Each changed only the expected edge or corner.
+- Minimum clamp measured **950x500 physical = 760x400 logical** (client
+  932x490). At 125% scaling a left/right half is 768 logical wide and a corner
+  quarter is 768x408, so both fit the new minimum.
+- The maximized shell uses the full work area with no clipped content; the
+  visible shell's radius and border are removed by
+  `html[data-maximized="true"]`.
+
+### Memory
+
+Method: walk `Win32_Process` parent IDs from `kenta.exe` so FFmpeg, every
+WebView2 helper and `conhost` are included. Working set, private working set and
+private bytes come from `Win32_PerfFormattedData_PerfProc_Process`; GPU
+committed comes from the `GPU Process Memory` counters, summed per PID. Values
+are MB. The 60-second replay buffer was running for every row.
+
+| Scenario | Processes | Working set | Private WS | Private bytes | GPU committed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Fresh launch, focused, 25 s | 9 | 280.5 | 104.5 | 501.9 | 136.5 |
+| Focused idle, 60 s | 9 | 353.1 | 129.0 | 493.4 | 135.6 |
+| After visiting every tab | 9 | 268.7 | 177.3 | 568.6 | 155.6 |
+| After saving a replay | 9 | 216.6 | 160.3 | 570.6 | 146.3 |
+| Unfocused, 8 s after save (trim) | 9 | **216.8** | **157.7** | **565.4** | **146.3** |
+
+Per-process breakdown at the final unfocused point:
+
+| Process | Working set | Private WS | Private bytes | GPU committed |
+| --- | ---: | ---: | ---: | ---: |
+| FFmpeg capture child | 90.1 | 85.2 | 256.5 | 59.9 |
+| Kenta host | 8.3 | 4.2 | 25.5 | 0.0 |
+| WebView2 (six processes) | 118.4 | 68.3 | 282.2 | 86.4 |
+| `conhost` | 0.0 | 0.0 | 1.2 | 0.0 |
+| **Total** | **216.8** | **157.7** | **565.4** | **146.3** |
+
+The total process-tree working set stayed between **216.6 MB and 353.1 MB**
+across launch, idle, navigation, replay save and the unfocused trim. The
+700 MB ceiling is met with more than 340 MB of headroom; the 650-680 MB target
+was a ceiling, and actual usage sits well below it. Working set includes shared WebView2 and
+FFmpeg pages, so it over-counts unique RAM; private working set is the
+Task-Manager-style figure.
+
+Comparison with the earlier shell measurement recorded on this branch before
+the trim and surface reductions (idle, two minutes): working set fell from
+735.9 MB to 216.8 MB, private working set from 176.0 MB to 157.7 MB, private
+bytes from 759.7 MB to 565.4 MB and GPU committed from 360.9 MB to 146.3 MB.
+The idle policy remains: `src-tauri/src/memory.rs` trims the process tree when
+the main window loses focus or is minimized, and repeats every 90 seconds while
+unfocused. This sits alongside the genuine reductions (removed backdrop blur on
+popovers/modals/toasts/menus, the settings-bar blur and the permanent
+`will-change` promotion on wallpaper frames), not in place of them.
+
+### Feature smoke
+
+- Capture showed `Buffering 1920x1080 - 60 fps - H.264 (x264) - No audio` with
+  a 1:00 replay window.
+- `F8` saved a clip: `C:\Users\aissa\Downloads\Kenta\Kenta_2026-11-14_08-55-41_replay.mp4`,
+  94,539,287 bytes.
+- Capture, Clips, Music, Appearance and Settings all opened and returned to
+  Capture without a crash.
+- The user's live appearance loaded unchanged: Purple Haze, image wallpaper
+  `backgrounds/712500b3-b6bd-4589-85cf-337ecf86980d.png`, Immersive, 25% surface
+  opacity, safeguard on. The wallpaper layer computed to 0.7 opacity over the
+  real desktop.
+- Not re-exercised on the final build: High Contrast, solid/gradient canvas
+  switching, editor export, voice commands, audio devices and Google Drive.
+
+### Screenshots
+
+- `desktop-transparency.png` (full desktop) and `frameless-restored.png` (crop):
+  final build, restored window, real desktop visible through the translucent
+  wallpaper sheet.
+- `01`-`25`: the existing view and appearance captures listed below.
+- The old `final-restored.png`, `final-maximized.png`, `snap-left*.png`,
+  `frameless-maximized*.png` and the old `frameless-restored*.png` were removed.
+  They were taken when Kenta's wallpaper matched the desktop artwork and could
+  be misread as proof of transparency. No replacement maximized or snapped
+  screenshot was fabricated; those states are recorded by the geometry above.
+
+### Compatibility limits
+
+- **150% scaling**: the logical work area is 1280x720, so a half-screen is 640
+  logical pixels. The 760 minimum is wider, and Windows clamps a half-snap to
+  760 instead of an exact half. At 125% (the test display) a half is 768 and
+  fits. At 100% a half is 960 and fits.
+- **Windows 10**: the DWM rounded-corner and border-color attributes are
+  Windows 11 features; they fail harmlessly. The CSS radius still clips the
+  shell and the transparent corners still show the desktop, but the exact DWM
+  silhouette is not claimed on Windows 10.
+- **Blur**: true per-pixel transparency means no system blur. Readable mode
+  raises surface alpha instead.
+- **GPUs and mixed DPI**: the shell was tested on the built-in 1920x1080
+  display. Multi-monitor moves, mixed-DPI monitors and discrete-GPU-only
+  laptops were not tested.
+- **Installer**: the NSIS package was not rebuilt; only the release executable
+  was staged.
+
+### Not verified
+
+- Double-click maximize and a real drag started directly over the heading text
+  were not re-clicked after the final rebuild. The native handler and the
+  heading-to-header hit test are present and the heading resolves to the
+  drag-region header element.
+- High Contrast on the final build (the opaque-canvas branch is implemented but
+  was not re-run).
+- Native file pickers, audio playback, microphone/voice recognition, Google
+  Drive upload, editor export/preview, the installer and system media controls.
+- Multi-monitor and Windows 10 behavior.
+
+### Commit history
+
+- `6fb4aa6` `feat(shell): frameless rounded window with real desktop transparency`
+- `f43e2b5` `docs: record window shell footprint and staged build`
+- `cc4b14d` `fix(shell): native-only resize, snap-compatible minimum, idle memory trim`
+- `cbd0fdd` `fix(shell): keep the real desktop visible through wallpapers`
+- This verification record is the documentation commit that follows `cbd0fdd`.
+
+---
+
+## Historical record: `perf/memory-optimization`
+
+Everything below this line was measured on the earlier memory-optimization branch and is kept as history. The two outdated shell sections that previously followed it have been replaced by the current record above.
+
+### Environment
 
 - Windows 11 x64, NVIDIA GeForce RTX 3050 Ti Laptop (NVENC) plus Intel Iris Xe.
 - Branch `perf/memory-optimization`:
@@ -15,7 +262,7 @@ listed explicitly under "Not verified"; nothing in this file is inferred.
   SHA-256 `C9D6BB6A868E6B0A286D09FBF51E72F26BB6E71BFDE136CF48E478CCD4C35B1F`.
 - No installer was rebuilt for this branch.
 
-## Commands and results
+### Commands and results
 
 | Command | Result |
 | --- | --- |
@@ -25,7 +272,7 @@ listed explicitly under "Not verified"; nothing in this file is inferred.
 | `npm run build` (web) | Succeeds. `index-*.js` 404.51 kB (117.83 kB gzip), `index-*.css` 64.95 kB (12.00 kB gzip). |
 | `cargo build --release` | Succeeds, Rust compile 3m 04s. |
 
-## How memory was measured
+### How memory was measured
 
 - A process-tree snapshot walks `Win32_Process` parent IDs from every
   `kenta.exe` root, so the FFmpeg child, WebView2 processes and `conhost` are
@@ -43,7 +290,7 @@ listed explicitly under "Not verified"; nothing in this file is inferred.
   uniquely costs. Task Manager's default "Memory" figure for a process is
   private working set.
 
-## Before and after
+### Before and after
 
 The pre-change run recorded an idle desktop footprint of **995 MB private
 working set**, of which **857 MB was the FFmpeg child**. Two measured changes
@@ -74,7 +321,7 @@ The final idle breakdown after two minutes hidden:
 | `conhost` | 0.8 MB |
 | **Total** | **202.3 MB** |
 
-## Optimization 1: bounded x264 threads and no latency buffers
+### Optimization 1: bounded x264 threads and no latency buffers
 
 `libx264` sizes its frame-thread pool from the logical core count (1.5 threads
 per core). Every thread keeps its own frame buffers, and a replay buffer has no
@@ -112,7 +359,7 @@ real-time threshold. The chosen flags keep the bitrate and visual result within
 noise while removing roughly 90% of encoder memory. The cap is a throughput
 setting, not a hard memory limit; slower machines use fewer threads.
 
-## Optimization 2: create the clip overlay on first use
+### Optimization 2: create the clip overlay on first use
 
 The always-on-top voice-clip confirmation is a separate Tauri window, and
 WebView2 starts a separate renderer for it. It was declared in
@@ -135,7 +382,7 @@ the final build a fresh launch exposes only the main page target and idles at
 trade-off is that the first overlay use pays WebView2 window creation; later
 uses reuse the window. The exact first-use latency was not benchmarked.
 
-## Final per-scenario measurements
+### Final per-scenario measurements
 
 Release build, capture running (FFmpeg child included), after visiting each
 view. All values are MB except the JS heap.
@@ -187,7 +434,7 @@ Target assessment:
   first.
 - Post-cleanup after GC: **354.3 MB** private working set.
 
-## Long idle and cache behavior
+### Long idle and cache behavior
 
 A separate 120-second hidden-idle run on the final build:
 
@@ -226,14 +473,14 @@ fall by 19 MB from the restored point. JS heap stays between 3 and 27 MB
 throughout, so the remaining movement is Chromium's media/GPU cache, not a
 React or JavaScript leak.
 
-## Appearance, wallpaper and motion checks
+### Appearance, wallpaper and motion checks
 
 These were run on the final build with the live configuration backed up first.
 The configuration hash before and after the run is identical
 (`7DBE37F7C9BB0261398E9FD70227C85A1B7BF9C0AEED09CAA2980C417E4C455F`), and the
 restored theme/wallpaper values compare equal to the backup.
 
-### Runtime transparency modes
+#### Runtime transparency modes
 
 With the test image wallpaper active, the three named modes and the contrast
 safeguard produce distinct computed materials:
@@ -250,7 +497,7 @@ image (panel `rgba(23,19,32,0.78)` vs `rgba(32,28,44,0.78)`, accent `#b38cff`
 vs `#f47ba0`), and switching to Carbon and back restores the original theme,
 image and derived palette.
 
-### Missing image recovery
+#### Missing image recovery
 
 Calling `save_wallpaper` with `backgrounds/kenta-verify-does-not-exist.png`
 returns a sanitized wallpaper with `image = null`, `palette = null`,
@@ -260,7 +507,7 @@ no image. This covers the same recovery path used at startup by
 `AppearanceConfig::sanitize`, which also rejects a corrupt image header rather
 than leaving a transparent window.
 
-### Reduced motion
+#### Reduced motion
 
 `Emulation.setEmulatedMedia` was used to toggle
 `prefers-reduced-motion: reduce` in the live page:
@@ -274,7 +521,7 @@ than leaving a transparent window.
 The theme's own motion setting remains `full`; the media query is an additional
 accessibility override and does not change the stored theme.
 
-### High Contrast and screenshots
+#### High Contrast and screenshots
 
 Selecting High Contrast previews with sidebar `#000000`, panel `#0a0a0a` and
 the preset canvas disabled; applying it commits those values, and selecting
@@ -300,7 +547,7 @@ in those captures. The image wallpaper renders behind the sidebar and content;
 the preview dialog opens over the gradient canvas without losing the
 background. The memory changes do not alter those layouts.
 
-## Remaining bottlenecks and trade-offs
+### Remaining bottlenecks and trade-offs
 
 - **FFmpeg is still the largest process**: 95.6 MB private working set at idle,
   287 MB working set as its replay buffer fills, plus ~85 MB GPU committed. It
@@ -332,7 +579,7 @@ background. The memory changes do not alter those layouts.
   pay its ~29 MB renderer cost; users who do pay a one-time creation delay
   whose exact latency was not benchmarked.
 
-## Not verified
+### Not verified
 
 These need a native window, a real audio device or a separate machine:
 
@@ -347,167 +594,3 @@ These need a native window, a real audio device or a separate machine:
 - System media transport controls (not implemented).
 - `.github/workflows/release.yml`, which was not executed.
 
-## Frameless window shell (`feature/frameless-shell`)
-
-### Architecture
-
-- The `main` window is now `decorations: false`, `transparent: true`,
-  `shadow: true`, with an 880x560 minimum in `tauri.conf.json`.
-- **True WebView2 per-pixel transparency** is used, not Mica or Acrylic. Mica
-  only samples the wallpaper through a system material, and Acrylic blurs the
-  desktop and has a documented resize/drag cost on Windows 11 22621. True
-  transparency is the only option that shows the real desktop content, unblurred,
-  through the app. The trade-off is that there is no system blur.
-- `window_shell.rs` asks DWM for `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND`
-  and `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE`. `WS_THICKFRAME` is deliberately
-  kept: it is the invisible resize frame that provides native edge resizing,
-  Aero Snap and the standard maximized rect. Its 7px thickness lives outside the
-  client area, so the visible shell still fills the work area exactly.
-- The React shell adds `--shell-radius: 16px`, a 1px border and a drop shadow to
-  `.app-shell`; `.wallpaper-layer` is clipped to the same radius. `body` is
-  transparent. `html[data-maximized="true"]` removes the radius, border and
-  shadow. `WindowControls.tsx` drives minimize / toggle-maximize / close through
-  `@tauri-apps/api/window`; the topbar and brand are `data-tauri-drag-region`
-  surfaces. `ResizeHandles.tsx` adds 6px edge and 12px corner strips that call
-  `startResizeDragging`.
-- The existing material engine already renders every surface as a
-  palette-tinted RGBA scrim. `--app-canvas` is now translucent for solid and
-  gradient presets when `show_through` is enabled, so the desktop shows through
-  the canvas instead of an opaque colour. High Contrast (`show_through: false`)
-  keeps fully opaque surfaces, and Immersive / Balanced / Readable still set the
-  per-surface alpha floors.
-
-### Verified on the release binary (1920x1080 physical, 125% DPI)
-
-- **Restored**: frameless, 16px rounded silhouette, custom minimize / maximize /
-  close at the top right, desktop (a browser page) visible through the sidebar,
-  nav and panels. Client area measured 1040x720.
-- **Maximized**: client area measured `0,0,1920x1020` physical — the full work
-  area above the 48px taskbar — with `IsZoomed` true and the controls still
-  visible. The outer rect reads `-7,-7,1543,823` at 100% logical scale; that is
-  the invisible `WS_THICKFRAME`, not clipped content.
-- **Restore**: returns to 1040x720 at the previous position.
-- **Drag**: a synthetic drag on the topbar moved the window (77,77 -> 100,137 at
-  the 125%-aware scale).
-- **Builds**: `npx tsc --noEmit`, `npm run lint`, `npm run build`,
-  `cargo check --release` and `cargo build --release` all pass.
-
-### Not verified
-
-- Native edge/corner resizing and Aero Snap could not be driven reliably with
-  synthetic mouse input (`mouse_event` does not enter the non-client resize
-  loop). The native frame and `startResizeDragging` are wired but need a real
-  pointer test.
-- Minimize and close were rendered but not clicked; close would terminate the
-  session under test.
-- High Contrast, Immersive / Readable modes, image wallpapers, recording and the
-  editor were not re-exercised in this pass.
-- Memory was not re-measured for this shell; it adds no webview, no second
-  background layer and no animation loop, so the existing baseline is expected
-  to hold, but that is not a measurement.
-
-### Footprint and cleanup
-
-- Repository before cleanup: **5.8 GB**, of which `src-tauri/target` was
-  **5.0 GB** of build artifacts.
-- After `rm -rf src-tauri/target`: **776 MB** total (`.git` 206 MB, `web` 132 MB,
-  `src-tauri` 317 MB, `Kenta-Release` 106 MB, `docs` 18 MB).
-- The runnable release build is staged in `Kenta-Release/app/` (gitignored). Its
-  `ffmpeg.exe` / `ffprobe.exe` are **hardlinks** to the copies in
-  `src-tauri/binaries`, so the 330 MB is stored once, not twice.
-- Running release app with the 60 s replay buffer full, measured across the whole
-  process tree (kenta + 6 WebView2 helpers + ffmpeg + conhost):
-  - **private working set 222.7 MB** (the per-process Memory column; under the
-    700 MB target)
-  - working set 763.1 MB (includes shared WebView2 and ffmpeg pages, so it
-    over-counts)
-  - private bytes 622.1 MB
-
-
-## Window shell finalization (`feature/frameless-shell`)
-
-### One authoritative resize mechanism
-
-- The React `ResizeHandles` component, its eight pointer handlers, and the
-  `.resize-handles` / `.resize-*` CSS were removed. Native `WS_THICKFRAME`
-  remains the only resize mechanism: `WM_NCHITTEST` returns HTLEFT/HTRIGHT/
-  HTTOP/HTBOTTOM and the four corner codes on the window's outer frame, and
-  Windows owns the resize loop, snapping and minimum-size clamping.
-- Dragging remains on `data-tauri-drag-region` (brand and topbar) and the custom
-  controls remain in the topbar; neither overlaps the native resize frame.
-
-### Minimum size
-
-- `minWidth`/`minHeight` changed from 880x560 to **760x400** logical. At 125%
-  scaling the logical work area is 1536x816, so a left/right half is 768x816 and
-  a corner quarter is 768x408. The old 880 minimum made half-snaps impossible
-  (Windows clamped the width to 1100 physical and the height to 560 logical); the
-  new minimum fits both.
-
-### Verified interactions (release binary, 1920x1080 at 125% DPI)
-
-- Native resizing through real `SendInput` drags on the hit-tested border:
-  left, right, top, bottom, top-left, top-right, bottom-left, bottom-right all
-  changed the expected edge/corner. Minimum clamp measured **1100x700 physical
-  = 880x560 logical** on the pre-change build; the new minimum is 760x400.
-- Minimize: custom button invokes the native minimize; `IsIconic` true and the
-  taskbar restore returns the window to 1318x910 physical (1040x720 logical).
-- Maximize/restore: custom button toggled `IsZoomed`, produced the full work
-  area (-9,-9,1929,1029 physical), updated the accessible name to "Restore
-  window", and restored to 100,100,1418,1010. Two full cycles verified; the
-  third UI Automation invoke hit the wrong element in the harness.
-- Close: invokes the native close request. With the user's `minimize_to_tray`
-  setting enabled, the main window hides to the tray (`IsWindowVisible` false,
-  process alive) exactly as configured.
-- Native snapping: Win+Left snaps to the left half (976x1028 physical including
-  the frame); Win+Up maximizes. Right-half and corner combos did not reproduce
-  reliably under synthetic keyboard input, so they are **not** marked verified.
-
-### Memory: idle working-set trim
-
-The reported 763 MB is dominated by resident file/shared pages, not private
-memory: the private working set of the whole tree was only ~176 MB while the
-165 MB ffmpeg binary and WebView2 code pages accounted for most of the working
-set. Two changes address it:
-
-1. Genuine reductions: the 18px backdrop blur on popovers/modals/toasts/menus,
-   the settings-bar blur, and the permanent `will-change` promotion on the
-   wallpaper frames were removed. These were extra compositor/GPU surfaces and
-   do not affect transparency, rounding or wallpaper quality.
-2. `src-tauri/src/memory.rs`: when the main window loses focus or is minimised,
-   the host walks the process tree (Toolhelp snapshot) and asks Windows to trim
-   each process's working set (`SetProcessWorkingSetSize(-1,-1)`). A background
-   thread repeats this every 90 seconds while the window is unfocused. Pages
-   fault back in on demand; capture and UI behaviour are unchanged.
-
-Measured whole-tree values (same method: `Win32_PerfFormattedData_PerfProc_Process`
-plus GPU process memory, all kenta descendants):
-
-| Scenario | Working set | Private WS | Private bytes | GPU committed |
-| --- | ---: | ---: | ---: | ---: |
-| Before, idle 2 min | 735.9 MB | 176.0 MB | 759.7 MB | 360.9 MB |
-| After trim, idle 35 s | **188.6 MB** | 120.6 MB | 502.9 MB | 138.4 MB |
-| After visiting every tab | **252.6 MB** | 166.6 MB | 560.0 MB | 147.6 MB |
-| After saving a replay + screenshots | **323.3 MB** | 219.2 MB | 603.9 MB | 147.2 MB |
-| Earlier report (review baseline) | 763 MB | 222.7 MB | 622.1 MB | - |
-
-The target is met in the idle-unfocused scenario (188.6 MB) and stays under
-700 MB through navigation and a replay save. The trim is an idle policy, not a
-substitute for the genuine surface reductions above; a focused, actively
-rendering window is allowed to use its normal working set.
-
-### Regression smoke
-
-- `cargo test --lib`: 248 passed, 0 failed, 4 ignored (after the memory module).
-- `cargo check`: passes (two pre-existing dead-code warnings).
-- `npx tsc --noEmit`, `npm run lint` (0 errors, 8 pre-existing React Compiler
-  warnings), `npm run build`, `cargo build --release`: pass.
-- Capture: ffmpeg child running, UI showed Buffering 1920x1080 60 fps H.264.
-- Replay save: "Save last 1:00" produced
-  `Downloads\Kenta\Kenta_2026-11-12_22-10-59_replay.mp4`.
-- Tabs: Capture, Clips, Music, Appearance and Settings all opened and returned
-  without a crash.
-- Not exercised in this pass: microphone/desktop audio playback, voice command
-  recognition, Google Drive upload, editor export/preview, wallpaper image
-  switching, High Contrast. These are unchanged by the shell and memory edits,
-  but they are not claimed as verified.
