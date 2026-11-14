@@ -25,7 +25,8 @@
         "fullscreen": false,
         "minimizable": true,
         "maximizable": true,
-        "closable": true
+        "closable": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,BackForwardCache --js-flags=--max-semi-space-size=2"
       }
     ],
     "security": {

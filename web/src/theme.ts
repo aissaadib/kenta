@@ -161,9 +161,11 @@ export function applyTheme(
   // A preset solid or gradient is a real backdrop, not just paint behind the
   // shell. When it is allowed through (the default), the same material engine
   // that handles an image also reveals it through every surface. High Contrast
-  // opts out so its panels stay fully opaque.
-  const canvasActive = !wallpaperActive && theme.background.show_through !== false;
-  const glassActive = wallpaperActive || canvasActive;
+  // opts out so its panels stay fully opaque, even when a global wallpaper is
+  // selected: accessibility wins over the image layer.
+  const opaqueCanvas = theme.background.show_through === false;
+  const canvasActive = !wallpaperActive && !opaqueCanvas;
+  const glassActive = !opaqueCanvas && (wallpaperActive || canvasActive);
   const paletteActive = Boolean(
     wallpaperActive &&
       wallpaper?.mode === "wallpaper" &&
@@ -397,7 +399,29 @@ export function applyTheme(
   const canvasAlpha = glassActive ? alpha("root") : 1;
   const canvasColor = (value: string) => translucent(value, canvasAlpha);
 
-  if (wallpaperActive) {
+  // The Kenta wallpaper is a translucent sheet, not an opaque picture. The
+  // image remains the dominant backdrop, but the real Windows desktop stays
+  // visible through it; Immersive is the most open and Readable the most
+  // protective. High Contrast (show_through === false) keeps the layer opaque
+  // and paints the palette background underneath it.
+  const wallpaperOpacity = !opaqueCanvas && wallpaperActive
+    ? safeguard
+      ? transparencyMode === "immersive"
+        ? 0.7
+        : transparencyMode === "readable"
+          ? 0.9
+          : 0.8
+      : transparencyMode === "immersive"
+        ? 0.58
+        : transparencyMode === "readable"
+          ? 0.82
+          : 0.7
+    : 1;
+  style.setProperty("--wallpaper-layer-opacity", `${wallpaperOpacity}`);
+
+  if (opaqueCanvas) {
+    style.setProperty("--app-canvas", colors.background);
+  } else if (wallpaperActive) {
     style.setProperty("--app-canvas", "transparent");
   } else if (theme.background.kind === "image" && theme.background.image) {
     const url = themeAssetSrc(assetsDir, theme.background.image);

@@ -79,6 +79,7 @@
   --wallpaper-fallback: transparent;
   --wallpaper-scrim: transparent;
   --wallpaper-image-filter: none;
+  --wallpaper-layer-opacity: 1;
 
   /* Synthetic tokens derived by the theme engine. */
   --danger-ink: #2b0610;
@@ -183,7 +184,6 @@ a {
   overflow: hidden;
   border-radius: var(--shell-radius);
   border: 1px solid var(--surface-border);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), 0 2px 10px rgba(0, 0, 0, 0.35);
   background: var(--app-canvas);
 }
 
@@ -196,6 +196,9 @@ a {
   overflow: hidden;
   border-radius: var(--shell-radius);
   pointer-events: none;
+  /* The whole sheet fades over the real desktop; the value is chosen by the
+     theme engine from the transparency mode. */
+  opacity: var(--wallpaper-layer-opacity, 1);
   /* A solid palette base sits behind the frames, so the initial fade-in and
      any compositor gap never reveal the WebView's own background. */
   background: var(--wallpaper-fallback, var(--app-canvas, transparent));
@@ -264,6 +267,14 @@ a {
   gap: 10px;
   padding: 2px 8px 16px;
   border-bottom: 1px solid var(--divider);
+}
+
+/* The logo and wordmark are decoration inside the drag region. Passing pointer
+   events through to `.brand` makes the whole block behave like a title bar
+   instead of only the few unfilled pixels around the text. */
+.brand-mark,
+.brand-copy {
+  pointer-events: none;
 }
 
 .brand-mark {
@@ -426,6 +437,13 @@ a {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  /* Let the header underneath own the drag gesture even when the pointer is
+     over the title text. The editor's back button opts back in. */
+  pointer-events: none;
+}
+
+.topbar-heading .icon-btn {
+  pointer-events: auto;
 }
 
 .topbar-heading h1 {
