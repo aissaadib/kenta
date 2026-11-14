@@ -46,10 +46,12 @@ All notable changes to Kenta are documented here. The format follows
 
 - Generate palette now produces five options in one image decode. Each press
   previews the next option, **Apply palette** keeps the current one and clears the
-  batch, and the next press resumes after it. Generation switches Wallpaper
-  colors to **From wallpaper** and enables **Adaptive palette**, so the colors
-  apply immediately instead of only being cached. Choosing **From wallpaper**
-  also enables the adaptive palette when an image is active.
+  batch, and the next press resumes after it. The first press skips the palette
+  that is already active, so it always produces a visible change. Generation
+  switches Wallpaper colors to **From wallpaper** and enables **Adaptive
+  palette**, so the colors apply immediately instead of only being cached.
+  Choosing **From wallpaper** also enables the adaptive palette when an image is
+  active.
 
 ## [0.2.0] - 2026-11-07
 

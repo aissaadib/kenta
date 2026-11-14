@@ -268,6 +268,7 @@ interface AppearanceViewProps {
 type PaletteBatch = { image: string; options: ThemeColors[]; index: number };
 let paletteBatchCache: PaletteBatch | null = null;
 let paletteResume: { image: string; index: number } | null = null;
+const paletteKey = (palette: ThemeColors) => JSON.stringify(palette);
 
 export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const appearance = useAppearance();
@@ -500,10 +501,16 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
         // that was just applied, while still drawing from the same five.
         const options = await appearance.analyzeWallpaperVariants(current.image);
         if (options.length === 0) return;
-        const resume =
-          paletteResume && paletteResume.image === current.image
-            ? paletteResume.index % options.length
-            : 0;
+        let resume = 0;
+        if (paletteResume && paletteResume.image === current.image) {
+          resume = paletteResume.index % options.length;
+        } else if (current.palette) {
+          // A saved palette is usually one of the five. Start after it so the
+          // first press always produces a visible change.
+          const activeKey = paletteKey(current.palette);
+          const activeIndex = options.findIndex((option) => paletteKey(option) === activeKey);
+          if (activeIndex >= 0) resume = (activeIndex + 1) % options.length;
+        }
         batch = { image: current.image, options, index: resume };
         paletteBatchCache = batch;
       } else {
