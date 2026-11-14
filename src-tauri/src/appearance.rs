@@ -1608,10 +1608,13 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
   let avg_sat = (sum_sat / count).clamp(0.0, 1.0);
   let dark_theme = avg_lum < 0.5;
 
-  // 4x4x4 histogram -> top bins -> candidate colours.
+  // 5-bit histogram -> prominent clusters. The finer bins keep a large flat
+  // field from being merged with unrelated neighbours, and each bin keeps its
+  // pixel count so selection can be weighted by how much of the image it
+  // actually covers.
   let mut bins: HashMap<u32, (u64, [u64; 3])> = HashMap::new();
   for pixel in pixels {
-    let key = ((pixel[0] as u32 / 64) << 10) | ((pixel[1] as u32 / 64) << 5) | (pixel[2] as u32 / 64);
+    let key = ((pixel[0] as u32 / 8) << 10) | ((pixel[1] as u32 / 8) << 5) | (pixel[2] as u32 / 8);
     let entry = bins.entry(key).or_insert((0, [0, 0, 0]));
     entry.0 += 1;
     entry.1[0] += pixel[0] as u64;
@@ -1621,58 +1624,98 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
   let mut ranked: Vec<(u64, [u8; 3])> = bins
     .values()
     .map(|(count, sum)| {
-      let c = [sum[0] as u8, sum[1] as u8, sum[2] as u8];
-      // approximate average by dividing; keep simple and deterministic.
       let avg = [
         (sum[0] / *count.max(&1)) as u8,
         (sum[1] / *count.max(&1)) as u8,
         (sum[2] / *count.max(&1)) as u8,
       ];
-      let _ = c;
       (*count, avg)
     })
     .collect();
-  ranked.sort_by(|a, b| b.0.cmp(&a.0));
-  ranked.truncate(8);
-  let candidates: Vec<[u8; 3]> = ranked.into_iter().map(|(_, c)| c).collect();
+  // Count first, then colour, so equal-sized bins always resolve the same way.
+  ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+  ranked.truncate(64);
+  let total = pixels.len() as f64;
 
-  // Pick the most saturated candidate as the accent seed.
-  let accent_seed = candidates
+  // Background/surfaces follow the cluster that covers the most pixels, not
+  // the darkest one on the image. Black line art and shadows no longer wash the
+  // canvas out to neutral grey when the image is actually navy or crimson.
+  let background_seed = ranked
     .iter()
-    .max_by(|a, b| {
-      let (_, sa, _) = rgb_to_hsl(a);
-      let (_, sb, _) = rgb_to_hsl(b);
-      sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+    .filter(|(_, color)| {
+      let (_, _, l) = rgb_to_hsl(color);
+      (0.04..0.92).contains(&l)
     })
-    .copied()
-    .unwrap_or([245, 255, 46]);
+    .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)))
+    .map(|(_, color)| *color)
+    .unwrap_or([10, 10, 12]);
+  let (background_h, _, _) = rgb_to_hsl(&background_seed);
 
-  // Base hue for the accent, with a fallback to Kenta's signature yellow when
-  // the image is essentially greyscale.
-  let (accent_h, accent_s, _) = rgb_to_hsl(&accent_seed);
-  let accent_h = if avg_sat < 0.08 { 55.0 } else { accent_h };
-  let accent_s = if avg_sat < 0.08 { 0.9 } else { accent_s.max(0.45) };
+  // Accent: circular mean of the colourful clusters, weighted by coverage and
+  // saturation. A one-pixel neon highlight or a 2% saturated patch no longer
+  // beats the colour that defines the image. Clusters near the background hue
+  // are skipped on the first pass so the accent stays a distinct highlight
+  // instead of a copy of the canvas; monochrome images fall back to all hues.
+  let accent_mean = |avoid_background: bool| -> (f64, f64, f64) {
+    let mut hue_x = 0.0;
+    let mut hue_y = 0.0;
+    let mut sat_sum = 0.0;
+    let mut weight_sum = 0.0;
+    for (count, color) in &ranked {
+      let (h, s, l) = rgb_to_hsl(color);
+      let coverage = *count as f64 / total;
+      if coverage < 0.002 || s < 0.10 || l < 0.06 || l > 0.94 {
+        continue;
+      }
+      if avoid_background {
+        let delta = (h - background_h).abs();
+        let delta = delta.min(360.0 - delta);
+        if delta < 28.0 && s < 0.5 {
+          continue;
+        }
+      }
+      let weight = coverage.sqrt() * s;
+      let radians = h.to_radians();
+      hue_x += radians.cos() * weight;
+      hue_y += radians.sin() * weight;
+      sat_sum += s * weight;
+      weight_sum += weight;
+    }
+    (
+      hue_y.atan2(hue_x).to_degrees().rem_euclid(360.0),
+      sat_sum / weight_sum.max(1e-9),
+      weight_sum,
+    )
+  };
+  let (mut accent_h, mut accent_s, mut accent_weight) = accent_mean(true);
+  if accent_weight < 1e-4 {
+    let fallback = accent_mean(false);
+    accent_h = fallback.0;
+    accent_s = fallback.1;
+    accent_weight = fallback.2;
+  }
+  let (accent_h, accent_s) = if accent_weight > 1e-5 && avg_sat >= 0.06 {
+    (accent_h, accent_s.max(0.0))
+  } else {
+    // Essentially greyscale: keep Kenta's signature yellow.
+    (55.0, 0.9)
+  };
+  let accent_s = if avg_sat < 0.06 { 0.9 } else { accent_s.max(0.45) };
 
   let mut colors = ThemeColors::default();
 
   if dark_theme {
     // Dark canvas derived from the darkest candidate.
-    let dark_seed = candidates
-      .iter()
-      .min_by(|a, b| {
-        let (_, _, la) = rgb_to_hsl(a);
-        let (_, _, lb) = rgb_to_hsl(b);
-        la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
-      })
-      .copied()
-      .unwrap_or([10, 10, 12]);
-    let (h, s, _) = rgb_to_hsl(&dark_seed);
-    let bg = hsl_to_rgb(h, s.min(0.25), 0.09);
-    let bg2 = hsl_to_rgb(h, s.min(0.25), 0.11);
-    let surface = hsl_to_rgb(h, s.min(0.22), 0.14);
-    let surface_raised = hsl_to_rgb(h, s.min(0.22), 0.17);
-    let surface_hover = hsl_to_rgb(h, s.min(0.22), 0.20);
-    let surface_selected = hsl_to_rgb(h, s.min(0.22), 0.24);
+    let (h, s, _) = rgb_to_hsl(&background_seed);
+    // Keep the dominant hue but lift saturation slightly so a dark navy field
+    // reads as navy rather than as neutral charcoal.
+    let tint = (s * 1.15).min(0.32);
+    let bg = hsl_to_rgb(h, tint, 0.09);
+    let bg2 = hsl_to_rgb(h, tint, 0.11);
+    let surface = hsl_to_rgb(h, tint.min(0.28), 0.14);
+    let surface_raised = hsl_to_rgb(h, tint.min(0.28), 0.17);
+    let surface_hover = hsl_to_rgb(h, tint.min(0.28), 0.20);
+    let surface_selected = hsl_to_rgb(h, tint.min(0.28), 0.24);
     colors.background = rgb_to_hex(&bg);
     colors.background_secondary = rgb_to_hex(&bg2);
     colors.surface = rgb_to_hex(&surface);
@@ -1682,17 +1725,14 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
     colors.text_primary = "#f1f1ef".into();
     colors.text_secondary = "#c7c7c2".into();
     colors.text_muted = "#b3b2ac".into();
-    colors.border = rgb_to_hex(&hsl_to_rgb(h, s.min(0.2), 0.22));
-    colors.border_strong = rgb_to_hex(&hsl_to_rgb(h, s.min(0.2), 0.30));
+    colors.border = rgb_to_hex(&hsl_to_rgb(h, tint.min(0.26), 0.22));
+    colors.border_strong = rgb_to_hex(&hsl_to_rgb(h, tint.min(0.26), 0.30));
   } else {
-    let light_seed = candidates
+    let light_seed = ranked
       .iter()
-      .max_by(|a, b| {
-        let (_, _, la) = rgb_to_hsl(a);
-        let (_, _, lb) = rgb_to_hsl(b);
-        la.partial_cmp(&lb).unwrap_or(std::cmp::Ordering::Equal)
-      })
-      .copied()
+      .filter(|(_, color)| rgb_to_hsl(color).2 > 0.5)
+      .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)))
+      .map(|(_, color)| *color)
       .unwrap_or([244, 244, 241]);
     let (h, s, _) = rgb_to_hsl(&light_seed);
     let bg = hsl_to_rgb(h, s.min(0.18), 0.96);
@@ -2523,6 +2563,37 @@ mod tests {
     let a = palette_from_pixels(&pixels);
     let b = palette_from_pixels(&pixels);
     assert_eq!(a, b);
+  }
+
+  #[test]
+  fn adaptive_palette_keeps_the_background_and_picks_a_distinct_accent() {
+    let mut pixels = vec![[36u8, 48, 72]; 90];
+    pixels.extend(vec![[210u8, 40, 40]; 10]);
+    let colors = palette_from_pixels(&pixels);
+    let (red, _, blue) = hex_to_rgb_u8(&colors.background);
+    assert!(
+      blue > red,
+      "background should follow the dominant blue field, got {}",
+      colors.background
+    );
+    let (accent_red, accent_green, accent_blue) = hex_to_rgb_u8(&colors.accent);
+    assert!(
+      accent_red > accent_blue && accent_red > accent_green,
+      "a distinct highlight should own the accent, got {}",
+      colors.accent
+    );
+  }
+
+  #[test]
+  fn adaptive_palette_tints_surfaces_from_the_dominant_field() {
+    let pixels = vec![[20u8, 26, 48]; 100];
+    let colors = palette_from_pixels(&pixels);
+    let (red, green, blue) = hex_to_rgb_u8(&colors.surface);
+    assert!(
+      blue > red && blue > green,
+      "surface should stay navy-tinted, got {}",
+      colors.surface
+    );
   }
 
   #[test]
