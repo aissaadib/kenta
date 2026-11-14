@@ -262,6 +262,13 @@ interface AppearanceViewProps {
   onNotify: (kind: "success" | "error" | "info", title: string, message?: string) => void;
 }
 
+// The five generated options live outside the component so switching tabs does
+// not throw them away. Apply clears the batch; until then every press advances
+// to the next option and wraps around.
+type PaletteBatch = { image: string; options: ThemeColors[]; index: number };
+let paletteBatchCache: PaletteBatch | null = null;
+let paletteResume: { image: string; index: number } | null = null;
+
 export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const appearance = useAppearance();
   const { previewTheme, restorePreview } = appearance;
@@ -274,6 +281,9 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const [importing, setImporting] = useState(false);
   const [wallpaperDraft, setWallpaperDraft] = useState<Wallpaper | null>(null);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  // The five options live outside React so tab switches keep them, but the
+  // save bar still needs to know whether applying would finish that batch.
+  const [paletteBatchOpen, setPaletteBatchOpen] = useState(() => paletteBatchCache !== null);
   const wallpaperTimer = useRef<number | null>(null);
   const wallpaperRef = useRef<Wallpaper | null>(null);
   const wallpaperSaveSeq = useRef(0);
@@ -431,6 +441,9 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
       if (next.mode === "wallpaper" && next.adaptive) {
         next = await analyzeForWallpaper(asset.relative, next);
       }
+      paletteBatchCache = null;
+      paletteResume = null;
+      setPaletteBatchOpen(false);
       commitWallpaper(next, true);
       onNotify("success", "Wallpaper updated", `${asset.width} × ${asset.height}`);
     } catch (reason) {
@@ -441,6 +454,9 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const removeWallpaper = () => {
     const current = wallpaperRef.current ?? wallpaperDraft;
     if (!current) return;
+    paletteBatchCache = null;
+    paletteResume = null;
+    setPaletteBatchOpen(false);
     commitWallpaper(
       { ...current, image: null, palette: null, adaptive: false },
       true,
@@ -475,15 +491,39 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const generateWallpaperPalette = async () => {
     const current = wallpaperRef.current ?? wallpaperDraft;
     if (!current?.image) return;
-    const next = await analyzeForWallpaper(current.image, current);
-    if (!next.palette) {
-      commitWallpaper(next, true);
-      return;
+    setWallpaperBusy(true);
+    try {
+      let batch = paletteBatchCache;
+      if (!batch || batch.image !== current.image) {
+        // A new image (or the first press after Apply) starts a fresh batch.
+        // The resume index keeps the first offer different from the palette
+        // that was just applied, while still drawing from the same five.
+        const options = await appearance.analyzeWallpaperVariants(current.image);
+        if (options.length === 0) return;
+        const resume =
+          paletteResume && paletteResume.image === current.image
+            ? paletteResume.index % options.length
+            : 0;
+        batch = { image: current.image, options, index: resume };
+        paletteBatchCache = batch;
+      } else {
+        batch.index = (batch.index + 1) % batch.options.length;
+      }
+      const palette = batch.options[batch.index];
+      // Generating is an explicit request to use the colors, so apply the
+      // option immediately instead of only caching it.
+      setPaletteBatchOpen(true);
+      commitWallpaper({ ...current, palette, mode: "wallpaper", adaptive: true }, true);
+      onNotify(
+        "success",
+        `Palette ${batch.index + 1} of ${batch.options.length}`,
+        "Press Generate palette again for another option.",
+      );
+    } catch (reason) {
+      onNotify("info", "Palette generation skipped", String(reason));
+    } finally {
+      setWallpaperBusy(false);
     }
-    // Generating is an explicit request to use the new colors. Without both
-    // flags the palette is only cached and the interface stays unchanged.
-    commitWallpaper({ ...next, mode: "wallpaper", adaptive: true }, true);
-    onNotify("success", "Palette generated", "Colors updated from the wallpaper.");
   };
 
   const setTransparencyMode = (
@@ -525,12 +565,37 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   // choosing a theme would never persist.
   const handleApply = async () => {
     if (!draft || busy) return;
+    const themeIsActive = appearance.active?.id === draft.id;
+    if (!dirty && themeIsActive && paletteBatchOpen) {
+      // Nothing in the theme changed, so Apply only ends the palette batch.
+      // Keep the applied option and make the next Generate start after it.
+      if (paletteBatchCache) {
+        paletteResume = {
+          image: paletteBatchCache.image,
+          index: (paletteBatchCache.index + 1) % paletteBatchCache.options.length,
+        };
+      }
+      paletteBatchCache = null;
+      setPaletteBatchOpen(false);
+      onNotify("success", "Palette applied", "Press Generate palette for another option.");
+      return;
+    }
     setBusy(true);
     try {
       const next = dirty
         ? await appearance.saveTheme(draft)
         : await appearance.activateTheme(draft.id);
       if (!next) return;
+      // Applying is the user's decision: the generated options are done and the
+      // next press starts from the option after this one.
+      if (paletteBatchCache) {
+        paletteResume = {
+          image: paletteBatchCache.image,
+          index: (paletteBatchCache.index + 1) % paletteBatchCache.options.length,
+        };
+      }
+      paletteBatchCache = null;
+      setPaletteBatchOpen(false);
       loadTheme(next.active);
       onNotify(
         "success",
@@ -1021,7 +1086,8 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
                       {wallpaperBusy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />} Generate palette
                     </button>
                     <span className="appearance-hint">
-                      Derived from a small downsample. The image itself stays untouched.
+                      Five options from one downsample. Each press previews the next; the image
+                      itself stays untouched.
                     </span>
                   </div>
                 ) : null}
@@ -1687,11 +1753,17 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
           <div className="appearance-savebar-copy">
             <span className={`appearance-dirty ${dirty ? "is-dirty" : ""}`} aria-hidden="true" />
             <div>
-              <strong>{dirty ? "Unapplied changes" : "No pending changes"}</strong>
+              <strong>
+                {dirty ? "Unapplied changes" : paletteBatchOpen ? "Palette option ready" : "No pending changes"}
+              </strong>
               <span>
-                {draft.builtin
-                  ? "Built-in presets are read-only. Applying your edits saves a custom copy."
-                  : "The theme is stored in appearance.json. Recording settings are untouched."}
+                {dirty
+                  ? draft.builtin
+                    ? "Built-in presets are read-only. Applying your edits saves a custom copy."
+                    : "The theme is stored in appearance.json. Recording settings are untouched."
+                  : paletteBatchOpen
+                    ? "Apply keeps this wallpaper palette. The next Generate starts with the following option."
+                    : "The theme is stored in appearance.json. Recording settings are untouched."}
               </span>
             </div>
           </div>
@@ -1734,9 +1806,10 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
               type="button"
               className="btn btn-primary btn-sm"
               onClick={() => void handleApply()}
-              disabled={(!dirty && selectedIsActive) || busy}
+              disabled={(!dirty && selectedIsActive && !paletteBatchOpen) || busy}
             >
-              {busy ? <Loader2 size={13} className="spin" /> : <Save size={13} />} Apply theme
+              {busy ? <Loader2 size={13} className="spin" /> : <Save size={13} />}
+              {paletteBatchOpen && !dirty && selectedIsActive ? "Apply palette" : "Apply theme"}
             </button>
           </div>
         </div>

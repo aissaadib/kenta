@@ -2855,6 +2855,12 @@ pub fn appearance_analyze_wallpaper(relative: String) -> Result<ThemeColors, Str
 }
 
 #[tauri::command]
+pub fn appearance_analyze_wallpaper_variants(relative: String) -> Result<Vec<ThemeColors>, String> {
+  appearance::analyze_wallpaper_variants(&relative)
+    .map_err(|error| error.message())
+}
+
+#[tauri::command]
 pub fn appearance_pick_image(
   kind: String,
 ) -> Result<Option<appearance::ImportedAsset>, String> {

@@ -778,6 +778,11 @@ export function appearanceAnalyzeWallpaper(relative: string): Promise<ThemeColor
   return invoke("appearance_analyze_wallpaper", { relative });
 }
 
+/** Five palette options derived from the same image, in a stable order. */
+export function appearanceAnalyzeWallpaperVariants(relative: string): Promise<ThemeColors[]> {
+  return invoke("appearance_analyze_wallpaper_variants", { relative });
+}
+
 /** Persist the app-wide wallpaper. The backend validates the managed image and
  * returns the sanitized payload, which becomes the new visible state. */
 export function saveWallpaper(wallpaper: Wallpaper): Promise<AppearancePayload> {

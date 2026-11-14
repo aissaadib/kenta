@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   appearanceAnalyzeWallpaper,
+  appearanceAnalyzeWallpaperVariants,
   appearanceExportTheme,
   appearanceImportTheme,
   deleteAppearanceTheme,
@@ -49,6 +50,7 @@ interface AppearanceContextValue {
   previewWallpaper: (wallpaper: Wallpaper) => void;
   saveWallpaper: (wallpaper: Wallpaper) => Promise<AppearancePayload | null>;
   analyzeWallpaper: (relative: string) => Promise<ThemeColors>;
+  analyzeWallpaperVariants: (relative: string) => Promise<ThemeColors[]>;
 }
 
 const AppearanceContext = createContext<AppearanceContextValue | null>(null);
@@ -216,6 +218,11 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const analyzeWallpaperVariants = useCallback(
+    (relative: string) => appearanceAnalyzeWallpaperVariants(relative),
+    [],
+  );
+
   const value = useMemo<AppearanceContextValue>(
     () => ({
       payload,
@@ -239,6 +246,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       previewWallpaper,
       saveWallpaper,
       analyzeWallpaper,
+      analyzeWallpaperVariants,
     }),
     [
       payload,
@@ -258,6 +266,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       previewWallpaper,
       saveWallpaper,
       analyzeWallpaper,
+      analyzeWallpaperVariants,
     ],
   );
 

@@ -1575,6 +1575,15 @@ fn is_sound_asset(relative: &str) -> bool {
 /// it. The image is downsampled before any colour work, so a 4K source costs
 /// the same as a thumbnail. The result is deterministic for a given image.
 pub fn analyze_wallpaper(relative: &str) -> AppResult<ThemeColors> {
+  Ok(palette_from_pixels(&wallpaper_pixels(relative)?))
+}
+
+/// Five palette options derived in one decode, in a stable order.
+pub fn analyze_wallpaper_variants(relative: &str) -> AppResult<Vec<ThemeColors>> {
+  Ok(palette_variants_from_pixels(&wallpaper_pixels(relative)?))
+}
+
+fn wallpaper_pixels(relative: &str) -> AppResult<Vec<[u8; 3]>> {
   let path = resolve_asset(relative)?;
   let image = image::open(&path)
     .map_err(|error| AppError::Validation(format!("That image could not be decoded: {error}")))?;
@@ -1584,34 +1593,14 @@ pub fn analyze_wallpaper(relative: &str) -> AppResult<ThemeColors> {
   for (_x, _y, pixel) in small.pixels() {
     pixels.push([pixel[0], pixel[1], pixel[2]]);
   }
-  Ok(palette_from_pixels(&pixels))
+  Ok(pixels)
 }
 
-/// Deterministic colour quantisation + palette derivation. Split out so it can
-/// be tested with synthetic pixel buffers without touching the filesystem.
-pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
-  if pixels.is_empty() {
-    return ThemeColors::default();
-  }
-
-  // Overall character of the image.
-  let mut sum_lum = 0.0f64;
-  let mut sum_sat = 0.0f64;
-  for pixel in pixels {
-    let (h, s, l) = rgb_to_hsl(pixel);
-    let _ = h;
-    sum_lum += l;
-    sum_sat += s;
-  }
-  let count = pixels.len() as f64;
-  let avg_lum = (sum_lum / count).clamp(0.0, 1.0);
-  let avg_sat = (sum_sat / count).clamp(0.0, 1.0);
-  let dark_theme = avg_lum < 0.5;
-
-  // 5-bit histogram -> prominent clusters. The finer bins keep a large flat
-  // field from being merged with unrelated neighbours, and each bin keeps its
-  // pixel count so selection can be weighted by how much of the image it
-  // actually covers.
+/// 5-bit histogram -> prominent clusters. The finer bins keep a large flat
+/// field from being merged with unrelated neighbours, and each bin keeps its
+/// pixel count so selection can be weighted by how much of the image it
+/// actually covers.
+fn ranked_clusters(pixels: &[[u8; 3]]) -> Vec<(u64, [u8; 3])> {
   let mut bins: HashMap<u32, (u64, [u64; 3])> = HashMap::new();
   for pixel in pixels {
     let key = ((pixel[0] as u32 / 8) << 10) | ((pixel[1] as u32 / 8) << 5) | (pixel[2] as u32 / 8);
@@ -1635,6 +1624,31 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
   // Count first, then colour, so equal-sized bins always resolve the same way.
   ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
   ranked.truncate(64);
+  ranked
+}
+
+/// Deterministic colour quantisation + palette derivation. Split out so it can
+/// be tested with synthetic pixel buffers without touching the filesystem.
+pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
+  if pixels.is_empty() {
+    return ThemeColors::default();
+  }
+
+  // Overall character of the image.
+  let mut sum_lum = 0.0f64;
+  let mut sum_sat = 0.0f64;
+  for pixel in pixels {
+    let (h, s, l) = rgb_to_hsl(pixel);
+    let _ = h;
+    sum_lum += l;
+    sum_sat += s;
+  }
+  let count = pixels.len() as f64;
+  let avg_lum = (sum_lum / count).clamp(0.0, 1.0);
+  let avg_sat = (sum_sat / count).clamp(0.0, 1.0);
+  let dark_theme = avg_lum < 0.5;
+
+  let ranked = ranked_clusters(pixels);
   let total = pixels.len() as f64;
 
   // Background/surfaces follow the cluster that covers the most pixels, not
@@ -1755,16 +1769,7 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
   }
 
   // Accent with contrast safeguard.
-  let accent_l = if dark_theme { 0.72 } else { 0.42 };
-  let accent = hsl_to_rgb(accent_h, accent_s.clamp(0.4, 0.85), accent_l);
-  let accent_hover = hsl_to_rgb(accent_h, accent_s.clamp(0.4, 0.85), (accent_l + 0.08).min(1.0));
-  let accent_muted = hsl_to_rgb(accent_h, (accent_s * 0.4).max(0.15), if dark_theme { 0.22 } else { 0.88 });
-  colors.accent = rgb_to_hex(&accent);
-  colors.accent_hover = rgb_to_hex(&accent_hover);
-  colors.accent_muted = rgb_to_hex(&accent_muted);
-  colors.focus_ring = colors.accent.clone();
-  colors.playhead = colors.accent.clone();
-  colors.timeline_selection = format!("{}33", &colors.accent[..7]);
+  set_accent(&mut colors, accent_h, accent_s, dark_theme, 0.0);
   colors.success = "#3ddc84".into();
   colors.warning = "#ffb020".into();
   colors.danger = "#ff5d5d".into();
@@ -1794,6 +1799,95 @@ pub fn palette_from_pixels(pixels: &[[u8; 3]]) -> ThemeColors {
     guard += 1;
   }
   colors
+}
+
+/// Replace the accent family while keeping the rest of a palette intact. Used
+/// by the base derivation and by the alternative options the Generate button
+/// cycles through.
+fn set_accent(
+  colors: &mut ThemeColors,
+  hue: f64,
+  saturation: f64,
+  dark: bool,
+  lightness_shift: f64,
+) {
+  let accent_l = ((if dark { 0.72 } else { 0.42 }) + lightness_shift).clamp(0.30, 0.86);
+  let sat = saturation.clamp(0.35, 0.90);
+  let accent = hsl_to_rgb(hue, sat, accent_l);
+  let accent_hover = hsl_to_rgb(hue, sat, (accent_l + 0.08).min(1.0));
+  let accent_muted = hsl_to_rgb(hue, (saturation * 0.4).max(0.15), if dark { 0.22 } else { 0.88 });
+  colors.accent = rgb_to_hex(&accent);
+  colors.accent_hover = rgb_to_hex(&accent_hover);
+  colors.accent_muted = rgb_to_hex(&accent_muted);
+  colors.focus_ring = colors.accent.clone();
+  colors.playhead = colors.accent.clone();
+  colors.timeline_selection = format!("{}33", &colors.accent[..7]);
+  colors.info = colors.accent.clone();
+  colors.buffer = colors.accent.clone();
+}
+
+/// Five palettes derived from the same image. The first is the standard
+/// dominant-colour palette; the rest keep the canvas and surfaces but take the
+/// accent from other prominent hue clusters (or from controlled lightness and
+/// saturation shifts when the image only has one), so the Generate button can
+/// offer real options without ever leaving the image's colours.
+pub fn palette_variants_from_pixels(pixels: &[[u8; 3]]) -> Vec<ThemeColors> {
+  if pixels.is_empty() {
+    return vec![ThemeColors::default()];
+  }
+  let base = palette_from_pixels(pixels);
+  let mut variants = vec![base.clone()];
+  let dark = luminance(parse_hex(&base.background).unwrap_or((10, 10, 12))) < 0.5;
+  let base_accent = hex_to_rgb_u8(&base.accent);
+  let (base_h, base_s, _) = rgb_to_hsl(&[base_accent.0, base_accent.1, base_accent.2]);
+
+  let ranked = ranked_clusters(pixels);
+  let total = pixels.len() as f64;
+  let mut candidates: Vec<(f64, f64, f64)> = Vec::new();
+  for (count, color) in &ranked {
+    let (h, s, l) = rgb_to_hsl(color);
+    let coverage = *count as f64 / total;
+    if coverage < 0.002 || s < 0.12 || l < 0.06 || l > 0.94 {
+      continue;
+    }
+    if candidates.iter().any(|(seen_h, _, _)| {
+      let delta = (h - *seen_h).abs();
+      delta.min(360.0 - delta) < 24.0
+    }) {
+      continue;
+    }
+    candidates.push((h, s, coverage.sqrt() * s));
+  }
+  candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+
+  for (h, s, _) in candidates {
+    if variants.len() == 5 {
+      break;
+    }
+    let delta = (h - base_h).abs();
+    if delta.min(360.0 - delta) < 10.0 {
+      continue;
+    }
+    let mut next = base.clone();
+    set_accent(&mut next, h, s, dark, 0.0);
+    if next.accent != base.accent {
+      variants.push(next);
+    }
+  }
+
+  // Monochrome or nearly monochrome images still get five options by varying
+  // the accent's lightness and saturation in fixed, deterministic steps.
+  let shifts = [(0.78, -0.06), (1.12, 0.05), (0.62, 0.06), (0.92, -0.09)];
+  let mut step = 0;
+  while variants.len() < 5 {
+    let (factor, shift) = shifts[step % shifts.len()];
+    let mut next = base.clone();
+    set_accent(&mut next, base_h, (base_s * factor).clamp(0.35, 0.90), dark, shift);
+    variants.push(next);
+    step += 1;
+  }
+  variants.truncate(5);
+  variants
 }
 
 /// Move a text colour toward white (dark themes) or black (light themes). The
@@ -2594,6 +2688,32 @@ mod tests {
       "surface should stay navy-tinted, got {}",
       colors.surface
     );
+  }
+
+  #[test]
+  fn palette_variants_return_five_distinct_deterministic_options() {
+    let mut pixels = Vec::new();
+    for _ in 0..25 {
+      pixels.push([200u8, 40, 40]);
+      pixels.push([40u8, 180, 80]);
+      pixels.push([40u8, 90, 220]);
+      pixels.push([180u8, 140, 100]);
+    }
+    let variants = palette_variants_from_pixels(&pixels);
+    assert_eq!(variants.len(), 5);
+    assert_eq!(variants[0], palette_from_pixels(&pixels));
+    let accents: std::collections::HashSet<_> = variants.iter().map(|c| c.accent.clone()).collect();
+    assert!(accents.len() >= 4, "options should differ: {accents:?}");
+    assert_eq!(variants, palette_variants_from_pixels(&pixels));
+  }
+
+  #[test]
+  fn palette_variants_handle_a_monochrome_image() {
+    let pixels = vec![[20u8, 26, 48]; 200];
+    let variants = palette_variants_from_pixels(&pixels);
+    assert_eq!(variants.len(), 5);
+    let accents: std::collections::HashSet<_> = variants.iter().map(|c| c.accent.clone()).collect();
+    assert!(accents.len() >= 4, "fallback options should differ: {accents:?}");
   }
 
   #[test]
