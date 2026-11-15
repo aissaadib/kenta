@@ -9,6 +9,7 @@ const SCHEMA_VERSION: u32 = 3;
 
 pub const DEFAULT_SAVE_HOTKEY: &str = "Ctrl+Shift+S";
 pub const DEFAULT_RECORD_HOTKEY: &str = "Ctrl+Shift+R";
+pub const DEFAULT_SCREENSHOT_HOTKEY: &str = "F9";
 pub const DEFAULT_WAKE_PHRASE: &str = "Kenta";
 pub const DEFAULT_CLIP_COMMAND: &str = "clip that";
 
@@ -32,6 +33,16 @@ pub struct Settings {
   pub audio_sample_rate: u32,
   pub hotkey_save_replay: String,
   pub hotkey_start_stop: String,
+  /// Global shortcut for a one-shot desktop screenshot. Empty disables it.
+  pub hotkey_screenshot: String,
+  /// Where PNG screenshots are written. `None` uses Pictures\Kenta\Screenshots.
+  pub screenshot_dir: Option<PathBuf>,
+  /// Enumerated display index to capture. `None` follows the primary display.
+  pub screenshot_monitor_index: Option<u32>,
+  /// Open the new PNG in the default image viewer. Off by default.
+  pub screenshot_open_after_capture: bool,
+  /// Show a toast after a capture, including captures started by a hotkey.
+  pub screenshot_show_notification: bool,
   pub start_at_startup: bool,
   pub minimize_to_tray: bool,
   pub monitor_offset_x: Option<i32>,
@@ -47,6 +58,10 @@ pub struct Settings {
   pub confirmation_sound_kind: String,
   /// Hands-free clipping. Off by default because it opens the microphone.
   pub voice_enabled: bool,
+  /// SAPI audio input token id. `None` follows the Windows default. A saved
+  /// device is important: the default can be a virtual cable that carries
+  /// system audio, which makes the recogniser save clips on its own.
+  pub voice_input_device: Option<String>,
   /// Spoken first, for example "Kenta".
   pub voice_wake_phrase: String,
   /// Spoken after the wake phrase, for example "clip that".
@@ -109,6 +124,11 @@ impl Default for Settings {
       audio_sample_rate: 48000,
       hotkey_save_replay: DEFAULT_SAVE_HOTKEY.to_string(),
       hotkey_start_stop: DEFAULT_RECORD_HOTKEY.to_string(),
+      hotkey_screenshot: DEFAULT_SCREENSHOT_HOTKEY.to_string(),
+      screenshot_dir: None,
+      screenshot_monitor_index: None,
+      screenshot_open_after_capture: false,
+      screenshot_show_notification: true,
       start_at_startup: false,
       minimize_to_tray: true,
       monitor_offset_x: None,
@@ -118,11 +138,12 @@ impl Default for Settings {
       confirmation_sound_volume: 70,
       confirmation_sound_kind: "chime".to_string(),
       voice_enabled: false,
+      voice_input_device: None,
       voice_wake_phrase: DEFAULT_WAKE_PHRASE.to_string(),
       voice_clip_command: DEFAULT_CLIP_COMMAND.to_string(),
       voice_single_word: false,
       voice_clip_seconds: 30,
-      voice_min_confidence: 60,
+      voice_min_confidence: crate::voice::MIN_VOICE_CONFIDENCE,
       voice_cooldown_seconds: 5,
       voice_show_overlay: true,
       voice_overlay_icon: "bell".to_string(),
@@ -146,6 +167,13 @@ impl Settings {
       .output_dir
       .clone()
       .unwrap_or_else(|| default_output_dir().unwrap_or_else(|_| std::env::temp_dir()))
+  }
+
+  pub fn screenshot_dir_or_default(&self) -> PathBuf {
+    self
+      .screenshot_dir
+      .clone()
+      .unwrap_or_else(|| default_screenshot_dir().unwrap_or_else(|_| std::env::temp_dir()))
   }
 }
 
@@ -233,6 +261,16 @@ pub fn default_output_dir() -> AppResult<PathBuf> {
     .or_else(|| dirs::video_dir())
     .ok_or_else(|| AppError::Settings("no download/video dir".into()))?;
   Ok(base.join("Kenta"))
+}
+
+/// Screenshots belong with the user's pictures, not in the clip output tree.
+/// A dedicated subfolder keeps them out of the video library and makes the
+/// folder easy to find outside Kenta.
+pub fn default_screenshot_dir() -> AppResult<PathBuf> {
+  let base = dirs::picture_dir()
+    .or_else(|| dirs::video_dir())
+    .ok_or_else(|| AppError::Settings("no pictures/video dir".into()))?;
+  Ok(base.join("Kenta").join("Screenshots"))
 }
 
 fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
@@ -372,10 +410,21 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
     warnings.push("The voice clip length was reset to a supported value.".into());
   }
   let voice_confidence = settings.voice_min_confidence;
-  settings.voice_min_confidence = voice_confidence.min(100);
+  settings.voice_min_confidence =
+    voice_confidence.clamp(crate::voice::MIN_VOICE_CONFIDENCE, 100);
   if settings.voice_min_confidence != voice_confidence {
-    warnings.push("The voice confidence threshold was reset to 100%.".into());
+    warnings.push(format!(
+      "The voice confidence threshold was reset to {}% or higher to prevent false triggers.",
+      crate::voice::MIN_VOICE_CONFIDENCE
+    ));
   }
+  // An empty device id means "follow the Windows default"; storing the empty
+  // string would look like a selected device that can never be found.
+  settings.voice_input_device = settings
+    .voice_input_device
+    .take()
+    .map(|id| id.trim().to_string())
+    .filter(|id| !id.is_empty());
   let voice_cooldown = settings.voice_cooldown_seconds;
   settings.voice_cooldown_seconds = voice_cooldown.clamp(1, 60);
   if settings.voice_cooldown_seconds != voice_cooldown {
@@ -392,6 +441,15 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
       ));
     }
   }
+  if let Some(dir) = settings.screenshot_dir.clone() {
+    if !dir.is_absolute() || (dir.exists() && !dir.is_dir()) {
+      settings.screenshot_dir = None;
+      warnings.push(format!(
+        "The saved screenshot folder {} is unavailable. Screenshots will use the default folder.",
+        dir.display()
+      ));
+    }
+  }
   for (label, value, default) in [
     (
       "Save replay",
@@ -403,12 +461,49 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
       &mut settings.hotkey_start_stop,
       DEFAULT_RECORD_HOTKEY,
     ),
+    (
+      "Screenshot",
+      &mut settings.hotkey_screenshot,
+      DEFAULT_SCREENSHOT_HOTKEY,
+    ),
   ] {
     if !value.trim().is_empty() && crate::hotkey::parse_binding(value).is_err() {
       warnings.push(format!(
         "The {label} shortcut \"{value}\" is not supported and was reset to {default}."
       ));
       *value = default.to_string();
+    }
+  }
+  // A screenshot shortcut is optional and best effort. If the stored one now
+  // collides with a core shortcut, fall back to F9, then disable it rather than
+  // breaking save/record registration.
+  if !settings.hotkey_screenshot.trim().is_empty() {
+    let screenshot = crate::hotkey::parse_binding(&settings.hotkey_screenshot).ok();
+    let core_keys = [
+      &settings.hotkey_save_replay,
+      &settings.hotkey_start_stop,
+    ];
+    let conflicts = |value: &crate::hotkey::HotkeyBinding| {
+      core_keys.iter().any(|key| {
+        crate::hotkey::parse_binding(key)
+          .map(|parsed| crate::hotkey::bindings_conflict(value, &parsed))
+          .unwrap_or(false)
+      })
+    };
+    if screenshot.as_ref().is_some_and(conflicts) {
+      let fallback = crate::hotkey::parse_binding(DEFAULT_SCREENSHOT_HOTKEY).ok();
+      if fallback.as_ref().is_some_and(|value| !conflicts(value)) {
+        settings.hotkey_screenshot = DEFAULT_SCREENSHOT_HOTKEY.to_string();
+        warnings.push(
+          "The screenshot shortcut matched another shortcut and was reset to F9.".into(),
+        );
+      } else {
+        settings.hotkey_screenshot.clear();
+        warnings.push(
+          "The screenshot shortcut matched another shortcut and was disabled. Choose a different one in Settings."
+            .into(),
+        );
+      }
     }
   }
 }
@@ -508,10 +603,11 @@ pub fn validate(settings: &Settings) -> AppResult<()> {
       "The voice clip length must be between 5 and 300 seconds.".into(),
     ));
   }
-  if settings.voice_min_confidence > 100 {
-    return Err(AppError::Validation(
-      "The voice confidence threshold must be between 0 and 100.".into(),
-    ));
+  if !(crate::voice::MIN_VOICE_CONFIDENCE..=100).contains(&settings.voice_min_confidence) {
+    return Err(AppError::Validation(format!(
+      "The voice confidence threshold must be between {} and 100.",
+      crate::voice::MIN_VOICE_CONFIDENCE
+    )));
   }
   if !(1..=60).contains(&settings.voice_cooldown_seconds) {
     return Err(AppError::Validation(
@@ -530,6 +626,18 @@ pub fn validate(settings: &Settings) -> AppResult<()> {
       ));
     }
   }
+  if let Some(dir) = &settings.screenshot_dir {
+    if !dir.is_absolute() {
+      return Err(AppError::Validation(
+        "The screenshot folder must be an absolute path.".into(),
+      ));
+    }
+    if dir.exists() && !dir.is_dir() {
+      return Err(AppError::Validation(
+        "The screenshot folder points to a file, not a folder.".into(),
+      ));
+    }
+  }
   if !settings.hotkey_save_replay.trim().is_empty() {
     crate::hotkey::parse_binding(&settings.hotkey_save_replay)
       .map_err(|e| AppError::Validation(format!("Save replay shortcut: {e}")))?;
@@ -538,12 +646,34 @@ pub fn validate(settings: &Settings) -> AppResult<()> {
     crate::hotkey::parse_binding(&settings.hotkey_start_stop)
       .map_err(|e| AppError::Validation(format!("Start/stop shortcut: {e}")))?;
   }
-  if !settings.hotkey_save_replay.trim().is_empty()
-    && settings.hotkey_save_replay.eq_ignore_ascii_case(&settings.hotkey_start_stop)
-  {
-    return Err(AppError::Validation(
-      "The two shortcuts must be different.".into(),
-    ));
+  if !settings.hotkey_screenshot.trim().is_empty() {
+    crate::hotkey::parse_binding(&settings.hotkey_screenshot)
+      .map_err(|e| AppError::Validation(format!("Screenshot shortcut: {e}")))?;
+  }
+  let shortcuts = [
+    ("save replay", &settings.hotkey_save_replay),
+    ("recording", &settings.hotkey_start_stop),
+    ("screenshot", &settings.hotkey_screenshot),
+  ];
+  for (index, (label, value)) in shortcuts.iter().enumerate() {
+    if value.trim().is_empty() {
+      continue;
+    }
+    let Ok(binding) = crate::hotkey::parse_binding(value) else {
+      continue;
+    };
+    for (other_label, other) in &shortcuts[index + 1..] {
+      if other.trim().is_empty() {
+        continue;
+      }
+      if let Ok(other_binding) = crate::hotkey::parse_binding(other) {
+        if crate::hotkey::bindings_conflict(&binding, &other_binding) {
+          return Err(AppError::Validation(format!(
+            "The {label} and {other_label} shortcuts must be different."
+          )));
+        }
+      }
+    }
   }
   Ok(())
 }
@@ -660,11 +790,15 @@ mod tests {
   fn voice_defaults_are_off_and_use_the_medal_phrases() {
     let settings = Settings::default();
     assert!(!settings.voice_enabled, "voice opens the microphone");
+    assert!(settings.voice_input_device.is_none(), "the default microphone is used until one is chosen");
     assert_eq!(settings.voice_wake_phrase, DEFAULT_WAKE_PHRASE);
     assert_eq!(settings.voice_clip_command, DEFAULT_CLIP_COMMAND);
     assert!(!settings.voice_single_word, "single-word needs to be turned on");
     assert_eq!(settings.voice_clip_seconds, 30);
-    assert_eq!(settings.voice_min_confidence, 60);
+    assert_eq!(
+      settings.voice_min_confidence,
+      crate::voice::MIN_VOICE_CONFIDENCE
+    );
     assert_eq!(settings.voice_cooldown_seconds, 5);
     assert!(settings.voice_show_overlay, "the overlay shows by default");
     assert_eq!(settings.voice_overlay_icon, "bell");
@@ -675,11 +809,15 @@ mod tests {
   fn older_settings_files_without_the_voice_keys_still_load() {
     let settings: Settings = serde_json::from_str(r#"{"replay_duration_seconds": 90}"#).unwrap();
     assert!(!settings.voice_enabled);
+    assert!(settings.voice_input_device.is_none());
     assert_eq!(settings.voice_wake_phrase, DEFAULT_WAKE_PHRASE);
     assert_eq!(settings.voice_clip_command, DEFAULT_CLIP_COMMAND);
     assert!(!settings.voice_single_word);
     assert_eq!(settings.voice_clip_seconds, 30);
-    assert_eq!(settings.voice_min_confidence, 60);
+    assert_eq!(
+      settings.voice_min_confidence,
+      crate::voice::MIN_VOICE_CONFIDENCE
+    );
     assert_eq!(settings.voice_cooldown_seconds, 5);
     assert!(settings.voice_show_overlay);
     assert_eq!(settings.voice_overlay_icon, "bell");
@@ -700,6 +838,32 @@ mod tests {
     assert_eq!(settings.voice_min_confidence, 100);
     assert_eq!(warnings.len(), 3);
     assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn a_dangerously_low_voice_threshold_is_raised_to_the_safe_floor() {
+    let mut settings = Settings::default();
+    settings.voice_min_confidence = 10;
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(
+      settings.voice_min_confidence,
+      crate::voice::MIN_VOICE_CONFIDENCE
+    );
+    assert!(warnings
+      .iter()
+      .any(|warning| warning.contains("false triggers")));
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn a_blank_voice_input_device_follows_the_windows_default() {
+    let mut settings = Settings::default();
+    settings.voice_input_device = Some("   ".into());
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert!(settings.voice_input_device.is_none());
+    assert!(warnings.is_empty());
   }
 
   #[test]
@@ -815,5 +979,68 @@ mod tests {
     assert_eq!(settings.theme_text, "#00ff00");
     assert!(warnings.is_empty());
     assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn screenshot_defaults_are_f9_primary_and_do_not_open_files() {
+    let settings = Settings::default();
+    assert_eq!(settings.hotkey_screenshot, DEFAULT_SCREENSHOT_HOTKEY);
+    assert_eq!(settings.hotkey_screenshot, "F9");
+    assert!(settings.screenshot_dir.is_none());
+    assert!(settings.screenshot_monitor_index.is_none());
+    assert!(!settings.screenshot_open_after_capture);
+    assert!(settings.screenshot_show_notification);
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn older_settings_files_get_the_screenshot_defaults() {
+    let settings: Settings = serde_json::from_str(r#"{"replay_duration_seconds": 90}"#).unwrap();
+    assert_eq!(settings.hotkey_screenshot, "F9");
+    assert!(settings.screenshot_dir.is_none());
+    assert!(!settings.screenshot_open_after_capture);
+    assert!(settings.screenshot_show_notification);
+  }
+
+  #[test]
+  fn screenshot_shortcut_cannot_duplicate_the_core_shortcuts() {
+    let mut settings = Settings::default();
+    settings.hotkey_screenshot = "Ctrl+Shift+S".into();
+    assert!(validate(&settings).is_err());
+    settings.hotkey_screenshot = "ctrl+shift+r".into();
+    assert!(validate(&settings).is_err());
+
+    let mut warnings = Vec::new();
+    settings.hotkey_screenshot = "ctrl+shift+r".into();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.hotkey_screenshot, DEFAULT_SCREENSHOT_HOTKEY);
+    assert!(warnings.iter().any(|warning| warning.contains("screenshot")));
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn invalid_screenshot_shortcut_is_reset() {
+    let mut settings = Settings::default();
+    settings.hotkey_screenshot = "Ctrl+Banana".into();
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(settings.hotkey_screenshot, "F9");
+    assert!(warnings.iter().any(|warning| warning.contains("Screenshot")));
+  }
+
+  #[test]
+  fn screenshot_folder_must_be_absolute_and_not_a_file() {
+    let mut settings = Settings::default();
+    settings.screenshot_dir = Some(PathBuf::from("shots"));
+    assert!(validate(&settings).is_err());
+
+    let file = std::env::temp_dir().join(format!(
+      "kenta-settings-file-{}",
+      std::process::id()
+    ));
+    fs::write(&file, b"x").unwrap();
+    settings.screenshot_dir = Some(file.clone());
+    assert!(validate(&settings).is_err());
+    fs::remove_file(file).unwrap();
   }
 }

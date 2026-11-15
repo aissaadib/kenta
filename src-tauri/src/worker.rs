@@ -41,6 +41,22 @@ fn start_hotkey_worker(app: AppHandle) {
             let _ = app.emit("app-error", error);
           }
         }
+        Some(crate::hotkey::HotkeyEvent::Screenshot) => {
+          // Encoding a 4K PNG takes longer than the poll interval. Do it here
+          // instead of on the hotkey thread so save/record stay responsive;
+          // `perform_screenshot` also refuses a second concurrent capture.
+          let capture = app.clone();
+          let spawned = thread::Builder::new()
+            .name("kenta-screenshot".into())
+            .spawn(move || {
+              if let Err(error) = commands::perform_screenshot(&capture) {
+                let _ = capture.emit("screenshot-error", error);
+              }
+            });
+          if spawned.is_err() {
+            let _ = app.emit("screenshot-error", "Could not start the screenshot worker.".to_string());
+          }
+        }
         None => thread::sleep(HOTKEY_POLL),
       }
     })

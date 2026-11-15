@@ -13,33 +13,20 @@
       {
         "label": "main",
         "title": "Kenta",
-        "width": 1000,
-        "height": 700,
+        "width": 1040,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 400,
         "theme": "Dark",
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
         "resizable": true,
         "fullscreen": false,
         "minimizable": true,
         "maximizable": true,
-        "closable": true
-      },
-      {
-        "label": "overlay",
-        "title": "Kenta Clip",
-        "url": "overlay.html",
-        "width": 120,
-        "height": 120,
-        "theme": "Dark",
-        "resizable": false,
-        "fullscreen": false,
-        "minimizable": false,
-        "maximizable": false,
-        "closable": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "focus": false
+        "closable": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,BackForwardCache --js-flags=--max-semi-space-size=2"
       }
     ],
     "security": {

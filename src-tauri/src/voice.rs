@@ -41,10 +41,25 @@ pub const STATE_READY: &str = "ready";
 pub const STATE_UNAVAILABLE: &str = "unavailable";
 pub const STATE_BUFFER_NOT_READY: &str = "buffer-not-ready";
 
-/// How long a bare wake phrase keeps the command armed. Long enough to say
-/// "Kenta" and then think, short enough that a stray "clip that" from a
-/// video half a minute later does not save anything.
-const ARM_WINDOW: Duration = Duration::from_secs(6);
+/// How long a bare wake phrase keeps the command armed. Short enough that a
+/// stray "clip that" from a video a few seconds later does not save anything.
+const ARM_WINDOW: Duration = Duration::from_secs(3);
+
+/// The lowest confidence the app will accept, even if an older settings file
+/// asked for something lower. A closed grammar force-fits unrelated speech onto
+/// the only phrases it knows, and in practice those guesses land between 55%
+/// and 80%: at 10% any sound became a command.
+pub const MIN_VOICE_CONFIDENCE: u8 = 75;
+
+/// A bare wake phrase must be clearer than an ordinary command before it opens
+/// the command window. This is the main guard against a misheard word arming a
+/// save that then fires on unrelated speech.
+const WAKE_ARM_CONFIDENCE: f32 = 0.90;
+
+/// Every trigger, including "wake + command" in one breath, must clear this.
+/// The closed grammar reports high scores for force-fitted noise, so the old
+/// 50–75% band accepted completely different words.
+const COMMAND_CONFIDENCE: f32 = 0.90;
 
 /// How often the engine wakes up even when nobody is talking, so a stopped
 /// buffer is noticed and the stop flag is honoured promptly.
@@ -53,6 +68,15 @@ const POLL_MS: u32 = 150;
 /// SAPI's category for speech recognisers. `ISpObjectTokenCategory::SetId`
 /// accepts this registry path instead of a GUID.
 const RECOGNIZERS_CATEGORY: &str = r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Recognizers";
+
+/// Where SAPI keeps the microphones it can open. Windows stores the real
+/// capture devices under the HKCU `TokenEnums\MMAudioIn` key; the HKLM paths
+/// are tried too so a machine that keeps them there still works.
+const AUDIO_INPUT_CATEGORIES: [&str; 3] = [
+  r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\AudioInput",
+  r"HKEY_CURRENT_USER\Software\Microsoft\Speech\AudioInput\TokenEnums\MMAudioIn",
+  r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\AudioInput\TokenEnums\MMAudioIn",
+];
 
 // ---------------------------------------------------------------------------
 // Phrases
@@ -233,12 +257,16 @@ pub struct Matcher {
   single_word: bool,
 }
 
+fn effective_min_confidence(percent: u8) -> u8 {
+  percent.clamp(MIN_VOICE_CONFIDENCE, 100)
+}
+
 impl Matcher {
   pub fn new(wake: &str, command: &str, min_confidence_percent: u8) -> Self {
     Self {
       wake: normalize_phrase(wake),
       command: normalize_phrase(command),
-      min_confidence: (min_confidence_percent.min(100) as f32) / 100.0,
+      min_confidence: (effective_min_confidence(min_confidence_percent) as f32) / 100.0,
       armed_until: None,
       single_word: false,
     }
@@ -271,6 +299,15 @@ impl Matcher {
 
     let wake = transcript.find(&self.wake);
     let command = transcript.find(&self.command);
+    // A bare wake phrase has to clear a higher bar than an ordinary command.
+    // Without this, a 50% guess of "Kenta" could leave the command live for
+    // three seconds, and unrelated speech could finish the save.
+    if wake.is_some() && command.is_none() && confidence < WAKE_ARM_CONFIDENCE {
+      return Decision::Ignore;
+    }
+    if command.is_some() && confidence < COMMAND_CONFIDENCE {
+      return Decision::Ignore;
+    }
     match (wake, command) {
       // "Kenta, clip that" in one breath.
       (Some((wake_at, _)), Some((command_at, _))) if wake_at < command_at => {
@@ -339,6 +376,41 @@ impl VoiceStatus {
   }
 }
 
+/// One microphone SAPI can open. The settings screen uses `is_virtual` to warn
+/// before a virtual cable makes the recogniser hear system audio and save clips
+/// on its own.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct VoiceInputDevice {
+  /// The SAPI token id, persisted in settings.
+  pub id: String,
+  pub name: String,
+  /// True when this is the device Windows currently uses by default.
+  pub is_default: bool,
+  /// True when the name looks like a virtual cable or loopback device.
+  pub is_virtual: bool,
+}
+
+/// List the microphones SAPI can open. The caller is a Tauri command thread, so
+/// this initializes COM itself instead of assuming the voice worker did it.
+pub fn list_input_devices() -> Result<Vec<VoiceInputDevice>, String> {
+  let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+  let should_uninitialize = initialized.is_ok();
+  // RPC_E_CHANGED_MODE means another library already initialized this thread
+  // with a different apartment model. COM is usable, so only the uninit would
+  // be wrong.
+  if initialized.is_err() && initialized.0 != 0x80010106u32 as i32 {
+    return Err(format!(
+      "Windows audio inputs could not be listed (0x{:08X}).",
+      initialized.0
+    ));
+  }
+  let result = unsafe { enumerate_input_devices() };
+  if should_uninitialize {
+    unsafe { CoUninitialize() };
+  }
+  result
+}
+
 /// What a test of the microphone produced.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TestOutcome {
@@ -397,6 +469,8 @@ impl TestOutcome {
 pub struct VoiceConfig {
   pub wake_phrase: String,
   pub clip_command: String,
+  /// SAPI audio input token id. `None` follows the Windows default.
+  pub input_device: Option<String>,
   /// Seconds kept by a voice-triggered save.
   pub clip_seconds: u32,
   /// 0..=100.
@@ -794,10 +868,10 @@ fn describe_test(heard: &str, percent: u8, matched: bool, config: &VoiceConfig) 
   let transcript = Transcript::new(heard);
   let message = if matched {
     format!("Heard \"{heard}\" at {percent}%. That would save a clip.")
-  } else if percent < config.min_confidence {
+  } else if percent < effective_min_confidence(config.min_confidence) {
     format!(
       "Heard \"{heard}\" at {percent}%, below the {}% confidence threshold.",
-      config.min_confidence
+      effective_min_confidence(config.min_confidence)
     )
   } else if config.single_word && transcript.find(&config.clip_command).is_some() {
     // In single-word mode the command alone is enough; anything else is just
@@ -904,6 +978,150 @@ unsafe fn phrase_confidence(phrase: &ISpPhrase) -> f32 {
       _ => 0.3,
     }
   }
+}
+
+/// Every microphone token SAPI reports, deduplicated by token id. The token is
+/// kept so `open_session` can create the matching audio object.
+unsafe fn enumerate_input_tokens() -> Vec<(ISpObjectToken, String, String)> {
+  let mut found: Vec<(ISpObjectToken, String, String)> = Vec::new();
+  let mut seen = std::collections::HashSet::new();
+  for path in AUDIO_INPUT_CATEGORIES {
+    let Ok(category) =
+      CoCreateInstance::<_, ISpObjectTokenCategory>(&SpObjectTokenCategory, None, CLSCTX_ALL)
+    else {
+      continue;
+    };
+    if category.SetId(&HSTRING::from(path), false).is_err() {
+      continue;
+    }
+    let Ok(enumerator) = category.EnumTokens(PCWSTR::null(), PCWSTR::null()) else {
+      continue;
+    };
+    let mut count = 0u32;
+    if enumerator.GetCount(&mut count).is_err() {
+      continue;
+    }
+    for index in 0..count {
+      let Ok(token) = enumerator.Item(index) else {
+        continue;
+      };
+      let Some(id) = token_id(&token) else {
+        continue;
+      };
+      if !seen.insert(id.to_lowercase()) {
+        continue;
+      }
+      let name = token_name(&token).unwrap_or_else(|| "Microphone".into());
+      found.push((token, id, name));
+    }
+  }
+  found
+}
+
+unsafe fn enumerate_input_devices() -> Result<Vec<VoiceInputDevice>, String> {
+  let default_id = default_input_device_id();
+  let tokens = enumerate_input_tokens();
+  if tokens.is_empty() {
+    return Err(
+      "Windows did not report any microphones. Check that one is connected and enabled in Windows Settings → System → Sound."
+        .into(),
+    );
+  }
+  Ok(
+    tokens
+      .into_iter()
+      .map(|(_, id, name)| {
+        let is_default = default_id
+          .as_deref()
+          .map(|value| value.eq_ignore_ascii_case(&id))
+          .unwrap_or(false);
+        let is_virtual = looks_virtual(&name);
+        VoiceInputDevice {
+          id,
+          name,
+          is_default,
+          is_virtual,
+        }
+      })
+      .collect(),
+  )
+}
+
+unsafe fn find_input_token(id: &str) -> Option<(ISpObjectToken, String)> {
+  enumerate_input_tokens()
+    .into_iter()
+    .find(|(_, token_id, _)| token_id.eq_ignore_ascii_case(id))
+    .map(|(token, _, name)| (token, name))
+}
+
+unsafe fn default_input_device_id() -> Option<String> {
+  let category: ISpObjectTokenCategory =
+    CoCreateInstance(&SpObjectTokenCategory, None, CLSCTX_ALL).ok()?;
+  category
+    .SetId(
+      &HSTRING::from(r"HKEY_CURRENT_USER\Software\Microsoft\Speech\AudioInput"),
+      false,
+    )
+    .ok()?;
+  let raw = category.GetDefaultTokenId().ok()?;
+  if raw.is_null() {
+    return None;
+  }
+  let text = String::from_utf16_lossy(raw.as_wide());
+  CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void));
+  let text = text.trim().to_string();
+  // The default value often ends in a bare "MMAudioIn\" with no device id,
+  // which means "whatever Windows decides", not a specific token.
+  if text.is_empty() || text.ends_with('\\') {
+    None
+  } else {
+    Some(text)
+  }
+}
+
+unsafe fn token_id(token: &ISpObjectToken) -> Option<String> {
+  let raw = token.GetId().ok()?;
+  if raw.is_null() {
+    return None;
+  }
+  let text = String::from_utf16_lossy(raw.as_wide());
+  CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void));
+  Some(text)
+}
+
+unsafe fn token_name(token: &ISpObjectToken) -> Option<String> {
+  let raw = token.GetStringValue(PCWSTR::null()).ok()?;
+  if raw.is_null() {
+    return None;
+  }
+  let text = String::from_utf16_lossy(raw.as_wide());
+  CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void));
+  let text = text.trim().to_string();
+  if text.is_empty() {
+    None
+  } else {
+    Some(text)
+  }
+}
+
+/// Names used by virtual audio cables. Listening to one of these means the
+/// recogniser hears whatever is playing on the PC, not the user.
+fn looks_virtual(name: &str) -> bool {
+  let lower = name.to_lowercase();
+  [
+    "voicemod",
+    "voicemeeter",
+    "virtual",
+    "vb-audio",
+    "vb cable",
+    "cable output",
+    "loopback",
+    "stereo mix",
+    "what u hear",
+    "wave out",
+  ]
+  .iter()
+  .any(|needle| lower.contains(needle))
 }
 
 struct RecognizerChoice {
@@ -1059,7 +1277,7 @@ unsafe fn open_session(config: &VoiceConfig, input: Input) -> Result<Session, St
   let recognizer: ISpRecognizer = CoCreateInstance(&SpInprocRecognizer, None, CLSCTX_ALL)
     .map_err(|error| format!("Windows speech is unavailable ({}).", error.message()))?;
 
-  let choice = choose_recognizer()?;
+  let mut choice = choose_recognizer()?;
   if let Some(token) = &choice.token {
     if let Err(error) = recognizer.SetRecognizer(token) {
       // The default engine is better than no engine at all.
@@ -1067,13 +1285,50 @@ unsafe fn open_session(config: &VoiceConfig, input: Input) -> Result<Session, St
     }
   }
 
+  let mut input_note: Option<String> = None;
   let source: windows::core::IUnknown = match input {
-    Input::Microphone => CoCreateInstance(&SpMMAudioIn, None, CLSCTX_ALL).map_err(|error| {
-      format!(
-        "The microphone could not be opened for speech ({}).",
-        error.message()
-      )
-    })?,
+    Input::Microphone => {
+      let selected = config.input_device.as_deref().and_then(|id| {
+        let found = find_input_token(id);
+        if found.is_none() {
+          input_note = Some(
+            "The saved microphone is not connected, so Windows' default microphone is being used instead."
+              .into(),
+          );
+        }
+        found
+      });
+      match selected {
+        Some((token, name)) => {
+          if looks_virtual(&name) {
+            input_note = Some(format!(
+              "Kenta is listening to \"{name}\", which looks like a virtual audio device. Choose your real microphone to stop system audio from triggering clips."
+            ));
+          }
+          log::info!("Voice clipping is listening to microphone \"{name}\"");
+          let mut raw = std::ptr::null_mut();
+          token
+            .CreateInstance(None, CLSCTX_ALL.0, &ISpAudio::IID, &mut raw)
+            .map_err(|error| {
+              format!(
+                "The selected microphone could not be opened ({}).",
+                error.message()
+              )
+            })?;
+          if raw.is_null() {
+            return Err("The selected microphone did not provide an audio stream.".into());
+          }
+          let audio = ISpAudio::from_raw(raw);
+          audio.cast().map_err(|error| error.message())?
+        }
+        None => CoCreateInstance(&SpMMAudioIn, None, CLSCTX_ALL).map_err(|error| {
+          format!(
+            "The microphone could not be opened for speech ({}).",
+            error.message()
+          )
+        })?,
+      }
+    }
     Input::File(path) => {
       let stream: ISpStream = CoCreateInstance(&SpStream, None, CLSCTX_ALL)
         .map_err(|error| format!("A speech stream could not be opened ({}).", error.message()))?;
@@ -1150,6 +1405,13 @@ unsafe fn open_session(config: &VoiceConfig, input: Input) -> Result<Session, St
   // Some engines ignore this, but the ones that do not need it to start.
   if let Err(error) = recognizer.SetRecoState(SPRST_ACTIVE) {
     log::warn!("The speech recogniser did not accept the active state: {}", error.message());
+  }
+
+  if let Some(note) = input_note {
+    choice.note = Some(match choice.note.take() {
+      Some(existing) => format!("{existing} {note}"),
+      None => note,
+    });
   }
 
   Ok(Session {
@@ -1343,13 +1605,26 @@ mod tests {
   }
 
   #[test]
-  fn the_threshold_is_inclusive() {
+  fn a_force_fit_below_the_trigger_confidence_is_ignored() {
     let now = Instant::now();
     let mut matcher = matcher();
+    // The logs showed unrelated speech force-fitted to the phrase at 61–87%.
     assert_eq!(
-      matcher.decide("Kenta, clip that", 0.60, now),
+      matcher.decide("Kenta, clip that", 0.87, now),
+      Decision::Ignore
+    );
+    assert_eq!(
+      matcher.decide("Kenta, clip that", 0.90, now),
       Decision::Trigger
     );
+  }
+
+  #[test]
+  fn a_bare_wake_word_below_ninety_percent_is_ignored() {
+    let now = Instant::now();
+    let mut matcher = matcher();
+    assert_eq!(matcher.decide("Kenta", 0.89, now), Decision::Ignore);
+    assert_eq!(matcher.decide("Kenta", 0.90, now), Decision::Armed);
   }
 
   #[test]
@@ -1371,9 +1646,9 @@ mod tests {
   fn the_command_can_be_configured() {
     let now = Instant::now();
     let mut matcher = Matcher::new("Hey Jarvis", "save that", 50);
-    assert_eq!(matcher.decide("hey jarvis", 0.8, now), Decision::Armed);
+    assert_eq!(matcher.decide("hey jarvis", 0.95, now), Decision::Armed);
     assert_eq!(
-      matcher.decide("save that", 0.8, now + Duration::from_secs(1)),
+      matcher.decide("save that", 0.95, now + Duration::from_secs(1)),
       Decision::Trigger
     );
     // The old defaults mean nothing now.
@@ -1461,6 +1736,7 @@ mod tests {
     VoiceConfig {
       wake_phrase: "Kenta".into(),
       clip_command: "clip that".into(),
+      input_device: None,
       clip_seconds: 30,
       min_confidence: 60,
       cooldown: Duration::from_secs(5),
@@ -1482,7 +1758,10 @@ mod tests {
   fn a_weak_test_names_the_threshold() {
     let outcome = describe_test("Kenta, clip that", 41, false, &config());
     assert!(!outcome.matched);
-    assert!(outcome.message.contains("below the 60% confidence threshold"));
+    assert!(outcome.message.contains(&format!(
+      "below the {}% confidence threshold",
+      MIN_VOICE_CONFIDENCE
+    )));
   }
 
   #[test]

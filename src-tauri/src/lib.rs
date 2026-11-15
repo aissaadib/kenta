@@ -9,16 +9,19 @@ mod errors;
 mod ffmpeg;
 mod hotkey;
 mod instance;
+mod memory;
 mod migrate;
 mod monitors;
 mod music;
 mod overlay;
 mod process;
+mod screenshot;
 mod settings;
 mod sound;
 mod storage;
 mod timeline;
 mod voice;
+mod window_shell;
 mod worker;
 
 use capture::{CaptureConfig, CaptureEngine};
@@ -36,6 +39,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 const TRAY_SHOW: &str = "tray-show";
 const TRAY_SAVE: &str = "tray-save-replay";
 const TRAY_RECORD: &str = "tray-toggle-recording";
+const TRAY_SCREENSHOT: &str = "tray-screenshot";
 const TRAY_FOLDER: &str = "tray-open-folder";
 const TRAY_QUIT: &str = "tray-quit";
 
@@ -74,6 +78,12 @@ pub fn run() {
       commands::normalize_shortcut,
       commands::open_output_dir,
       commands::select_output_dir,
+      commands::capture_screenshot,
+      commands::list_screenshots,
+      commands::delete_screenshot,
+      commands::open_screenshot_folder,
+      commands::open_screenshot_dir,
+      commands::select_screenshot_dir,
       commands::rename_clip,
       commands::enumerate_audio_devices,
       commands::enumerate_video_encoders,
@@ -123,10 +133,12 @@ pub fn run() {
       commands::duplicate_appearance_theme,
       commands::set_appearance_theme,
       commands::reset_appearance,
+      commands::save_wallpaper,
       commands::preview_appearance_theme,
       commands::preview_appearance_sound,
       commands::appearance_pick_image,
        commands::appearance_analyze_wallpaper,
+      commands::appearance_analyze_wallpaper_variants,
       commands::appearance_pick_sound,
       commands::appearance_export_theme,
       commands::appearance_import_theme,
@@ -145,15 +157,46 @@ pub fn run() {
           appearance::apply_window_colors(&window, &theme);
           #[cfg(not(windows))]
           let _ = &window;
+          window_shell::apply(&window);
+          // The shell owns its chrome, so make visibility explicit: a window
+          // restored from a tray session must still appear on a fresh launch.
+          let _ = window.show();
+          let _ = window.set_focus();
         }
         if let Some(warning) = appearance::apply_runtime_icons(&handle, &theme) {
           log::warn!("{warning}");
         }
       }
-      worker::start(handle);
+      worker::start(handle.clone());
+      // A replay recorder lives in the background. Trim the tree's working set
+      // when the user is elsewhere so the ffmpeg and WebView2 file pages are
+      // not held resident for hours. Monitor the window in a small thread.
+      #[cfg(windows)]
+      {
+        let app = handle;
+        std::thread::spawn(move || {
+          std::thread::sleep(std::time::Duration::from_secs(20));
+          loop {
+            let unfocused = app
+              .get_webview_window("main")
+              .and_then(|window| window.is_focused().ok())
+              .map(|focused| !focused)
+              .unwrap_or(true);
+            if unfocused {
+              memory::trim_process_tree();
+            }
+            std::thread::sleep(std::time::Duration::from_secs(90));
+          }
+        });
+      }
       Ok(())
     })
     .on_window_event(|window, event| {
+      // Focus loss is the natural idle point: page out the recorder and webview
+      // working sets instead of keeping them resident behind another app.
+      if let WindowEvent::Focused(false) = event {
+        memory::trim_process_tree();
+      }
       if let WindowEvent::CloseRequested { api, .. } = event {
         let app = window.app_handle();
         let state = app.state::<AppState>();
@@ -254,6 +297,7 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
   }
 
   commands::allow_clip_scope(handle, &settings.output_dir_or_default());
+  commands::allow_clip_scope(handle, &settings.screenshot_dir_or_default());
   commands::allow_clip_scope(handle, &commands::thumbnail_cache_dir());
   // Managed theme assets are the only tree the webview may read outside the
   // clip folders. Each music track is allowed individually when it is listed.
@@ -281,12 +325,23 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
       .map_err(|_| AppError::Hotkey("shortcut lock poisoned".into()))?;
     *manager = Some(HotkeyManager::new());
     if let Some(manager) = manager.as_mut() {
-      if let Err(error) =
-        manager.register(&settings.hotkey_save_replay, &settings.hotkey_start_stop)
-      {
-        warnings.push(format!(
-          "Global shortcuts are unavailable: {error}. You can change them in Settings."
-        ));
+      match manager.register(
+        &settings.hotkey_save_replay,
+        &settings.hotkey_start_stop,
+        &settings.hotkey_screenshot,
+      ) {
+        Ok(report) => {
+          if let Some(error) = report.screenshot_error {
+            warnings.push(format!(
+              "The screenshot shortcut could not be registered: {error}. The Capture button still works."
+            ));
+          }
+        }
+        Err(error) => {
+          warnings.push(format!(
+            "Global shortcuts are unavailable: {error}. You can change them in Settings."
+          ));
+        }
       }
     }
   }
@@ -374,12 +429,21 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
   let show = MenuItem::with_id(app, TRAY_SHOW, "Open Kenta", true, None::<&str>)?;
   let save = MenuItem::with_id(app, TRAY_SAVE, "Save replay", true, None::<&str>)?;
   let record = MenuItem::with_id(app, TRAY_RECORD, "Start / stop recording", true, None::<&str>)?;
+  let screenshot = MenuItem::with_id(app, TRAY_SCREENSHOT, "Take screenshot", true, None::<&str>)?;
   let folder = MenuItem::with_id(app, TRAY_FOLDER, "Open clips folder", true, None::<&str>)?;
   let separator = PredefinedMenuItem::separator(app)?;
   let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit Kenta", true, None::<&str>)?;
   let menu = Menu::with_items(
     app,
-    &[&show, &save, &record, &folder, &separator, &quit],
+    &[
+      &show,
+      &save,
+      &record,
+      &screenshot,
+      &folder,
+      &separator,
+      &quit,
+    ],
   )?;
 
   let mut builder = TrayIconBuilder::with_id(appearance::TRAY_ID)
@@ -397,6 +461,23 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         if let Err(error) = commands::perform_toggle_manual(app) {
           let _ = app.emit("app-error", error);
         }
+      }
+      TRAY_SCREENSHOT => {
+        let capture = app.clone();
+        std::thread::Builder::new()
+          .name("kenta-screenshot".into())
+          .spawn(move || {
+            if let Err(error) = commands::perform_screenshot(&capture) {
+              let _ = capture.emit("screenshot-error", error);
+            }
+          })
+          .map(|_| ())
+          .unwrap_or_else(|_| {
+            let _ = app.emit(
+              "screenshot-error",
+              "Could not start the screenshot worker.".to_string(),
+            );
+          });
       }
       TRAY_FOLDER => {
         if let Err(error) = commands::open_output_folder(app) {

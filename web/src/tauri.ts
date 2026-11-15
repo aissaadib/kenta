@@ -75,6 +75,16 @@ export interface Settings {
   audio_sample_rate: number;
   hotkey_save_replay: string;
   hotkey_start_stop: string;
+  /** Global shortcut for a one-shot desktop screenshot. Empty disables it. */
+  hotkey_screenshot: string;
+  /** Where PNG screenshots are written. `null` uses Pictures\Kenta\Screenshots. */
+  screenshot_dir: string | null;
+  /** Enumerated display index to capture. `null` follows the primary display. */
+  screenshot_monitor_index: number | null;
+  /** Open the new PNG in the default image viewer. Off by default. */
+  screenshot_open_after_capture: boolean;
+  /** Show a toast after a capture, including captures started by a hotkey. */
+  screenshot_show_notification: boolean;
   start_at_startup: boolean;
   minimize_to_tray: boolean;
   monitor_offset_x: number | null;
@@ -169,6 +179,7 @@ export interface SettingsPayload {
   warnings: string[];
   ffmpeg: FfmpegInfo;
   default_output_dir: string;
+  default_screenshot_dir: string;
   settings_path: string;
 }
 
@@ -192,7 +203,40 @@ export interface SaveSettingsResult {
 export interface HotkeyStatus {
   save_key: string;
   record_key: string;
+  screenshot_key: string;
   registered: boolean;
+  screenshot_registered: boolean;
+  screenshot_error: string | null;
+}
+
+/** One PNG in the screenshot library. Screenshots never appear in the clip list. */
+export interface ScreenshotItem {
+  id: string;
+  name: string;
+  path: string;
+  folder: string;
+  width: number;
+  height: number;
+  file_size_bytes: number;
+  created_at: string;
+  exists: boolean;
+}
+
+/** The result of one capture, also emitted as `screenshot-saved`. */
+export interface ScreenshotCapture {
+  id: string | null;
+  name: string;
+  path: string;
+  folder: string;
+  width: number;
+  height: number;
+  file_size_bytes: number;
+  created_at: string;
+  window_excluded: boolean;
+  display_fallback: boolean;
+  monitor_index: number;
+  elapsed_ms: number;
+  warning: string | null;
 }
 
 export type TrackKind = "video" | "pc" | "mic" | "mixed";
@@ -347,6 +391,31 @@ export function openOutputDir(): Promise<void> {
 
 export function selectOutputDir(currentDir?: string | null): Promise<string | null> {
   return invoke("select_output_dir", { currentDir: currentDir ?? null });
+}
+
+export function captureScreenshot(): Promise<ScreenshotCapture> {
+  return invoke("capture_screenshot");
+}
+
+export function listScreenshots(sort?: string | null): Promise<ScreenshotItem[]> {
+  return invoke("list_screenshots", { sort: sort ?? null });
+}
+
+/** Delete a PNG after the backend validates it belongs to its Kenta folder. */
+export function deleteScreenshot(id: string): Promise<void> {
+  return invoke("delete_screenshot", { id });
+}
+
+export function openScreenshotFolder(id: string): Promise<void> {
+  return invoke("open_screenshot_folder", { id });
+}
+
+export function openScreenshotDir(): Promise<void> {
+  return invoke("open_screenshot_dir");
+}
+
+export function selectScreenshotDir(currentDir?: string | null): Promise<string | null> {
+  return invoke("select_screenshot_dir", { currentDir: currentDir ?? null });
 }
 
 export function openInPlayer(id?: string, path?: string): Promise<void> {
@@ -638,6 +707,7 @@ export interface ThemeBackground {
   opacity: number;
   blur: number;
   adaptive: boolean;
+  show_through: boolean;
 }
 
 export interface ThemeIcons {
@@ -681,12 +751,37 @@ export interface AppearanceConfig {
   schema: number;
   active_theme: string;
   themes: AppearanceTheme[];
+  wallpaper: Wallpaper;
+}
+
+/** App-wide wallpaper settings. The image is managed inside Kenta's theme folder
+ * and the cached palette is generated from a downsampled copy of it. */
+export interface Wallpaper {
+  image: string | null;
+  fit: "cover" | "contain" | "fill" | "center";
+  position_x: number;
+  position_y: number;
+  zoom: number;
+  dim: number;
+  blur: number;
+  mode: "preset" | "wallpaper";
+  adaptive: boolean;
+  transparency: "immersive" | "balanced" | "readable" | "custom";
+  surface_opacity: number;
+  contrast: number;
+  /** Keep text surfaces above a contrast floor even in Immersive mode. */
+  safeguard: boolean;
+  accent: string | null;
+  palette: ThemeColors | null;
 }
 
 export interface AppearancePayload {
   config: AppearanceConfig;
   themes: AppearanceTheme[];
   active: AppearanceTheme;
+  /** Equal to `active` in preset mode, or the wallpaper palette / manual accent. */
+  effective: AppearanceTheme;
+  wallpaper: Wallpaper;
   assets_dir: string;
 }
 
@@ -752,8 +847,22 @@ export function appearanceAnalyzeWallpaper(relative: string): Promise<ThemeColor
   return invoke("appearance_analyze_wallpaper", { relative });
 }
 
-export function appearanceExportTheme(theme: AppearanceTheme): Promise<string | null> {
-  return invoke("appearance_export_theme", { theme });
+/** Five palette options derived from the same image, in a stable order. */
+export function appearanceAnalyzeWallpaperVariants(relative: string): Promise<ThemeColors[]> {
+  return invoke("appearance_analyze_wallpaper_variants", { relative });
+}
+
+/** Persist the app-wide wallpaper. The backend validates the managed image and
+ * returns the sanitized payload, which becomes the new visible state. */
+export function saveWallpaper(wallpaper: Wallpaper): Promise<AppearancePayload> {
+  return invoke("save_wallpaper", { wallpaper });
+}
+
+export function appearanceExportTheme(
+  theme: AppearanceTheme,
+  includeWallpaper: boolean,
+): Promise<string | null> {
+  return invoke("appearance_export_theme", { theme, includeWallpaper });
 }
 
 export function appearanceImportTheme(): Promise<AppearancePayload | null> {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   AlertTriangle,
+  Camera,
   Circle,
   Cpu,
   FolderOpen,
@@ -10,8 +11,8 @@ import {
   Settings2,
   Square,
 } from "lucide-react";
-import type { CaptureStatus, Settings } from "../tauri";
-import { formatClock, formatDuration, statusTone } from "../format";
+import type { CaptureStatus, ScreenshotCapture, Settings } from "../tauri";
+import { formatBytes, formatClock, formatDuration, statusTone } from "../format";
 
 interface Props {
   settings: Settings;
@@ -19,10 +20,14 @@ interface Props {
   busy: boolean;
   savingReplay: boolean;
   togglingRecording: boolean;
+  capturingScreenshot: boolean;
+  lastScreenshot: ScreenshotCapture | null;
+  screenshotError: string | null;
   onStart: () => void;
   onStop: () => void;
   onSaveReplay: () => void;
   onToggleRecording: () => void;
+  onCaptureScreenshot: () => void;
   onOpenFolder: () => void;
   onOpenSettings: () => void;
 }
@@ -82,10 +87,14 @@ export function CaptureView({
   busy,
   savingReplay,
   togglingRecording,
+  capturingScreenshot,
+  lastScreenshot,
+  screenshotError,
   onStart,
   onStop,
   onSaveReplay,
   onToggleRecording,
+  onCaptureScreenshot,
   onOpenFolder,
   onOpenSettings,
 }: Props) {
@@ -200,6 +209,22 @@ export function CaptureView({
           <button type="button" className="btn btn-quiet btn-lg" onClick={onOpenFolder}>
             <FolderOpen size={15} /> Clips folder
           </button>
+
+          <button
+            type="button"
+            className="btn btn-ghost btn-lg"
+            data-testid="capture-screenshot"
+            onClick={onCaptureScreenshot}
+            disabled={capturingScreenshot}
+            title="Capture the selected display as a PNG. Works even while the buffer is off."
+          >
+            {capturingScreenshot ? (
+              <Loader2 size={16} className="spin" />
+            ) : (
+              <Camera size={16} />
+            )}
+            {capturingScreenshot ? "Capturing…" : "Take screenshot"}
+          </button>
         </div>
 
         <div className="hotkey-strip">
@@ -211,10 +236,37 @@ export function CaptureView({
             <kbd className="keycap">{settings.hotkey_start_stop || "—"}</kbd>
             Start / stop recording
           </span>
+          <span>
+            <kbd className="keycap">{settings.hotkey_screenshot || "Not set"}</kbd>
+            Screenshot
+          </span>
           <button type="button" className="link-btn" onClick={onOpenSettings}>
             <Settings2 size={13} /> Change shortcuts
           </button>
         </div>
+
+        {screenshotError || lastScreenshot ? (
+          <p
+            className={`capture-shot-feedback ${screenshotError ? "is-error" : ""}`}
+            role="status"
+            aria-live="polite"
+          >
+            {screenshotError ? (
+              <>
+                <AlertTriangle size={13} /> {screenshotError}
+              </>
+            ) : lastScreenshot ? (
+              <>
+                <Camera size={13} />
+                Saved {lastScreenshot.name} · {lastScreenshot.width} × {lastScreenshot.height} ·{" "}
+                {formatBytes(lastScreenshot.file_size_bytes)}
+                {lastScreenshot.window_excluded
+                  ? ""
+                  : " · Kenta's window may be visible in this capture."}
+              </>
+            ) : null}
+          </p>
+        ) : null}
       </section>
 
       {hasWarnings ? (
