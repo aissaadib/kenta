@@ -6,6 +6,7 @@ import {
   Clapperboard,
   Film,
   Gamepad2,
+  Images,
   Loader2,
   Music2,
   Palette,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   captureSaveReplay,
+  captureScreenshot,
   captureStart,
   captureStartManual,
   captureStatus,
@@ -23,11 +25,13 @@ import {
   saveSettings,
   type CaptureStatus,
   type ClipListItem,
+  type ScreenshotCapture,
   type Settings,
   type SettingsPayload,
 } from "./tauri";
 import { CaptureView } from "./views/CaptureView";
 import { ClipsView } from "./views/ClipsView";
+import { ScreenshotsView } from "./views/ScreenshotsView";
 import { EditorView } from "./views/EditorView";
 import { MusicView } from "./views/MusicView";
 import { AppearanceView } from "./views/AppearanceView";
@@ -39,11 +43,12 @@ import { Popover } from "./components/Popover";
 import { Toasts, type Toast, type ToastKind } from "./components/Toasts";
 import { formatBytes, formatClock, formatDuration, statusTone } from "./format";
 
-type View = "capture" | "clips" | "music" | "appearance" | "settings";
+type View = "capture" | "clips" | "screenshots" | "music" | "appearance" | "settings";
 
 const NAV: { key: View; label: string; icon: ReactNode }[] = [
   { key: "capture", label: "Capture", icon: <Gamepad2 size={17} /> },
   { key: "clips", label: "Clips", icon: <Film size={17} /> },
+  { key: "screenshots", label: "Screenshots", icon: <Images size={17} /> },
   { key: "music", label: "Music", icon: <Music2 size={17} /> },
   { key: "appearance", label: "Appearance", icon: <Palette size={17} /> },
   { key: "settings", label: "Settings", icon: <Settings2 size={17} /> },
@@ -52,6 +57,10 @@ const NAV: { key: View; label: string; icon: ReactNode }[] = [
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
   capture: { title: "Capture", subtitle: "Replay buffer status and manual recording." },
   clips: { title: "Clips", subtitle: "Everything you have saved, in one place." },
+  screenshots: {
+    title: "Screenshots",
+    subtitle: "Desktop PNGs, kept separately from your clips.",
+  },
   music: { title: "Music", subtitle: "Your local library, playing everywhere in Kenta." },
   appearance: {
     title: "Appearance Studio",
@@ -73,6 +82,10 @@ export default function App() {
   const [captureBusy, setCaptureBusy] = useState(false);
   const [savingReplay, setSavingReplay] = useState(false);
   const [togglingRecording, setTogglingRecording] = useState(false);
+  const [capturingScreenshot, setCapturingScreenshot] = useState(false);
+  const [lastScreenshot, setLastScreenshot] = useState<ScreenshotCapture | null>(null);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
+  const [screenshotToken, setScreenshotToken] = useState(0);
   const [refreshToken, setRefreshToken] = useState(0);
   const [warningsOpen, setWarningsOpen] = useState(false);
   // The editor is a full-screen mode of the Clips section, not a fourth tab.
@@ -88,10 +101,23 @@ export default function App() {
   const [mountedViews, setMountedViews] = useState<Record<View, boolean>>({
     capture: true,
     clips: false,
+    screenshots: false,
     music: false,
     appearance: false,
     settings: false,
   });
+  // The screenshot event arrives outside React state updates, so the handler
+  // reads the current notification preference from a ref instead of needing a
+  // new listener each time settings are saved.
+  const settingsRef = useRef<Settings | null>(saved);
+  // A UI capture and its event both carry the same path. Remembering the paths
+  // already toasted keeps one key press to one notification without guessing
+  // at event ordering.
+  const shownScreenshotPaths = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    settingsRef.current = saved;
+  }, [saved]);
 
   const addToast = useCallback((kind: ToastKind, title: string, message?: string) => {
     const id = ++toastId.current;
@@ -100,6 +126,25 @@ export default function App() {
       setToasts((previous) => previous.filter((toast) => toast.id !== id));
     }, kind === "error" ? 9000 : 5000);
   }, []);
+
+  const toastScreenshot = useCallback(
+    (shot: ScreenshotCapture) => {
+      const details = `${shot.width} × ${shot.height} · ${formatBytes(shot.file_size_bytes)} · ${shot.elapsed_ms} ms`;
+      const notes = [
+        shot.display_fallback
+          ? `Display ${shot.monitor_index + 1} was unavailable, so the primary display was captured.`
+          : null,
+        shot.window_excluded ? null : "Kenta's window could not be excluded from this capture.",
+        shot.warning,
+      ].filter((note): note is string => Boolean(note));
+      addToast(
+        notes.length > 0 ? "info" : "success",
+        "Screenshot saved",
+        notes.length > 0 ? `${details}. ${notes.join(" ")}` : details,
+      );
+    },
+    [addToast],
+  );
 
   const dismissToast = useCallback((id: number) => {
     setToasts((previous) => previous.filter((toast) => toast.id !== id));
@@ -154,6 +199,23 @@ export default function App() {
         listen<string>("app-error", (event) => {
           addToast("error", "Kenta could not finish that action", event.payload);
         }),
+        listen<ScreenshotCapture>("screenshot-saved", (event) => {
+          const shot = event.payload;
+          setLastScreenshot(shot);
+          setScreenshotError(null);
+          setScreenshotToken((value) => value + 1);
+          if (shownScreenshotPaths.current.has(shot.path)) return;
+          if (settingsRef.current?.screenshot_show_notification === false) return;
+          if (shownScreenshotPaths.current.size > 64) {
+            shownScreenshotPaths.current.clear();
+          }
+          shownScreenshotPaths.current.add(shot.path);
+          toastScreenshot(shot);
+        }),
+        listen<string>("screenshot-error", (event) => {
+          setScreenshotError(event.payload);
+          addToast("error", "Screenshot failed", event.payload);
+        }),
       ]);
       if (disposed) {
         listeners.forEach((unlisten) => unlisten());
@@ -166,7 +228,7 @@ export default function App() {
       disposed = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [addToast]);
+  }, [addToast, toastScreenshot]);
 
   const dirty = useMemo(() => {
     if (!saved || !draft) return false;
@@ -254,6 +316,29 @@ export default function App() {
       await refreshStatus();
     } finally {
       setTogglingRecording(false);
+    }
+  };
+
+  const handleCaptureScreenshot = async () => {
+    if (capturingScreenshot) return;
+    setCapturingScreenshot(true);
+    setScreenshotError(null);
+    try {
+      const shot = await captureScreenshot();
+      const alreadyToasted = shownScreenshotPaths.current.has(shot.path);
+      shownScreenshotPaths.current.add(shot.path);
+      setLastScreenshot(shot);
+      setScreenshotToken((value) => value + 1);
+      // The event handler normally shows this toast. If it already did, the
+      // path above is already known; a disabled notification preference still
+      // gets direct feedback because the user pressed a visible button.
+      if (!alreadyToasted) toastScreenshot(shot);
+    } catch (reason) {
+      const message = String(reason);
+      setScreenshotError(message);
+      addToast("error", "Screenshot failed", message);
+    } finally {
+      setCapturingScreenshot(false);
     }
   };
 
@@ -489,10 +574,14 @@ export default function App() {
                 busy={captureBusy}
                 savingReplay={savingReplay}
                 togglingRecording={togglingRecording}
+                capturingScreenshot={capturingScreenshot}
+                lastScreenshot={lastScreenshot}
+                screenshotError={screenshotError}
                 onStart={() => void handleStart()}
                 onStop={() => void handleStop()}
                 onSaveReplay={() => void handleSaveReplay()}
                 onToggleRecording={() => void handleToggleRecording()}
+                onCaptureScreenshot={() => void handleCaptureScreenshot()}
                 onOpenFolder={() =>
                   openOutputDir().catch((reason) =>
                     addToast("error", "Could not open the clips folder", String(reason)),
@@ -511,6 +600,19 @@ export default function App() {
                 onNotify={addToast}
                 onEdit={openEditor}
                 onOpenCapture={() => showView("capture")}
+              />
+            </div>
+          ) : null}
+
+          {mountedViews.screenshots ? (
+            <div className="view-slot" hidden={inEditor || view !== "screenshots"}>
+              <ScreenshotsView
+                refreshToken={screenshotToken}
+                active={view === "screenshots" && !inEditor}
+                onNotify={addToast}
+                onOpenCapture={() => showView("capture")}
+                onCapture={() => void handleCaptureScreenshot()}
+                capturing={capturingScreenshot}
               />
             </div>
           ) : null}
@@ -551,6 +653,7 @@ export default function App() {
                 saving={savingSettings}
                 ffmpeg={payload.ffmpeg}
                 defaultOutputDir={payload.default_output_dir}
+                defaultScreenshotDir={payload.default_screenshot_dir}
                 settingsPath={payload.settings_path}
                 warnings={settingsWarnings}
                 onChange={setDraft}

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   AudioLines,
   Bell,
+  Camera,
   Check,
   ChevronDown,
   Cloud,
@@ -37,9 +38,11 @@ import {
   openFileLocation,
   openGoogleDrive,
   openOutputDir,
+  openScreenshotDir,
   previewAppearanceSound,
   recommendedCaptureBitrate,
   selectOutputDir,
+  selectScreenshotDir,
   voiceStatus,
   voiceTest,
   type AudioDevice,
@@ -62,6 +65,7 @@ interface Props {
   saving: boolean;
   ffmpeg: FfmpegInfo;
   defaultOutputDir: string;
+  defaultScreenshotDir: string;
   settingsPath: string;
   warnings: string[];
   onChange: (next: Settings) => void;
@@ -547,6 +551,7 @@ function SettingsViewImpl({
   saving,
   ffmpeg,
   defaultOutputDir,
+  defaultScreenshotDir,
   settingsPath,
   warnings,
   onChange,
@@ -648,10 +653,21 @@ function SettingsViewImpl({
     );
   }, [draft.monitor_index, draft.monitor_offset_x, draft.monitor_offset_y, monitors]);
 
-  const hotkeyConflict =
-    draft.hotkey_save_replay.trim().length > 0 &&
-    draft.hotkey_save_replay.trim().toLowerCase() ===
-      draft.hotkey_start_stop.trim().toLowerCase();
+  const hotkeyKeys = useMemo(
+    () =>
+      [draft.hotkey_save_replay, draft.hotkey_start_stop, draft.hotkey_screenshot]
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    [draft.hotkey_save_replay, draft.hotkey_start_stop, draft.hotkey_screenshot],
+  );
+  const hotkeyConflict = new Set(hotkeyKeys).size !== hotkeyKeys.length;
+
+  const selectedScreenshotMonitor = useMemo(() => {
+    if (draft.screenshot_monitor_index === null) return null;
+    return (
+      monitors.find((monitor) => monitor.index === draft.screenshot_monitor_index) ?? null
+    );
+  }, [draft.screenshot_monitor_index, monitors]);
 
   const invalidNumeric = Object.values(invalidFields).some(Boolean);
 
@@ -676,10 +692,17 @@ function SettingsViewImpl({
       issues.push("Frame rate must be between 1 and 240 fps.");
     }
     if (hotkeyConflict) {
-      issues.push("The two shortcuts must be different.");
+      issues.push("The shortcuts must be different.");
     }
     if (draft.output_dir && !/^[a-zA-Z]:[\\/]/.test(draft.output_dir) && !draft.output_dir.startsWith("\\\\")) {
       issues.push("The clip folder must be an absolute Windows path.");
+    }
+    if (
+      draft.screenshot_dir &&
+      !/^[a-zA-Z]:[\\/]/.test(draft.screenshot_dir) &&
+      !draft.screenshot_dir.startsWith("\\\\")
+    ) {
+      issues.push("The screenshot folder must be an absolute Windows path.");
     }
     return issues;
   }, [draft, hotkeyConflict, invalidNumeric]);
@@ -714,6 +737,15 @@ function SettingsViewImpl({
     try {
       const picked = await selectOutputDir(draft.output_dir);
       if (picked) update("output_dir", picked);
+    } catch (reason) {
+      onNotify("error", "Could not open the folder picker", String(reason));
+    }
+  };
+
+  const handleBrowseScreenshots = async () => {
+    try {
+      const picked = await selectScreenshotDir(draft.screenshot_dir ?? defaultScreenshotDir);
+      if (picked) update("screenshot_dir", picked);
     } catch (reason) {
       onNotify("error", "Could not open the folder picker", String(reason));
     }
@@ -924,6 +956,115 @@ function SettingsViewImpl({
               </button>
             </div>
           </Row>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <header>
+          <Camera size={16} className="settings-icon" />
+          <h2>Screenshots</h2>
+          <p>One-shot desktop PNGs, kept apart from your clips.</p>
+        </header>
+        <div className="settings-body">
+          <Row
+            label="Screenshot folder"
+            hint={
+              draft.screenshot_dir
+                ? "Created automatically on the first screenshot."
+                : `Default folder: ${defaultScreenshotDir}`
+            }
+          >
+            <div className="path-picker">
+              <span
+                className="path-value mono"
+                title={draft.screenshot_dir ?? defaultScreenshotDir}
+              >
+                {draft.screenshot_dir ?? defaultScreenshotDir}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => void handleBrowseScreenshots()}
+              >
+                <FolderOpen size={13} /> Browse
+              </button>
+              {draft.screenshot_dir ? (
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  onClick={() => update("screenshot_dir", null)}
+                >
+                  Use default
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                onClick={() =>
+                  openScreenshotDir().catch((reason) =>
+                    onNotify("error", "Could not open folder", String(reason)),
+                  )
+                }
+              >
+                Open
+              </button>
+            </div>
+          </Row>
+
+          <Row
+            label="Capture display"
+            hint={
+              selectedScreenshotMonitor
+                ? `Captures at ${selectedScreenshotMonitor.width} × ${selectedScreenshotMonitor.height}, the display's native resolution.`
+                : draft.screenshot_monitor_index !== null && !loadingMonitors
+                  ? "That display is not connected. The primary display will be captured instead."
+                  : "The primary display is captured at its native resolution."
+            }
+          >
+            <span className="select-wrap select-full">
+              <select
+                aria-label="Screenshot display"
+                value={selectedScreenshotMonitor?.index ?? ""}
+                onChange={(event) =>
+                  update(
+                    "screenshot_monitor_index",
+                    event.target.value === "" ? null : Number(event.target.value),
+                  )
+                }
+                disabled={loadingMonitors}
+              >
+                <option value="">Primary display</option>
+                {monitors.map((monitor) => (
+                  <option key={monitor.index} value={monitor.index}>
+                    Display {monitor.index + 1} · {monitor.width} × {monitor.height}
+                    {monitor.primary ? " (primary)" : ""}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={14} className="select-chevron" />
+            </span>
+          </Row>
+
+          <Switch
+            checked={draft.screenshot_open_after_capture}
+            onChange={(checked) => update("screenshot_open_after_capture", checked)}
+            label="Open after capture"
+            description="Open the PNG in your default image viewer as soon as it is saved."
+          />
+          <Switch
+            checked={draft.screenshot_show_notification}
+            onChange={(checked) => update("screenshot_show_notification", checked)}
+            label="Show a notification"
+            description="Show the saved size and resolution after a screenshot, including hotkey captures."
+          />
+
+          <div className="inline-note">
+            <Info size={14} />
+            <span>
+              Screenshots are PNGs in their own library and never appear as clips. Taking one does
+              not stop or restart the replay buffer.
+            </span>
+          </div>
         </div>
       </section>
 
@@ -1418,14 +1559,23 @@ function SettingsViewImpl({
               hint="Toggles a full-length recording."
             />
           </Row>
+          <Row label="Take screenshot">
+            <ShortcutCapture
+              label="Take screenshot"
+              value={draft.hotkey_screenshot}
+              onChange={(value) => update("hotkey_screenshot", value)}
+              hint="F9 by default. Clear it to use the Capture button only."
+            />
+          </Row>
           {hotkeyConflict ? (
-            <p className="field-error">The two shortcuts must be different.</p>
+            <p className="field-error">The shortcuts must be different.</p>
           ) : null}
           <div className="inline-note">
             <Info size={14} />
             <span>
               Shortcuts are registered with Windows. If another app already owns a combination,
-              Kenta will tell you and keep the previous binding.
+              Kenta will tell you and keep the previous binding. A screenshot shortcut that is
+              already taken never disables save replay or recording.
             </span>
           </div>
         </div>
