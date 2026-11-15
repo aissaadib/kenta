@@ -12,9 +12,12 @@ use crate::ffmpeg::{self, AudioDevice, EncoderInfo};
 use crate::hotkey::{self, HotkeyManager};
 use crate::monitors::{self, MonitorInfo};
 use crate::music::{self, Playlist, Track};
-use crate::settings::{default_output_dir, validate, Settings, SettingsStore};
+use crate::settings::{
+  default_output_dir, default_screenshot_dir, validate, Settings, SettingsStore,
+};
+use crate::screenshot;
 use crate::sound;
-use crate::storage::{Clip, CloudUpload, Storage, UploadStatus};
+use crate::storage::{Clip, CloudUpload, Screenshot, Storage, UploadStatus};
 use crate::timeline::{Timeline, TimelineView, TrimEdge};
 use crate::voice::{self, VoiceConfig, VoiceSink, VoiceStatus};
 use chrono::Utc;
@@ -53,6 +56,9 @@ pub struct AppState {
   /// Appearance Studio configuration. Persisted separately from settings so a
   /// broken theme can never reset recording preferences.
   pub appearance: Mutex<AppearanceConfig>,
+  /// One screenshot at a time. Windows can deliver a hotkey faster than a 4K
+  /// PNG is encoded; this keeps one physical key press to one file.
+  pub screenshot_busy: AtomicBool,
 }
 
 pub struct EditorSession {
@@ -83,6 +89,7 @@ impl AppState {
       // the wrong theme and hide the wallpaper until a reload. Seed from disk
       // without the recovery/migration side effects, which stay in `load`.
       appearance: Mutex::new(appearance::load_early()),
+      screenshot_busy: AtomicBool::new(false),
     }
   }
 }
@@ -127,6 +134,71 @@ pub struct ClipListItem {
   pub upload: Option<ClipUploadStatus>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct ScreenshotItem {
+  pub id: String,
+  pub name: String,
+  pub path: String,
+  pub folder: String,
+  pub width: u32,
+  pub height: u32,
+  pub file_size_bytes: u64,
+  pub created_at: String,
+  pub exists: bool,
+}
+
+impl ScreenshotItem {
+  fn from_record(record: &Screenshot) -> Self {
+    let exists = record.path.is_file();
+    // A file edited outside Kenta should still show its real size in the grid.
+    let file_size_bytes = if exists {
+      record
+        .path
+        .metadata()
+        .map(|metadata| metadata.len())
+        .unwrap_or(record.file_size_bytes)
+    } else {
+      record.file_size_bytes
+    };
+    Self {
+      id: record.id.clone(),
+      name: record
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| record.path.display().to_string()),
+      path: record.path.display().to_string(),
+      folder: record.folder.display().to_string(),
+      width: record.width,
+      height: record.height,
+      file_size_bytes,
+      created_at: record.created_at.to_rfc3339(),
+      exists,
+    }
+  }
+}
+
+/// The result of one capture, also emitted as `screenshot-saved` so a hotkey
+/// capture reaches the UI without polling.
+#[derive(Clone, Serialize)]
+pub struct ScreenshotCapture {
+  pub id: Option<String>,
+  pub name: String,
+  pub path: String,
+  pub folder: String,
+  pub width: u32,
+  pub height: u32,
+  pub file_size_bytes: u64,
+  pub created_at: String,
+  pub window_excluded: bool,
+  pub display_fallback: bool,
+  pub monitor_index: u32,
+  pub elapsed_ms: u64,
+  /// Non-fatal problems such as an unavailable library or a failed
+  /// open-after-capture request. The PNG is on disk either way.
+  pub warning: Option<String>,
+}
+
 /// The small amount of upload state a clip card needs. It is derived from the
 /// `cloud_uploads` row so the UI never has to ask Google anything.
 #[derive(Clone, Serialize)]
@@ -158,6 +230,7 @@ pub struct SettingsPayload {
   pub warnings: Vec<String>,
   pub ffmpeg: FfmpegInfo,
   pub default_output_dir: String,
+  pub default_screenshot_dir: String,
   pub settings_path: String,
 }
 
@@ -180,7 +253,12 @@ pub struct SaveSettingsResult {
 pub struct HotkeyStatus {
   pub save_key: String,
   pub record_key: String,
+  pub screenshot_key: String,
+  /// True when at least the save/record pair is registered.
   pub registered: bool,
+  pub screenshot_registered: bool,
+  /// Why Windows rejected the screenshot shortcut, when it did.
+  pub screenshot_error: Option<String>,
 }
 
 fn err_string<T>(result: AppResult<T>) -> Result<T, String> {
@@ -206,6 +284,10 @@ pub fn get_settings(state: State<'_, AppState>) -> SettingsPayload {
     warnings,
     ffmpeg: ffmpeg_info(),
     default_output_dir: default_output_dir()
+      .unwrap_or_else(|_| std::env::temp_dir())
+      .display()
+      .to_string(),
+    default_screenshot_dir: default_screenshot_dir()
       .unwrap_or_else(|_| std::env::temp_dir())
       .display()
       .to_string(),
@@ -250,16 +332,29 @@ pub fn save_settings(
   };
 
   // Register shortcuts first so a conflict never leaves the UI claiming a
-  // binding that Windows did not accept.
+  // binding that Windows did not accept. The screenshot key is best effort:
+  // a taken F9 must not disable save replay or recording.
+  let mut screenshot_warning = None;
   {
     let mut manager = state.hotkey.lock().unwrap();
     if manager.is_none() {
       *manager = Some(HotkeyManager::new());
     }
     if let Some(manager) = manager.as_mut() {
-      if let Err(error) = manager.register(&settings.hotkey_save_replay, &settings.hotkey_start_stop) {
-        let _ = manager.register(&previous.hotkey_save_replay, &previous.hotkey_start_stop);
-        return Err(error.to_string());
+      match manager.register(
+        &settings.hotkey_save_replay,
+        &settings.hotkey_start_stop,
+        &settings.hotkey_screenshot,
+      ) {
+        Ok(report) => screenshot_warning = report.screenshot_error,
+        Err(error) => {
+          let _ = manager.register(
+            &previous.hotkey_save_replay,
+            &previous.hotkey_start_stop,
+            &previous.hotkey_screenshot,
+          );
+          return Err(error.to_string());
+        }
       }
     }
   }
@@ -268,19 +363,29 @@ pub fn save_settings(
   if let Err(error) = store.save(&settings) {
     let mut manager = state.hotkey.lock().unwrap();
     if let Some(manager) = manager.as_mut() {
-      let _ = manager.register(&previous.hotkey_save_replay, &previous.hotkey_start_stop);
+      let _ = manager.register(
+        &previous.hotkey_save_replay,
+        &previous.hotkey_start_stop,
+        &previous.hotkey_screenshot,
+      );
     }
     return Err(error.to_string());
   }
 
   *state.settings.lock().unwrap() = settings.clone();
   let mut warnings = Vec::new();
+  if let Some(error) = screenshot_warning {
+    warnings.push(format!(
+      "The screenshot shortcut could not be registered: {error} Use the Capture button or choose another shortcut."
+    ));
+  }
   if previous.start_at_startup != settings.start_at_startup {
     if let Err(error) = autostart::set_enabled(settings.start_at_startup) {
       warnings.push(error.to_string());
     }
   }
   allow_clip_scope(&app, &settings.output_dir_or_default());
+  allow_clip_scope(&app, &settings.screenshot_dir_or_default());
   allow_clip_scope(&app, &thumbnail_cache_dir());
 
   let mut capture_restarted = false;
@@ -1475,6 +1580,248 @@ pub fn delete_clip(state: State<'_, AppState>, id: String) -> Result<(), String>
 }
 
 // ---------------------------------------------------------------------------
+// Screenshots
+//
+// A screenshot never touches the capture engine. The PNG is captured and
+// encoded on a blocking worker; only a short SQLite insert happens afterwards.
+// Paths are resolved from the stored row so the webview never supplies a file
+// path for a delete or an Explorer action.
+// ---------------------------------------------------------------------------
+
+struct ScreenshotBusy<'a>(&'a AtomicBool);
+
+impl Drop for ScreenshotBusy<'_> {
+  fn drop(&mut self) {
+    self.0.store(false, Ordering::SeqCst);
+  }
+}
+
+/// Capture the selected (or primary) display, index it, and emit the result.
+pub fn perform_screenshot(app: &AppHandle) -> Result<ScreenshotCapture, String> {
+  let state = app.state::<AppState>();
+  if state
+    .screenshot_busy
+    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+    .is_err()
+  {
+    return Err("A screenshot is already being captured.".into());
+  }
+  let _busy = ScreenshotBusy(&state.screenshot_busy);
+
+  let settings = state
+    .settings
+    .lock()
+    .map(|settings| settings.clone())
+    .map_err(|_| "The screenshot settings are unavailable.".to_string())?;
+  let dir = settings.screenshot_dir_or_default();
+  let hwnd = app
+    .get_webview_window("main")
+    .and_then(|window| window.hwnd().ok())
+    .map(|handle| handle.0 as isize);
+  let outcome = screenshot::capture_to(&dir, settings.screenshot_monitor_index, hwnd)
+    .map_err(|error| error.message())?;
+
+  let record = Screenshot {
+    id: uuid::Uuid::new_v4().to_string(),
+    path: outcome.path.clone(),
+    folder: dir.clone(),
+    width: outcome.width,
+    height: outcome.height,
+    file_size_bytes: outcome.file_size_bytes,
+    created_at: outcome.created_at,
+  };
+  let mut warning = None;
+  {
+    let mut storage = state.storage.lock().unwrap();
+    match storage.as_mut() {
+      Some(storage) => {
+        if let Err(error) = storage.add_screenshot(&record) {
+          log::warn!("screenshot was saved but not indexed: {error}");
+          warning = Some(format!(
+            "The PNG was saved, but the screenshot library could not be updated: {error}"
+          ));
+        }
+      }
+      None => {
+        warning = Some(
+          "The PNG was saved, but the screenshot library is unavailable this session.".into(),
+        );
+      }
+    }
+  }
+  // The scope is per-folder and cheap to refresh. This also covers a directory
+  // the user changed without restarting Kenta.
+  allow_clip_scope(app, &dir);
+
+  if settings.screenshot_open_after_capture {
+    if let Err(error) = open_path(&record.path) {
+      let message = format!(
+        "The screenshot was saved, but it could not be opened: {error}"
+      );
+      warning = Some(match warning {
+        Some(existing) => format!("{existing} {message}"),
+        None => message,
+      });
+    }
+  }
+
+  let result = ScreenshotCapture {
+    id: Some(record.id),
+    name: record
+      .path
+      .file_name()
+      .map(|name| name.to_string_lossy().to_string())
+      .unwrap_or_else(|| record.path.display().to_string()),
+    path: record.path.display().to_string(),
+    folder: record.folder.display().to_string(),
+    width: record.width,
+    height: record.height,
+    file_size_bytes: record.file_size_bytes,
+    created_at: record.created_at.to_rfc3339(),
+    window_excluded: outcome.window_excluded,
+    display_fallback: outcome.fell_back_to_primary,
+    monitor_index: outcome.monitor.index,
+    elapsed_ms: outcome.elapsed_ms,
+    warning,
+  };
+  let _ = app.emit("screenshot-saved", &result);
+  Ok(result)
+}
+
+#[tauri::command]
+pub async fn capture_screenshot(app: AppHandle) -> Result<ScreenshotCapture, String> {
+  tauri::async_runtime::spawn_blocking(move || perform_screenshot(&app))
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn list_screenshots(
+  app: AppHandle,
+  state: State<'_, AppState>,
+  sort: Option<String>,
+) -> Result<Vec<ScreenshotItem>, String> {
+  let (items, folders) = {
+    let mut guard = state.storage.lock().unwrap();
+    let storage = guard
+      .as_mut()
+      .ok_or_else(|| "The screenshot library is not available.".to_string())?;
+    let records = storage.list_screenshots(sort).map_err(|e| e.to_string())?;
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let mut items = Vec::with_capacity(records.len());
+    for record in &records {
+      let item = ScreenshotItem::from_record(record);
+      if item.exists && item.file_size_bytes != record.file_size_bytes {
+        let _ = storage.update_screenshot_file_size(&record.id, item.file_size_bytes);
+      }
+      if !folders.contains(&record.folder) {
+        folders.push(record.folder.clone());
+      }
+      items.push(item);
+    }
+    (items, folders)
+  };
+  // A changed screenshot directory must not hide older captures from the
+  // webview; each row's own folder is scoped when it is listed.
+  for folder in folders {
+    allow_clip_scope(&app, &folder);
+  }
+  Ok(items)
+}
+
+#[tauri::command]
+pub fn delete_screenshot(state: State<'_, AppState>, id: String) -> Result<(), String> {
+  let record = {
+    let storage = state.storage.lock().unwrap();
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The screenshot library is not available.".to_string())?;
+    storage
+      .get_screenshot(&id)
+      .map_err(|e| e.to_string())?
+      .ok_or_else(|| "That screenshot is no longer in the library.".to_string())?
+  };
+
+  if record.path.exists() {
+    let validated = screenshot::validate_screenshot_path(&record.folder, &record.path)?;
+    std::fs::remove_file(&validated)
+      .map_err(|error| format!("Windows could not delete the screenshot: {error}"))?;
+  }
+
+  let mut storage = state.storage.lock().unwrap();
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The screenshot library is not available.".to_string())?;
+  storage.remove_screenshot_record(&id).map_err(|error| {
+    format!("The file was removed, but the screenshot library entry could not be: {error}")
+  })?;
+  Ok(())
+}
+
+#[tauri::command]
+pub fn open_screenshot_folder(state: State<'_, AppState>, id: String) -> Result<(), String> {
+  let record = {
+    let storage = state.storage.lock().unwrap();
+    let storage = storage
+      .as_ref()
+      .ok_or_else(|| "The screenshot library is not available.".to_string())?;
+    storage
+      .get_screenshot(&id)
+      .map_err(|e| e.to_string())?
+      .ok_or_else(|| "That screenshot is no longer in the library.".to_string())?
+  };
+  if !record.path.exists() {
+    return Err("The screenshot file is missing from disk.".into());
+  }
+  let validated = screenshot::validate_screenshot_path(&record.folder, &record.path)?;
+  reveal_in_explorer(&validated)
+}
+
+#[tauri::command]
+pub fn open_screenshot_dir(state: State<'_, AppState>) -> Result<(), String> {
+  let dir = state.settings.lock().unwrap().screenshot_dir_or_default();
+  open_folder(&dir).map_err(|error| error.replace("clip folder", "screenshot folder"))
+}
+
+#[tauri::command]
+pub fn select_screenshot_dir(current_dir: Option<String>) -> Option<PathBuf> {
+  let mut dialog = rfd::FileDialog::new();
+  if let Some(current) = current_dir {
+    let path = PathBuf::from(current);
+    if path.is_dir() {
+      dialog = dialog.set_directory(path);
+    }
+  }
+  dialog.pick_folder()
+}
+
+fn open_path(path: &Path) -> Result<(), String> {
+  std::process::Command::new("explorer")
+    .arg(path)
+    .spawn()
+    .map_err(|error| format!("Windows could not open the file: {error}"))?;
+  Ok(())
+}
+
+fn reveal_in_explorer(target: &Path) -> Result<(), String> {
+  let mut command = std::process::Command::new("explorer");
+  // See `open_file_location`: Explorer needs /select outside the quotes.
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    command.raw_arg(format!("/select,\"{}\"", target.display()));
+  }
+  #[cfg(not(windows))]
+  {
+    command.arg(target);
+  }
+  command
+    .spawn()
+    .map_err(|error| format!("Could not open File Explorer: {error}"))?;
+  Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Google Drive
 //
 // Every command resolves the account and the clip path on the Rust side. The
@@ -1964,16 +2311,24 @@ pub fn register_hotkeys(
   state: State<'_, AppState>,
   save_key: String,
   record_key: String,
+  screenshot_key: Option<String>,
 ) -> Result<HotkeyStatus, String> {
+  let screenshot_key = screenshot_key.unwrap_or_default();
   let mut manager = state.hotkey.lock().unwrap();
   if manager.is_none() {
     *manager = Some(HotkeyManager::new());
   }
   let manager = manager.as_mut().unwrap();
-  manager
-    .register(&save_key, &record_key)
+  let report = manager
+    .register(&save_key, &record_key, &screenshot_key)
     .map_err(|e| e.to_string())?;
-  Ok(hotkey_status_from(&save_key, &record_key))
+  Ok(hotkey_status_from(
+    &save_key,
+    &record_key,
+    &screenshot_key,
+    report.screenshot_error.clone(),
+    &report,
+  ))
 }
 
 #[tauri::command]
@@ -1985,7 +2340,10 @@ pub fn unregister_hotkeys(state: State<'_, AppState>) -> Result<HotkeyStatus, St
   Ok(HotkeyStatus {
     save_key: String::new(),
     record_key: String::new(),
+    screenshot_key: String::new(),
     registered: false,
+    screenshot_registered: false,
+    screenshot_error: None,
   })
 }
 
@@ -1993,15 +2351,46 @@ pub fn unregister_hotkeys(state: State<'_, AppState>) -> Result<HotkeyStatus, St
 pub fn get_hotkey_status(state: State<'_, AppState>) -> HotkeyStatus {
   let settings = state.settings.lock().unwrap().clone();
   let manager = state.hotkey.lock().unwrap();
-  let registered = manager.as_ref().map(|m| !m.current().is_empty()).unwrap_or(false);
+  let registered = manager
+    .as_ref()
+    .map(|manager| !manager.current().is_empty())
+    .unwrap_or(false);
+  let screenshot_registered = manager
+    .as_ref()
+    .map(|manager| manager.screenshot().is_some())
+    .unwrap_or(false);
+  let screenshot_error = manager
+    .as_ref()
+    .and_then(|manager| manager.screenshot_error().map(str::to_string));
   HotkeyStatus {
-    save_key: if registered { settings.hotkey_save_replay.clone() } else { String::new() },
-    record_key: if registered { settings.hotkey_start_stop.clone() } else { String::new() },
+    save_key: if registered {
+      settings.hotkey_save_replay.clone()
+    } else {
+      String::new()
+    },
+    record_key: if registered {
+      settings.hotkey_start_stop.clone()
+    } else {
+      String::new()
+    },
+    screenshot_key: if screenshot_registered {
+      settings.hotkey_screenshot.clone()
+    } else {
+      String::new()
+    },
     registered,
+    screenshot_registered,
+    screenshot_error,
   }
 }
 
-fn hotkey_status_from(save_key: &str, record_key: &str) -> HotkeyStatus {
+fn hotkey_status_from(
+  save_key: &str,
+  record_key: &str,
+  screenshot_key: &str,
+  screenshot_error: Option<String>,
+  report: &crate::hotkey::HotkeyReport,
+) -> HotkeyStatus {
   let save = if save_key.trim().is_empty() {
     String::new()
   } else {
@@ -2016,10 +2405,20 @@ fn hotkey_status_from(save_key: &str, record_key: &str) -> HotkeyStatus {
       .map(|binding| binding.display)
       .unwrap_or_default()
   };
+  let screenshot = if screenshot_key.trim().is_empty() {
+    String::new()
+  } else {
+    hotkey::parse_binding(screenshot_key)
+      .map(|binding| binding.display)
+      .unwrap_or_default()
+  };
   HotkeyStatus {
     registered: !save.is_empty() || !record.is_empty(),
     save_key: save,
     record_key: record,
+    screenshot_key: screenshot,
+    screenshot_registered: report.screenshot.is_some(),
+    screenshot_error,
   }
 }
 

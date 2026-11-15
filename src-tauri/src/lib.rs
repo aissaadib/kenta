@@ -15,6 +15,7 @@ mod monitors;
 mod music;
 mod overlay;
 mod process;
+mod screenshot;
 mod settings;
 mod sound;
 mod storage;
@@ -38,6 +39,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 const TRAY_SHOW: &str = "tray-show";
 const TRAY_SAVE: &str = "tray-save-replay";
 const TRAY_RECORD: &str = "tray-toggle-recording";
+const TRAY_SCREENSHOT: &str = "tray-screenshot";
 const TRAY_FOLDER: &str = "tray-open-folder";
 const TRAY_QUIT: &str = "tray-quit";
 
@@ -76,6 +78,12 @@ pub fn run() {
       commands::normalize_shortcut,
       commands::open_output_dir,
       commands::select_output_dir,
+      commands::capture_screenshot,
+      commands::list_screenshots,
+      commands::delete_screenshot,
+      commands::open_screenshot_folder,
+      commands::open_screenshot_dir,
+      commands::select_screenshot_dir,
       commands::rename_clip,
       commands::enumerate_audio_devices,
       commands::enumerate_video_encoders,
@@ -289,6 +297,7 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
   }
 
   commands::allow_clip_scope(handle, &settings.output_dir_or_default());
+  commands::allow_clip_scope(handle, &settings.screenshot_dir_or_default());
   commands::allow_clip_scope(handle, &commands::thumbnail_cache_dir());
   // Managed theme assets are the only tree the webview may read outside the
   // clip folders. Each music track is allowed individually when it is listed.
@@ -316,12 +325,23 @@ fn initialise(handle: &AppHandle) -> Result<(), AppError> {
       .map_err(|_| AppError::Hotkey("shortcut lock poisoned".into()))?;
     *manager = Some(HotkeyManager::new());
     if let Some(manager) = manager.as_mut() {
-      if let Err(error) =
-        manager.register(&settings.hotkey_save_replay, &settings.hotkey_start_stop)
-      {
-        warnings.push(format!(
-          "Global shortcuts are unavailable: {error}. You can change them in Settings."
-        ));
+      match manager.register(
+        &settings.hotkey_save_replay,
+        &settings.hotkey_start_stop,
+        &settings.hotkey_screenshot,
+      ) {
+        Ok(report) => {
+          if let Some(error) = report.screenshot_error {
+            warnings.push(format!(
+              "The screenshot shortcut could not be registered: {error}. The Capture button still works."
+            ));
+          }
+        }
+        Err(error) => {
+          warnings.push(format!(
+            "Global shortcuts are unavailable: {error}. You can change them in Settings."
+          ));
+        }
       }
     }
   }
@@ -409,12 +429,21 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
   let show = MenuItem::with_id(app, TRAY_SHOW, "Open Kenta", true, None::<&str>)?;
   let save = MenuItem::with_id(app, TRAY_SAVE, "Save replay", true, None::<&str>)?;
   let record = MenuItem::with_id(app, TRAY_RECORD, "Start / stop recording", true, None::<&str>)?;
+  let screenshot = MenuItem::with_id(app, TRAY_SCREENSHOT, "Take screenshot", true, None::<&str>)?;
   let folder = MenuItem::with_id(app, TRAY_FOLDER, "Open clips folder", true, None::<&str>)?;
   let separator = PredefinedMenuItem::separator(app)?;
   let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit Kenta", true, None::<&str>)?;
   let menu = Menu::with_items(
     app,
-    &[&show, &save, &record, &folder, &separator, &quit],
+    &[
+      &show,
+      &save,
+      &record,
+      &screenshot,
+      &folder,
+      &separator,
+      &quit,
+    ],
   )?;
 
   let mut builder = TrayIconBuilder::with_id(appearance::TRAY_ID)
@@ -432,6 +461,23 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         if let Err(error) = commands::perform_toggle_manual(app) {
           let _ = app.emit("app-error", error);
         }
+      }
+      TRAY_SCREENSHOT => {
+        let capture = app.clone();
+        std::thread::Builder::new()
+          .name("kenta-screenshot".into())
+          .spawn(move || {
+            if let Err(error) = commands::perform_screenshot(&capture) {
+              let _ = capture.emit("screenshot-error", error);
+            }
+          })
+          .map(|_| ())
+          .unwrap_or_else(|_| {
+            let _ = app.emit(
+              "screenshot-error",
+              "Could not start the screenshot worker.".to_string(),
+            );
+          });
       }
       TRAY_FOLDER => {
         if let Err(error) = commands::open_output_folder(app) {

@@ -21,6 +21,20 @@ pub struct Clip {
   pub thumbnail: Option<PathBuf>,
 }
 
+/// One PNG captured by the screenshot tool. `folder` is the directory the file
+/// was captured into, kept so changing the setting later does not make older
+/// screenshots impossible to validate, open or delete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Screenshot {
+  pub id: String,
+  pub path: PathBuf,
+  pub folder: PathBuf,
+  pub width: u32,
+  pub height: u32,
+  pub file_size_bytes: u64,
+  pub created_at: DateTime<Utc>,
+}
+
 pub struct Storage {
   conn: Connection,
 }
@@ -191,6 +205,24 @@ const MUSIC_SCHEMA: &str = "
   );
 ";
 
+/// Screenshots are indexed in their own table. The clips table is never used
+/// for PNGs, so the replay library and the screenshot library cannot mix.
+const SCREENSHOT_SCHEMA: &str = "
+  CREATE TABLE IF NOT EXISTS screenshots (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    folder TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    file_size_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_screenshots_created_at ON screenshots(created_at DESC);
+";
+
+const SCREENSHOT_COLUMNS: &str =
+  "id, path, folder, width, height, file_size_bytes, created_at";
+
 impl Storage {
   pub fn open() -> AppResult<Self> {
     let base = video_dir().ok_or_else(|| AppError::Storage("no video dir".into()))?;
@@ -239,6 +271,9 @@ impl Storage {
     }
     if let Err(error) = self.conn.execute_batch(MUSIC_SCHEMA) {
       log::warn!("music tables are unavailable: {error}");
+    }
+    if let Err(error) = self.conn.execute_batch(SCREENSHOT_SCHEMA) {
+      log::warn!("screenshot table is unavailable: {error}");
     }
     Ok(())
   }
@@ -385,6 +420,96 @@ impl Storage {
     self.conn.execute(
       "UPDATE clips SET thumbnail = ?1 WHERE id = ?2",
       rusqlite::params![thumbnail.to_string_lossy(), id],
+    )?;
+    Ok(())
+  }
+
+  // -------------------------------------------------------------------------
+  // Screenshot index
+  // -------------------------------------------------------------------------
+
+  pub fn add_screenshot(&mut self, screenshot: &Screenshot) -> AppResult<()> {
+    self.conn.execute(
+      "INSERT OR REPLACE INTO screenshots (id, path, folder, width, height, file_size_bytes, created_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7)",
+      rusqlite::params![
+        screenshot.id,
+        screenshot.path.to_string_lossy(),
+        screenshot.folder.to_string_lossy(),
+        screenshot.width,
+        screenshot.height,
+        screenshot.file_size_bytes as i64,
+        screenshot.created_at.to_rfc3339(),
+      ],
+    )?;
+    Ok(())
+  }
+
+  pub fn list_screenshots(&mut self, sort: Option<String>) -> AppResult<Vec<Screenshot>> {
+    let order = match sort.as_deref() {
+      Some("oldest") => "created_at ASC",
+      _ => "created_at DESC",
+    };
+    let sql = format!("SELECT {SCREENSHOT_COLUMNS} FROM screenshots ORDER BY {order}");
+    let mut statement = self.conn.prepare(&sql)?;
+    let rows = statement.query_map([], |row| {
+      let created_at = row.get::<_, String>(6)?;
+      let created_at = DateTime::parse_from_rfc3339(&created_at)
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+      Ok(Screenshot {
+        id: row.get(0)?,
+        path: PathBuf::from(row.get::<_, String>(1)?),
+        folder: PathBuf::from(row.get::<_, String>(2)?),
+        width: row.get(3)?,
+        height: row.get(4)?,
+        file_size_bytes: row.get::<_, i64>(5)?.max(0) as u64,
+        created_at,
+      })
+    })?;
+    let mut screenshots = Vec::new();
+    for row in rows {
+      screenshots.push(row?);
+    }
+    Ok(screenshots)
+  }
+
+  pub fn get_screenshot(&self, id: &str) -> AppResult<Option<Screenshot>> {
+    let mut statement = self
+      .conn
+      .prepare(&format!("SELECT {SCREENSHOT_COLUMNS} FROM screenshots WHERE id = ?1"))?;
+    let screenshot = statement
+      .query_row([id], |row| {
+        let created_at = row.get::<_, String>(6)?;
+        let created_at = DateTime::parse_from_rfc3339(&created_at)
+          .map(|value| value.with_timezone(&Utc))
+          .unwrap_or_else(|_| Utc::now());
+        Ok(Screenshot {
+          id: row.get(0)?,
+          path: PathBuf::from(row.get::<_, String>(1)?),
+          folder: PathBuf::from(row.get::<_, String>(2)?),
+          width: row.get(3)?,
+          height: row.get(4)?,
+          file_size_bytes: row.get::<_, i64>(5)?.max(0) as u64,
+          created_at,
+        })
+      })
+      .optional()?;
+    Ok(screenshot)
+  }
+
+  pub fn remove_screenshot_record(&mut self, id: &str) -> AppResult<bool> {
+    let affected = self
+      .conn
+      .execute("DELETE FROM screenshots WHERE id = ?1", [id])?;
+    Ok(affected > 0)
+  }
+
+  /// Keep the index honest when the file itself changed size outside Kenta.
+  pub fn update_screenshot_file_size(&mut self, id: &str, file_size_bytes: u64) -> AppResult<()> {
+    self.conn.execute(
+      "UPDATE screenshots SET file_size_bytes = ?1 WHERE id = ?2",
+      rusqlite::params![file_size_bytes as i64, id],
     )?;
     Ok(())
   }
@@ -892,6 +1017,18 @@ mod tests {
     }
   }
 
+  fn shot(path: &str, created_at: DateTime<Utc>) -> Screenshot {
+    Screenshot {
+      id: path.to_string(),
+      path: PathBuf::from(path),
+      folder: PathBuf::from("C:/pictures/Kenta/Screenshots"),
+      width: 2560,
+      height: 1440,
+      file_size_bytes: 4096,
+      created_at,
+    }
+  }
+
   #[test]
   fn stores_and_lists_clips_with_correct_columns() {
     let mut storage = memory_storage();
@@ -980,6 +1117,64 @@ mod tests {
     // The new tables are usable after the additive migration.
     assert!(old.active_cloud_account_id().unwrap().is_none());
     assert!(old.list_uploads("account-1").unwrap().is_empty());
+  }
+
+  #[test]
+  fn screenshots_have_their_own_table_and_never_appear_as_clips() {
+    let mut storage = memory_storage();
+    let earlier = Utc::now() - chrono::Duration::seconds(10);
+    let later = Utc::now();
+    storage
+      .add_screenshot(&shot(
+        "C:/pictures/Kenta/Screenshots/Kenta_Screenshot_2026-11-15_14-30-05.png",
+        earlier,
+      ))
+      .unwrap();
+    storage
+      .add_screenshot(&shot(
+        "C:/pictures/Kenta/Screenshots/Kenta_Screenshot_2026-11-15_14-30-06.png",
+        later,
+      ))
+      .unwrap();
+
+    let newest = storage.list_screenshots(None).unwrap();
+    assert_eq!(newest.len(), 2);
+    assert_eq!(newest[0].width, 2560);
+    assert_eq!(newest[0].height, 1440);
+    assert_eq!(newest[0].file_size_bytes, 4096);
+    assert_eq!(newest[0].created_at, later);
+    let oldest = storage.list_screenshots(Some("oldest".into())).unwrap();
+    assert_eq!(oldest[0].created_at, earlier);
+    assert!(storage.list_clips(None, None).unwrap().is_empty());
+  }
+
+  #[test]
+  fn screenshot_records_can_be_removed_without_touching_clips() {
+    let mut storage = memory_storage();
+    storage.add_clip(&sample("C:/clips/keep.mp4")).unwrap();
+    storage
+      .add_screenshot(&shot(
+        "C:/pictures/Kenta/Screenshots/Kenta_Screenshot_2026-11-15_14-30-05.png",
+        Utc::now(),
+      ))
+      .unwrap();
+
+    assert!(storage
+      .remove_screenshot_record("C:/pictures/Kenta/Screenshots/Kenta_Screenshot_2026-11-15_14-30-05.png")
+      .unwrap());
+    assert!(storage.list_screenshots(None).unwrap().is_empty());
+    assert_eq!(storage.list_clips(None, None).unwrap().len(), 1);
+  }
+
+  #[test]
+  fn screenshot_metadata_size_can_follow_the_file() {
+    let mut storage = memory_storage();
+    let id = "C:/pictures/Kenta/Screenshots/Kenta_Screenshot_2026-11-15_14-30-05.png";
+    storage.add_screenshot(&shot(id, Utc::now())).unwrap();
+    storage.update_screenshot_file_size(id, 8192).unwrap();
+    let stored = storage.get_screenshot(id).unwrap().unwrap();
+    assert_eq!(stored.file_size_bytes, 8192);
+    assert_eq!(stored.folder, PathBuf::from("C:/pictures/Kenta/Screenshots"));
   }
 
   #[test]

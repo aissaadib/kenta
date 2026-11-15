@@ -24,6 +24,18 @@ const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 pub enum HotkeyEvent {
   SaveReplay,
   StartStop,
+  Screenshot,
+}
+
+/// What Windows accepted after a (re)registration. The replay pair is atomic:
+/// if either core binding fails, `register` returns an error and nothing is
+/// replaced. The screenshot shortcut is deliberately best effort so a taken F9
+/// can never disable save replay or recording.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HotkeyReport {
+  pub core: Vec<String>,
+  pub screenshot: Option<String>,
+  pub screenshot_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,7 +229,11 @@ pub fn bindings_conflict(a: &HotkeyBinding, b: &HotkeyBinding) -> bool {
 }
 
 enum Command {
-  Register(Vec<HotkeyBinding>, Sender<Result<(), String>>),
+  Register {
+    core: Vec<HotkeyBinding>,
+    screenshot: Option<HotkeyBinding>,
+    response: Sender<Result<HotkeyReport, String>>,
+  },
   Shutdown,
 }
 
@@ -225,6 +241,8 @@ pub struct HotkeyManager {
   commands: Sender<Command>,
   events: Receiver<HotkeyEvent>,
   current: Vec<String>,
+  screenshot: Option<String>,
+  screenshot_error: Option<String>,
   thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -237,38 +255,70 @@ impl HotkeyManager {
       commands: command_tx,
       events: event_rx,
       current: Vec::new(),
+      screenshot: None,
+      screenshot_error: None,
       thread: Some(handle),
     }
   }
 
-  /// Replace both bindings atomically. If Windows rejects one of them the
-  /// previous working pair is restored and an actionable error is returned.
-  pub fn register(&mut self, save_key: &str, record_key: &str) -> AppResult<Vec<String>> {
-    let mut bindings = Vec::new();
+  /// Replace the save/record bindings atomically and try the screenshot key.
+  /// If Windows rejects one of the core bindings the previous working set is
+  /// restored and an actionable error is returned. A screenshot conflict is
+  /// reported in `HotkeyReport` instead of failing the core pair.
+  pub fn register(
+    &mut self,
+    save_key: &str,
+    record_key: &str,
+    screenshot_key: &str,
+  ) -> AppResult<HotkeyReport> {
+    let mut core = Vec::new();
     if !save_key.trim().is_empty() {
       let mut binding = parse_binding(save_key).map_err(AppError::Hotkey)?;
       binding.id = 1;
-      bindings.push(binding);
+      core.push(binding);
     }
     if !record_key.trim().is_empty() {
       let mut binding = parse_binding(record_key).map_err(AppError::Hotkey)?;
       binding.id = 2;
-      bindings.push(binding);
+      core.push(binding);
     }
-    if bindings.len() == 2 && bindings_conflict(&bindings[0], &bindings[1]) {
-      return Err(AppError::Hotkey(
-        "Both actions cannot use the same shortcut.".into(),
-      ));
+    let screenshot = if screenshot_key.trim().is_empty() {
+      None
+    } else {
+      let mut binding = parse_binding(screenshot_key).map_err(AppError::Hotkey)?;
+      binding.id = 3;
+      Some(binding)
+    };
+
+    let mut all: Vec<&HotkeyBinding> = core.iter().collect();
+    if let Some(binding) = &screenshot {
+      all.push(binding);
     }
+    for (index, binding) in all.iter().enumerate() {
+      for other in &all[index + 1..] {
+        if bindings_conflict(binding, other) {
+          return Err(AppError::Hotkey(
+            "Each action must use a different shortcut.".into(),
+          ));
+        }
+      }
+    }
+
     let (result_tx, result_rx) = mpsc::channel();
     self
       .commands
-      .send(Command::Register(bindings.clone(), result_tx))
+      .send(Command::Register {
+        core,
+        screenshot,
+        response: result_tx,
+      })
       .map_err(|_| AppError::Hotkey("The shortcut service is not running.".into()))?;
     match result_rx.recv_timeout(Duration::from_secs(3)) {
-      Ok(Ok(())) => {
-        self.current = bindings.iter().map(|b| b.display.clone()).collect();
-        Ok(self.current.clone())
+      Ok(Ok(report)) => {
+        self.current = report.core.clone();
+        self.screenshot = report.screenshot.clone();
+        self.screenshot_error = report.screenshot_error.clone();
+        Ok(report)
       }
       Ok(Err(message)) => Err(AppError::Hotkey(message)),
       Err(_) => Err(AppError::Hotkey(
@@ -278,7 +328,7 @@ impl HotkeyManager {
   }
 
   pub fn unregister(&mut self) -> AppResult<()> {
-    self.register("", "")?;
+    self.register("", "", "")?;
     Ok(())
   }
 
@@ -288,6 +338,14 @@ impl HotkeyManager {
 
   pub fn current(&self) -> Vec<String> {
     self.current.clone()
+  }
+
+  pub fn screenshot(&self) -> Option<&str> {
+    self.screenshot.as_deref()
+  }
+
+  pub fn screenshot_error(&self) -> Option<&str> {
+    self.screenshot_error.as_deref()
   }
 }
 
@@ -307,26 +365,62 @@ impl Drop for HotkeyManager {
 }
 
 fn hotkey_thread(commands: Receiver<Command>, events: Sender<HotkeyEvent>) {
-  let mut current: Vec<HotkeyBinding> = Vec::new();
+  let mut current_core: Vec<HotkeyBinding> = Vec::new();
+  let mut current_screenshot: Option<HotkeyBinding> = None;
   loop {
     match commands.try_recv() {
-      Ok(Command::Register(next, response)) => {
-        unregister_all(&current);
-        match register_all(&next) {
+      Ok(Command::Register {
+        core,
+        screenshot,
+        response,
+      }) => {
+        unregister_all(&current_core);
+        if let Some(binding) = &current_screenshot {
+          unregister_one(binding);
+        }
+        match register_all(&core) {
           Ok(()) => {
-            current = next;
-            let _ = response.send(Ok(()));
+            let mut registered_screenshot = None;
+            let mut screenshot_error = None;
+            if let Some(binding) = &screenshot {
+              match register_one(binding) {
+                Ok(()) => registered_screenshot = Some(binding.clone()),
+                Err(message) => screenshot_error = Some(message),
+              }
+            }
+            current_core = core;
+            current_screenshot = registered_screenshot;
+            let report = HotkeyReport {
+              core: current_core
+                .iter()
+                .map(|binding| binding.display.clone())
+                .collect(),
+              screenshot: current_screenshot
+                .as_ref()
+                .map(|binding| binding.display.clone()),
+              screenshot_error,
+            };
+            let _ = response.send(Ok(report));
           }
           Err(message) => {
-            unregister_all(&next);
-            // Best effort: put the last known working pair back.
-            let _ = register_all(&current);
+            unregister_all(&core);
+            if let Some(binding) = &screenshot {
+              unregister_one(binding);
+            }
+            // Best effort: put the last known working set back.
+            let _ = register_all(&current_core);
+            if let Some(binding) = &current_screenshot {
+              let _ = register_one(binding);
+            }
             let _ = response.send(Err(message));
           }
         }
       }
       Ok(Command::Shutdown) => {
-        unregister_all(&current);
+        unregister_all(&current_core);
+        if let Some(binding) = &current_screenshot {
+          unregister_one(binding);
+        }
         break;
       }
       Err(mpsc::TryRecvError::Empty) => {}
@@ -346,6 +440,7 @@ fn hotkey_thread(commands: Receiver<Command>, events: Sender<HotkeyEvent>) {
         let event = match id {
           1 => Some(HotkeyEvent::SaveReplay),
           2 => Some(HotkeyEvent::StartStop),
+          3 => Some(HotkeyEvent::Screenshot),
           _ => None,
         };
         if let Some(event) = event {
@@ -359,32 +454,41 @@ fn hotkey_thread(commands: Receiver<Command>, events: Sender<HotkeyEvent>) {
 
 fn register_all(bindings: &[HotkeyBinding]) -> Result<(), String> {
   for binding in bindings {
-    let ok = unsafe {
-      RegisterHotKey(
-        std::ptr::null_mut(),
-        binding.id,
-        binding.modifiers() | MOD_NOREPEAT,
-        binding.vk,
-      )
+    register_one(binding)?;
+  }
+  Ok(())
+}
+
+fn register_one(binding: &HotkeyBinding) -> Result<(), String> {
+  let ok = unsafe {
+    RegisterHotKey(
+      std::ptr::null_mut(),
+      binding.id,
+      binding.modifiers() | MOD_NOREPEAT,
+      binding.vk,
+    )
+  };
+  if ok == 0 {
+    let code = unsafe { GetLastError() };
+    let reason = if code == ERROR_HOTKEY_ALREADY_REGISTERED {
+      "is already used by another application".to_string()
+    } else {
+      format!("could not be registered (Windows error {code})")
     };
-    if ok == 0 {
-      let code = unsafe { GetLastError() };
-      let reason = if code == ERROR_HOTKEY_ALREADY_REGISTERED {
-        "is already used by another application".to_string()
-      } else {
-        format!("could not be registered (Windows error {code})")
-      };
-      return Err(format!("{} {}.", binding.display, reason));
-    }
+    return Err(format!("{} {}.", binding.display, reason));
   }
   Ok(())
 }
 
 fn unregister_all(bindings: &[HotkeyBinding]) {
   for binding in bindings {
-    unsafe {
-      UnregisterHotKey(std::ptr::null_mut(), binding.id);
-    }
+    unregister_one(binding);
+  }
+}
+
+fn unregister_one(binding: &HotkeyBinding) {
+  unsafe {
+    UnregisterHotKey(std::ptr::null_mut(), binding.id);
   }
 }
 
