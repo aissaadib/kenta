@@ -127,7 +127,10 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
         if (cancelled) return;
         setPayload(loaded);
         setTimeline(loaded.timeline);
-        setSelectedId(null);
+        // Select the first segment so Split/Delete are usable immediately
+        // instead of looking broken until the user discovers that a segment
+        // has to be clicked first.
+        setSelectedId(loaded.timeline.segments[0]?.id ?? null);
         setCurrentTime(0);
       })
       .catch((reason: unknown) => {
@@ -177,13 +180,27 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
     [timeline, selectedId],
   );
 
-  const canSplit = useMemo(() => {
-    if (!selected) return false;
+  // The toolbar works on the selection, or on whatever segment sits under the
+  // playhead when nothing is selected. Without this fallback Delete and Split
+  // stayed disabled and the whole timeline looked unresponsive.
+  const editTarget = useMemo(() => {
+    if (selected) return selected;
+    if (!timeline) return null;
     return (
-      currentTime > selected.start + 0.02 &&
-      currentTime < selected.start + (selected.source_out - selected.source_in) - 0.02
+      timeline.segments.find((segment) => {
+        const end = segment.start + (segment.source_out - segment.source_in);
+        return currentTime >= segment.start && currentTime < end;
+      }) ?? null
     );
-  }, [selected, currentTime]);
+  }, [selected, timeline, currentTime]);
+
+  const canSplit = useMemo(() => {
+    if (!editTarget) return false;
+    return (
+      currentTime > editTarget.start + 0.02 &&
+      currentTime < editTarget.start + (editTarget.source_out - editTarget.source_in) - 0.02
+    );
+  }, [editTarget, currentTime]);
 
   const apply = useCallback(
     async (op: Parameters<typeof editorApply>[0]) => {
@@ -573,7 +590,9 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
             <button
               type="button"
               className="btn btn-quiet"
-              onClick={() => selected && void apply({ kind: "split", id: selected.id, at: snap(currentTime) })}
+              onClick={() =>
+                editTarget && void apply({ kind: "split", id: editTarget.id, at: snap(currentTime) })
+              }
               disabled={!canSplit || busy || exporting}
               title="Split the selected segment at the playhead"
             >
@@ -582,8 +601,8 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
             <button
               type="button"
               className="btn btn-quiet"
-              onClick={() => selected && void apply({ kind: "delete", id: selected.id })}
-              disabled={!selected || busy || exporting}
+              onClick={() => editTarget && void apply({ kind: "delete", id: editTarget.id })}
+              disabled={!editTarget || busy || exporting}
               title="Delete the selected segment"
             >
               <Trash2 size={14} /> Delete
@@ -635,6 +654,7 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
                         className={`editor-segment ${isSelected ? "is-selected" : ""} ${drag?.id === segment.id ? "is-dragging" : ""}`}
                         style={{ left: `${left}%`, width: `${width}%` }}
                         onPointerDown={(event) => startDrag(event, segment, "move")}
+                        onClick={() => setSelectedId(segment.id)}
                         role="button"
                         tabIndex={0}
                         aria-label={`${TRACK_LABELS[kind]} segment at ${view.start.toFixed(2)} seconds`}

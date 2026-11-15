@@ -1324,12 +1324,12 @@ function SettingsViewImpl({
           />
           <Row
             label="Confidence threshold"
-            hint="Recognitions below this are ignored, and the test uses the saved settings."
+            hint="Recognitions below this are ignored; the engine floor is 75% because the closed grammar force-fits other speech. The test uses the saved settings."
           >
             <div className="volume-row">
               <input
                 type="range"
-                min={0}
+                min={75}
                 max={100}
                 step={5}
                 value={draft.voice_min_confidence}

@@ -660,6 +660,7 @@ fn voice_config(settings: &Settings) -> VoiceConfig {
   VoiceConfig {
     wake_phrase: settings.voice_wake_phrase.clone(),
     clip_command: settings.voice_clip_command.clone(),
+    input_device: settings.voice_input_device.clone(),
     clip_seconds: settings.voice_clip_seconds,
     min_confidence: settings.voice_min_confidence,
     cooldown: std::time::Duration::from_secs(settings.voice_cooldown_seconds as u64),

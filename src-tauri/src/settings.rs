@@ -58,6 +58,10 @@ pub struct Settings {
   pub confirmation_sound_kind: String,
   /// Hands-free clipping. Off by default because it opens the microphone.
   pub voice_enabled: bool,
+  /// SAPI audio input token id. `None` follows the Windows default. A saved
+  /// device is important: the default can be a virtual cable that carries
+  /// system audio, which makes the recogniser save clips on its own.
+  pub voice_input_device: Option<String>,
   /// Spoken first, for example "Kenta".
   pub voice_wake_phrase: String,
   /// Spoken after the wake phrase, for example "clip that".
@@ -134,11 +138,12 @@ impl Default for Settings {
       confirmation_sound_volume: 70,
       confirmation_sound_kind: "chime".to_string(),
       voice_enabled: false,
+      voice_input_device: None,
       voice_wake_phrase: DEFAULT_WAKE_PHRASE.to_string(),
       voice_clip_command: DEFAULT_CLIP_COMMAND.to_string(),
       voice_single_word: false,
       voice_clip_seconds: 30,
-      voice_min_confidence: 60,
+      voice_min_confidence: crate::voice::MIN_VOICE_CONFIDENCE,
       voice_cooldown_seconds: 5,
       voice_show_overlay: true,
       voice_overlay_icon: "bell".to_string(),
@@ -405,10 +410,21 @@ fn reconcile(settings: &mut Settings, warnings: &mut Vec<String>) {
     warnings.push("The voice clip length was reset to a supported value.".into());
   }
   let voice_confidence = settings.voice_min_confidence;
-  settings.voice_min_confidence = voice_confidence.min(100);
+  settings.voice_min_confidence =
+    voice_confidence.clamp(crate::voice::MIN_VOICE_CONFIDENCE, 100);
   if settings.voice_min_confidence != voice_confidence {
-    warnings.push("The voice confidence threshold was reset to 100%.".into());
+    warnings.push(format!(
+      "The voice confidence threshold was reset to {}% or higher to prevent false triggers.",
+      crate::voice::MIN_VOICE_CONFIDENCE
+    ));
   }
+  // An empty device id means "follow the Windows default"; storing the empty
+  // string would look like a selected device that can never be found.
+  settings.voice_input_device = settings
+    .voice_input_device
+    .take()
+    .map(|id| id.trim().to_string())
+    .filter(|id| !id.is_empty());
   let voice_cooldown = settings.voice_cooldown_seconds;
   settings.voice_cooldown_seconds = voice_cooldown.clamp(1, 60);
   if settings.voice_cooldown_seconds != voice_cooldown {
@@ -587,10 +603,11 @@ pub fn validate(settings: &Settings) -> AppResult<()> {
       "The voice clip length must be between 5 and 300 seconds.".into(),
     ));
   }
-  if settings.voice_min_confidence > 100 {
-    return Err(AppError::Validation(
-      "The voice confidence threshold must be between 0 and 100.".into(),
-    ));
+  if !(crate::voice::MIN_VOICE_CONFIDENCE..=100).contains(&settings.voice_min_confidence) {
+    return Err(AppError::Validation(format!(
+      "The voice confidence threshold must be between {} and 100.",
+      crate::voice::MIN_VOICE_CONFIDENCE
+    )));
   }
   if !(1..=60).contains(&settings.voice_cooldown_seconds) {
     return Err(AppError::Validation(
@@ -773,11 +790,15 @@ mod tests {
   fn voice_defaults_are_off_and_use_the_medal_phrases() {
     let settings = Settings::default();
     assert!(!settings.voice_enabled, "voice opens the microphone");
+    assert!(settings.voice_input_device.is_none(), "the default microphone is used until one is chosen");
     assert_eq!(settings.voice_wake_phrase, DEFAULT_WAKE_PHRASE);
     assert_eq!(settings.voice_clip_command, DEFAULT_CLIP_COMMAND);
     assert!(!settings.voice_single_word, "single-word needs to be turned on");
     assert_eq!(settings.voice_clip_seconds, 30);
-    assert_eq!(settings.voice_min_confidence, 60);
+    assert_eq!(
+      settings.voice_min_confidence,
+      crate::voice::MIN_VOICE_CONFIDENCE
+    );
     assert_eq!(settings.voice_cooldown_seconds, 5);
     assert!(settings.voice_show_overlay, "the overlay shows by default");
     assert_eq!(settings.voice_overlay_icon, "bell");
@@ -788,11 +809,15 @@ mod tests {
   fn older_settings_files_without_the_voice_keys_still_load() {
     let settings: Settings = serde_json::from_str(r#"{"replay_duration_seconds": 90}"#).unwrap();
     assert!(!settings.voice_enabled);
+    assert!(settings.voice_input_device.is_none());
     assert_eq!(settings.voice_wake_phrase, DEFAULT_WAKE_PHRASE);
     assert_eq!(settings.voice_clip_command, DEFAULT_CLIP_COMMAND);
     assert!(!settings.voice_single_word);
     assert_eq!(settings.voice_clip_seconds, 30);
-    assert_eq!(settings.voice_min_confidence, 60);
+    assert_eq!(
+      settings.voice_min_confidence,
+      crate::voice::MIN_VOICE_CONFIDENCE
+    );
     assert_eq!(settings.voice_cooldown_seconds, 5);
     assert!(settings.voice_show_overlay);
     assert_eq!(settings.voice_overlay_icon, "bell");
@@ -813,6 +838,32 @@ mod tests {
     assert_eq!(settings.voice_min_confidence, 100);
     assert_eq!(warnings.len(), 3);
     assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn a_dangerously_low_voice_threshold_is_raised_to_the_safe_floor() {
+    let mut settings = Settings::default();
+    settings.voice_min_confidence = 10;
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert_eq!(
+      settings.voice_min_confidence,
+      crate::voice::MIN_VOICE_CONFIDENCE
+    );
+    assert!(warnings
+      .iter()
+      .any(|warning| warning.contains("false triggers")));
+    assert!(validate(&settings).is_ok());
+  }
+
+  #[test]
+  fn a_blank_voice_input_device_follows_the_windows_default() {
+    let mut settings = Settings::default();
+    settings.voice_input_device = Some("   ".into());
+    let mut warnings = Vec::new();
+    reconcile(&mut settings, &mut warnings);
+    assert!(settings.voice_input_device.is_none());
+    assert!(warnings.is_empty());
   }
 
   #[test]
