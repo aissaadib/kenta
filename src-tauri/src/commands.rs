@@ -700,6 +700,7 @@ pub fn stop_voice(state: &AppState) {
 
 fn voice_affecting_changed(previous: &Settings, settings: &Settings) -> bool {
   previous.voice_enabled != settings.voice_enabled
+    || previous.voice_input_device != settings.voice_input_device
     || previous.voice_wake_phrase != settings.voice_wake_phrase
     || previous.voice_clip_command != settings.voice_clip_command
     || previous.voice_single_word != settings.voice_single_word
@@ -719,6 +720,12 @@ pub fn voice_status(state: State<'_, AppState>) -> VoiceStatus {
     .as_ref()
     .map(|handle| handle.status())
     .unwrap_or_else(VoiceStatus::disabled)
+}
+
+/// The microphones SAPI can open, for the settings picker.
+#[tauri::command]
+pub fn list_voice_inputs() -> Result<Vec<voice::VoiceInputDevice>, String> {
+  voice::list_input_devices()
 }
 
 /// Listen for one utterance and report what was heard. Async because it waits
@@ -1578,6 +1585,30 @@ pub fn delete_clip(state: State<'_, AppState>, id: String) -> Result<(), String>
     .remove_clip_record(&id)
     .map_err(|e| format!("The file was deleted, but the library entry could not be removed: {e}"))?;
   Ok(())
+}
+
+/// Drop library rows whose clip file no longer exists. Only the database entry
+/// is removed: no file on disk, clip or screenshot, is ever touched here.
+#[tauri::command]
+pub fn remove_missing_clips(state: State<'_, AppState>) -> Result<usize, String> {
+  let mut storage = state.storage.lock().unwrap();
+  let storage = storage
+    .as_mut()
+    .ok_or_else(|| "The clip library is not available.".to_string())?;
+  let clips = storage.list_clips(None, None).map_err(|e| e.to_string())?;
+  let mut removed = 0usize;
+  for clip in clips {
+    if clip.path.exists() {
+      continue;
+    }
+    if storage
+      .remove_clip_record(&clip.id)
+      .map_err(|e| e.to_string())?
+    {
+      removed += 1;
+    }
+  }
+  Ok(removed)
 }
 
 // ---------------------------------------------------------------------------

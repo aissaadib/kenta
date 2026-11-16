@@ -99,6 +99,8 @@ export interface Settings {
   confirmation_sound_kind: string;
   /** Hands-free clipping. Off by default because it opens the microphone. */
   voice_enabled: boolean;
+  /** SAPI audio input token id, or null to follow the Windows default. */
+  voice_input_device: string | null;
   /** Spoken first, for example "Kenta". */
   voice_wake_phrase: string;
   /** Spoken after the wake phrase, for example "clip that". */
@@ -165,6 +167,15 @@ export interface VoiceTestOutcome {
   confidence: number | null;
   matched: boolean;
   message: string;
+}
+
+/** One microphone SAPI can open. */
+export interface VoiceInputDevice {
+  id: string;
+  name: string;
+  is_default: boolean;
+  /** A virtual cable or loopback device: it can hear system audio. */
+  is_virtual: boolean;
 }
 
 export interface FfmpegInfo {
@@ -342,6 +353,11 @@ export function voiceTest(timeoutSeconds: number): Promise<VoiceTestOutcome> {
   return invoke("voice_test", { timeoutSeconds });
 }
 
+/** The microphones SAPI can open, for the voice settings picker. */
+export function listVoiceInputs(): Promise<VoiceInputDevice[]> {
+  return invoke("list_voice_inputs");
+}
+
 export function captureStart(): Promise<CaptureStatus> {
   return invoke("capture_start");
 }
@@ -375,6 +391,11 @@ export function listClips(
 
 export function deleteClip(id: string): Promise<void> {
   return invoke("delete_clip", { id });
+}
+
+/** Remove clip rows whose files are gone. Only library entries are removed. */
+export function removeMissingClips(): Promise<number> {
+  return invoke("remove_missing_clips");
 }
 
 export function renameClip(id: string, newName: string): Promise<ClipListItem> {

@@ -180,11 +180,10 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
     [timeline, selectedId],
   );
 
-  // The toolbar works on the selection, or on whatever segment sits under the
-  // playhead when nothing is selected. Without this fallback Delete and Split
-  // stayed disabled and the whole timeline looked unresponsive.
-  const editTarget = useMemo(() => {
-    if (selected) return selected;
+  // The toolbar follows the playhead: Split always cuts the segment under it,
+  // and Delete removes the selected segment (or the one under the playhead).
+  // Before this, both buttons looked broken until a segment was clicked.
+  const segmentAtPlayhead = useMemo(() => {
     if (!timeline) return null;
     return (
       timeline.segments.find((segment) => {
@@ -192,15 +191,19 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
         return currentTime >= segment.start && currentTime < end;
       }) ?? null
     );
+  }, [timeline, currentTime]);
+
+  const splitTarget = useMemo(() => {
+    if (!timeline) return null;
+    const inside = (segment: TimelineSegment) =>
+      currentTime > segment.start + 0.02 &&
+      currentTime < segment.start + (segment.source_out - segment.source_in) - 0.02;
+    if (selected && inside(selected)) return selected;
+    return timeline.segments.find(inside) ?? null;
   }, [selected, timeline, currentTime]);
 
-  const canSplit = useMemo(() => {
-    if (!editTarget) return false;
-    return (
-      currentTime > editTarget.start + 0.02 &&
-      currentTime < editTarget.start + (editTarget.source_out - editTarget.source_in) - 0.02
-    );
-  }, [editTarget, currentTime]);
+  const deleteTarget = selected ?? segmentAtPlayhead;
+  const canSplit = splitTarget !== null;
 
   const apply = useCallback(
     async (op: Parameters<typeof editorApply>[0]) => {
@@ -241,12 +244,24 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
     }
   }, [onNotify, selectedId]);
 
-  const seek = useCallback((time: number) => {
-    const video = videoRef.current;
-    const next = clamp(time, 0, duration);
-    if (video) video.currentTime = next;
-    setCurrentTime(next);
-  }, [duration]);
+  const seek = useCallback(
+    (time: number) => {
+      const video = videoRef.current;
+      const next = clamp(time, 0, duration);
+      if (video) video.currentTime = next;
+      setCurrentTime(next);
+      // Clicking the ruler or a lane should also choose the segment there, so
+      // Split and Delete stay in step with the playhead.
+      if (timeline) {
+        const found = timeline.segments.find((segment) => {
+          const end = segment.start + (segment.source_out - segment.source_in);
+          return next >= segment.start && next < end;
+        });
+        if (found) setSelectedId(found.id);
+      }
+    },
+    [duration, timeline],
+  );
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
@@ -297,14 +312,14 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
       if (event.code === "Space") {
         event.preventDefault();
         togglePlay();
-      } else if (event.key === "Delete" && selectedId !== null && !exporting) {
+      } else if (event.key === "Delete" && deleteTarget && !exporting) {
         event.preventDefault();
-        void apply({ kind: "delete", id: selectedId });
+        void apply({ kind: "delete", id: deleteTarget.id });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [apply, exporting, selectedId, togglePlay]);
+  }, [apply, deleteTarget, exporting, togglePlay]);
 
   const rulerSeek = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -458,7 +473,7 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
     ? `${formatDuration(selected.start)}–${formatDuration(
         selected.start + (selected.source_out - selected.source_in),
       )} · ${(selected.source_out - selected.source_in).toFixed(1)} s`
-    : "No segment selected";
+    : "Click a segment or the timeline to select it";
   const tickCount = Math.max(2, Math.ceil(duration));
   const labelEvery = duration > 60 ? 10 : 5;
 
@@ -555,7 +570,7 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
             {formatDuration(currentTime)} / {formatDuration(duration)}
           </span>
           <span className="editor-hint">
-            Drag to move · edges to trim · ruler to seek.
+            Click the timeline to seek · drag a segment to move · drag its edges to trim.
           </span>
         </div>
         {exporting ? (
@@ -591,18 +606,18 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
               type="button"
               className="btn btn-quiet"
               onClick={() =>
-                editTarget && void apply({ kind: "split", id: editTarget.id, at: snap(currentTime) })
+                splitTarget && void apply({ kind: "split", id: splitTarget.id, at: snap(currentTime) })
               }
               disabled={!canSplit || busy || exporting}
-              title="Split the selected segment at the playhead"
+              title="Split the segment under the playhead"
             >
               <Scissors size={14} /> Split
             </button>
             <button
               type="button"
               className="btn btn-quiet"
-              onClick={() => editTarget && void apply({ kind: "delete", id: editTarget.id })}
-              disabled={!editTarget || busy || exporting}
+              onClick={() => deleteTarget && void apply({ kind: "delete", id: deleteTarget.id })}
+              disabled={!deleteTarget || busy || exporting}
               title="Delete the selected segment"
             >
               <Trash2 size={14} /> Delete
@@ -639,7 +654,18 @@ export function EditorView({ clipId, onClose, onSaved, onNotify }: Props) {
               <span className="editor-track-label">
                 <Icon size={13} /> {TRACK_LABELS[kind]}
               </span>
-              <div className="editor-lane" data-track={kind}>
+              <div
+                className="editor-lane"
+                data-track={kind}
+                title="Click to move the playhead"
+                onPointerDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  if (rect.width > 0) {
+                    seek(((event.clientX - rect.left) / rect.width) * duration);
+                  }
+                }}
+              >
                 {timeline.segments
                   .filter((segment) => segment.track === kind)
                   .map((segment) => {

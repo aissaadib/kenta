@@ -35,6 +35,7 @@ import {
   enumerateMonitors,
   enumerateVideoEncoders,
   getGoogleDriveStatus,
+  listVoiceInputs,
   openFileLocation,
   openGoogleDrive,
   openOutputDir,
@@ -51,6 +52,7 @@ import {
   type FfmpegInfo,
   type MonitorInfo,
   type Settings,
+  type VoiceInputDevice,
   type VoiceStatus,
   type VoiceTestOutcome,
 } from "../tauri";
@@ -561,6 +563,9 @@ function SettingsViewImpl({
   onNotify,
 }: Props) {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
+  const [voiceInputs, setVoiceInputs] = useState<VoiceInputDevice[]>([]);
+  const [voiceInputsError, setVoiceInputsError] = useState<string | null>(null);
+  const [loadingVoiceInputs, setLoadingVoiceInputs] = useState(true);
   const [encoders, setEncoders] = useState<EncoderInfo[]>([]);
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(true);
@@ -583,6 +588,23 @@ function SettingsViewImpl({
   // The volume slider keeps a local value while dragging so one drag does not
   // write appearance.json on every pixel.
   const [soundVolumeDraft, setSoundVolumeDraft] = useState<number | null>(null);
+
+  // SAPI keeps its own device list: the WASAPI devices above are for capture,
+  // these are what the speech engine can actually listen to.
+  const refreshVoiceInputs = useCallback(() => {
+    setLoadingVoiceInputs(true);
+    listVoiceInputs()
+      .then((result) => {
+        setVoiceInputs(result);
+        setVoiceInputsError(null);
+      })
+      .catch((reason: unknown) => setVoiceInputsError(String(reason)))
+      .finally(() => setLoadingVoiceInputs(false));
+  }, []);
+
+  useEffect(() => {
+    refreshVoiceInputs();
+  }, [refreshVoiceInputs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -635,6 +657,13 @@ function SettingsViewImpl({
   const microphoneOptions = useMemo(
     () => devices.filter((device) => !device.is_loopback),
     [devices],
+  );
+  const selectedVoiceInput = useMemo(
+    () => voiceInputs.find((device) => device.id === draft.voice_input_device) ?? null,
+    [draft.voice_input_device, voiceInputs],
+  );
+  const savedVoiceInputMissing = Boolean(
+    draft.voice_input_device && !loadingVoiceInputs && !voiceInputsError && !selectedVoiceInput,
   );
 
   const selectedMonitor = useMemo(() => {
@@ -1246,6 +1275,68 @@ function SettingsViewImpl({
             label="Listen for voice commands"
             description="Uses the speech engine built into Windows. Audio is decoded on this PC and thrown away."
           />
+          <Row
+            label="Microphone"
+            hint="Windows speech listens to this device. Pick your real microphone, not a virtual cable or loopback device."
+          >
+            <div className="volume-row">
+              <span className="select-wrap select-full">
+                <select
+                  aria-label="Voice microphone"
+                  value={draft.voice_input_device ?? ""}
+                  onChange={(event) => update("voice_input_device", event.target.value || null)}
+                  disabled={!draft.voice_enabled || loadingVoiceInputs}
+                >
+                  <option value="">Windows default microphone</option>
+                  {voiceInputs.map((device) => (
+                    <option key={device.id} value={device.id}>
+                      {device.name}
+                      {device.is_default ? " (Windows default)" : ""}
+                      {device.is_virtual ? " — virtual device" : ""}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={14} className="select-chevron" />
+              </span>
+              <button
+                type="button"
+                className="btn btn-quiet btn-sm"
+                disabled={loadingVoiceInputs}
+                onClick={refreshVoiceInputs}
+                title="Look for microphones again"
+              >
+                {loadingVoiceInputs ? (
+                  <Loader2 size={13} className="spin" />
+                ) : (
+                  <RefreshCw size={13} />
+                )}
+                Refresh
+              </button>
+            </div>
+            {voiceInputsError ? (
+              <span className="field-error">
+                Microphones could not be listed: {voiceInputsError}
+              </span>
+            ) : null}
+            {selectedVoiceInput?.is_virtual ? (
+              <div className="inline-note inline-note-error">
+                <AlertTriangle size={14} />
+                <span>
+                  “{selectedVoiceInput.name}” is a virtual audio device, so Kenta may hear system
+                  sound and save clips without you. Choose your real microphone.
+                </span>
+              </div>
+            ) : null}
+            {savedVoiceInputMissing ? (
+              <div className="inline-note inline-note-error">
+                <AlertTriangle size={14} />
+                <span>
+                  The saved microphone is not connected. Windows' default microphone is used until
+                  it comes back or you choose another one.
+                </span>
+              </div>
+            ) : null}
+          </Row>
           <Row
             label="Activation"
             hint={

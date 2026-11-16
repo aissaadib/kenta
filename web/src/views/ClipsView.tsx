@@ -30,6 +30,7 @@ import {
   openFileLocation,
   openGoogleDrive,
   openInPlayer,
+  removeMissingClips,
   renameClip,
   retryDriveUpload,
   uploadClipToGoogleDrive,
@@ -181,6 +182,7 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
   const [renameBusy, setRenameBusy] = useState(false);
   const [deleting, setDeleting] = useState<ClipListItem | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
   const [localRefresh, setLocalRefresh] = useState(0);
   const requestedThumbnails = useRef<Set<string>>(new Set());
   const [uploadBusy, setUploadBusy] = useState<string | null>(null);
@@ -292,6 +294,7 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
     () => clips.reduce((sum, clip) => sum + clip.file_size_bytes, 0),
     [clips],
   );
+  const missingClips = useMemo(() => clips.filter((clip) => !clip.exists), [clips]);
 
   const refresh = () => {
     setLoading(true);
@@ -450,6 +453,25 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
     }
   };
 
+  const handleCleanupMissing = async () => {
+    if (cleanupBusy) return;
+    setCleanupBusy(true);
+    try {
+      const removed = await removeMissingClips();
+      setClips((previous) => previous.filter((clip) => clip.exists));
+      setLocalRefresh((value) => value + 1);
+      onNotify(
+        "success",
+        removed === 1 ? "1 missing clip removed" : `${removed} missing clips removed`,
+        "Only the library entries were removed. No files were deleted.",
+      );
+    } catch (reason) {
+      onNotify("error", "Could not clean up the library", String(reason));
+    } finally {
+      setCleanupBusy(false);
+    }
+  };
+
   const clearSearch = () => {
     setLoading(true);
     setSearch("");
@@ -533,6 +555,38 @@ function ClipsViewImpl({ refreshToken, active, onNotify, onEdit, onOpenCapture }
           <div className="notice-actions">
             <button type="button" className="btn btn-ghost btn-sm" onClick={refresh}>
               <RefreshCw size={13} /> Try again
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {!loading && missingClips.length > 0 ? (
+        <div className="notice notice-warn library-notice">
+          <AlertTriangle size={16} />
+          <div className="notice-copy">
+            <strong>
+              {missingClips.length === 1
+                ? "1 clip points to a file that no longer exists"
+                : `${missingClips.length} clips point to files that no longer exist`}
+            </strong>
+            <span>
+              They stay in the library until you remove the entries. This never deletes files
+              from disk.
+            </span>
+          </div>
+          <div className="notice-actions">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={cleanupBusy}
+              onClick={() => void handleCleanupMissing()}
+            >
+              {cleanupBusy ? (
+                <Loader2 size={13} className="spin" />
+              ) : (
+                <Trash2 size={13} />
+              )}
+              Remove entries
             </button>
           </div>
         </div>
