@@ -1297,6 +1297,7 @@ fn capture_affecting_changed(previous: &Settings, next: &Settings) -> bool {
     || previous.frame_rate != next.frame_rate
     || previous.bitrate_kbps != next.bitrate_kbps
     || previous.quality_preset != next.quality_preset
+    || previous.timestamp_overlay != next.timestamp_overlay
     || previous.mic_enabled != next.mic_enabled
     || previous.mic_device != next.mic_device
     || previous.desktop_audio_enabled != next.desktop_audio_enabled
@@ -1436,6 +1437,7 @@ pub fn build_capture_config(settings: &Settings) -> Result<(CaptureConfig, Vec<S
       bitrate_kbps: settings.bitrate_kbps,
       encoder,
       quality_preset: settings.quality_preset.clone(),
+      timestamp_overlay: settings.timestamp_overlay,
       replay_duration_seconds: settings.replay_duration_seconds,
       segment_seconds: SEGMENT_SECONDS,
       mic_enabled,
@@ -3306,6 +3308,35 @@ pub fn appearance_pick_image(
   };
   appearance::import_image(&path, folder, max)
     .map(Some)
+    .map_err(|error| error.message())
+}
+
+/// The stock wallpapers Windows ships in `%WINDIR%\Web`. The asset scope is
+/// opened for those folders so the picker can show real previews without
+/// copying anything until the user chooses one.
+#[tauri::command]
+pub fn list_windows_wallpapers(app: AppHandle) -> Result<Vec<appearance::WindowsWallpaper>, String> {
+  for root in appearance::windows_wallpaper_roots() {
+    allow_clip_scope(&app, &root);
+  }
+  Ok(appearance::windows_wallpapers())
+}
+
+/// Import one of the listed Windows wallpapers into Kenta's managed folder.
+/// Only files under the Windows wallpaper roots are accepted.
+#[tauri::command]
+pub fn appearance_use_wallpaper(path: String) -> Result<appearance::ImportedAsset, String> {
+  let canonical = PathBuf::from(&path)
+    .canonicalize()
+    .map_err(|_| "That wallpaper is no longer available.".to_string())?;
+  let allowed = appearance::windows_wallpaper_roots()
+    .iter()
+    .filter_map(|root| root.canonicalize().ok())
+    .any(|root| canonical.starts_with(&root));
+  if !allowed {
+    return Err("That image is not one of the Windows wallpapers.".into());
+  }
+  appearance::import_image(&canonical, "backgrounds", appearance::MAX_BACKGROUND_DIMENSION)
     .map_err(|error| error.message())
 }
 

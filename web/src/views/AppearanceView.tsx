@@ -25,14 +25,19 @@ import {
 import {
   appearancePickImage,
   appearancePickSound,
+  appearanceUseWallpaper,
+  fileSrc,
+  listWindowsWallpapers,
   previewAppearanceSound,
   previewAppearanceTheme,
   themeAssetSrc,
   type AppearanceTheme,
+  type ImportedAsset,
   type ThemeColors,
   type ThemeSoundEvent,
   type ThemeSounds,
   type Wallpaper,
+  type WindowsWallpaper,
 } from "../tauri";
 import { useAppearance } from "../appearance";
 import {
@@ -282,6 +287,9 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
   const [importing, setImporting] = useState(false);
   const [wallpaperDraft, setWallpaperDraft] = useState<Wallpaper | null>(null);
   const [wallpaperBusy, setWallpaperBusy] = useState(false);
+  const [windowsWallpapers, setWindowsWallpapers] = useState<WindowsWallpaper[]>([]);
+  const [wallpapersLoading, setWallpapersLoading] = useState(true);
+  const [wallpapersError, setWallpapersError] = useState<string | null>(null);
   // The five options live outside React so tab switches keep them, but the
   // save bar still needs to know whether applying would finish that batch.
   const [paletteBatchOpen, setPaletteBatchOpen] = useState(() => paletteBatchCache !== null);
@@ -310,6 +318,28 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
       wallpaperRef.current = appearance.wallpaper;
     }
   }, [appearance.wallpaper, wallpaperDraft]);
+
+  // The stock Windows wallpapers make the Background tab useful on day one.
+  // The backend scopes the asset protocol to their folders so these previews
+  // load without copying every image into Kenta's managed assets.
+  useEffect(() => {
+    let cancelled = false;
+    listWindowsWallpapers()
+      .then((items) => {
+        if (cancelled) return;
+        setWindowsWallpapers(items);
+        setWallpapersError(null);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setWallpapersError(String(reason));
+      })
+      .finally(() => {
+        if (!cancelled) setWallpapersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadTheme = (theme: AppearanceTheme) => {
     setDraft(cloneTheme(theme));
@@ -432,23 +462,44 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
     }
   };
 
-  const pickWallpaper = async () => {
+  const adoptWallpaper = async (asset: ImportedAsset) => {
     const current = wallpaperRef.current ?? wallpaperDraft;
     if (!current) return;
+    let next: Wallpaper = { ...current, image: asset.relative, palette: null };
+    if (next.mode === "wallpaper" && next.adaptive) {
+      next = await analyzeForWallpaper(asset.relative, next);
+    }
+    paletteBatchCache = null;
+    paletteResume = null;
+    setPaletteBatchOpen(false);
+    commitWallpaper(next, true);
+    onNotify("success", "Wallpaper updated", `${asset.width} × ${asset.height}`);
+  };
+
+  const pickWallpaper = async () => {
+    if (wallpaperBusy) return;
+    setWallpaperBusy(true);
     try {
       const asset = await appearancePickImage("background");
       if (!asset) return;
-      let next: Wallpaper = { ...current, image: asset.relative, palette: null };
-      if (next.mode === "wallpaper" && next.adaptive) {
-        next = await analyzeForWallpaper(asset.relative, next);
-      }
-      paletteBatchCache = null;
-      paletteResume = null;
-      setPaletteBatchOpen(false);
-      commitWallpaper(next, true);
-      onNotify("success", "Wallpaper updated", `${asset.width} × ${asset.height}`);
+      await adoptWallpaper(asset);
     } catch (reason) {
       onNotify("error", "The wallpaper was not added", String(reason));
+    } finally {
+      setWallpaperBusy(false);
+    }
+  };
+
+  const pickWindowsWallpaper = async (path: string) => {
+    if (wallpaperBusy) return;
+    setWallpaperBusy(true);
+    try {
+      const asset = await appearanceUseWallpaper(path);
+      await adoptWallpaper(asset);
+    } catch (reason) {
+      onNotify("error", "The wallpaper was not added", String(reason));
+    } finally {
+      setWallpaperBusy(false);
     }
   };
 
@@ -1098,6 +1149,42 @@ export function AppearanceView({ active, onNotify }: AppearanceViewProps) {
                     </span>
                   </div>
                 ) : null}
+              </Section>
+
+              <Section
+                title="Windows wallpapers"
+                description="Stock images from this PC. Choosing one copies it into Kenta's managed folder, exactly like Choose image."
+              >
+                {wallpapersLoading ? (
+                  <div className="appearance-hint">
+                    <Loader2 size={13} className="spin" /> Looking for Windows wallpapers…
+                  </div>
+                ) : wallpapersError ? (
+                  <div className="inline-note inline-note-error">
+                    <AlertTriangle size={14} />
+                    <span>{wallpapersError}</span>
+                  </div>
+                ) : windowsWallpapers.length === 0 ? (
+                  <span className="appearance-hint">
+                    Windows did not ship any wallpapers on this PC. Use Choose image instead.
+                  </span>
+                ) : (
+                  <div className="wallpaper-library-grid">
+                    {windowsWallpapers.map((wallpaper) => (
+                      <button
+                        key={wallpaper.path}
+                        type="button"
+                        className="wallpaper-library-card"
+                        title={`${wallpaper.folder} · ${wallpaper.name}`}
+                        disabled={wallpaperBusy}
+                        onClick={() => void pickWindowsWallpaper(wallpaper.path)}
+                      >
+                        <img src={fileSrc(wallpaper.path)} alt="" loading="lazy" />
+                        <span>{wallpaper.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </Section>
 
               <Section

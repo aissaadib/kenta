@@ -4376,6 +4376,55 @@ html[data-sidebar="icons"] .music-bar {
   flex: 0 0 auto;
 }
 
+/* Stock Windows images: a dense, scannable gallery. Choosing one imports a
+   copy, so the originals in C:\Windows stay untouched. */
+.wallpaper-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.wallpaper-library-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--panel-raised);
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.wallpaper-library-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.wallpaper-library-card:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.wallpaper-library-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--panel);
+}
+
+.wallpaper-library-card span {
+  padding: 6px 8px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+
 /* A miniature of the real app materials. It uses the same semantic tokens as
    the live window, so the preview cannot drift from the actual interface. */
 .wallpaper-preview {

@@ -1098,6 +1098,114 @@ pub fn ensure_asset_dirs() -> AppResult<()> {
   Ok(())
 }
 
+/// One of the stock images Windows keeps in `%WINDIR%\Web`, offered in the
+/// Appearance background picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WindowsWallpaper {
+  pub path: String,
+  pub name: String,
+  pub folder: String,
+}
+
+/// The two folders Windows uses for its bundled wallpapers. Both are optional:
+/// some installs only have the first, and a few have neither.
+pub fn windows_wallpaper_roots() -> Vec<PathBuf> {
+  let windir = std::env::var_os("WINDIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+  [r"Web\Wallpaper", r"Web\4K\Wallpaper"]
+    .iter()
+    .map(|relative| windir.join(relative))
+    .filter(|path| path.is_dir())
+    .collect()
+}
+
+/// A short, stable list for the gallery: the current Windows set first, then
+/// the theme packs, then anything else. Tiny tiles and thumbnails are skipped.
+pub fn windows_wallpapers() -> Vec<WindowsWallpaper> {
+  let mut found = Vec::new();
+  for root in windows_wallpaper_roots() {
+    collect_wallpapers(&root, 0, &mut found);
+  }
+  found.sort_by(|a, b| {
+    wallpaper_rank(a)
+      .cmp(&wallpaper_rank(b))
+      .then_with(|| a.path.cmp(&b.path))
+  });
+  let mut seen = std::collections::HashSet::new();
+  found.retain(|wallpaper| seen.insert(wallpaper_key(wallpaper)));
+  found.truncate(24);
+  found
+}
+
+/// The same stock image can exist twice, once in `Web\Wallpaper` and once in
+/// the 4K folder with a `_1920x1200` suffix. Keep one of each.
+fn wallpaper_key(wallpaper: &WindowsWallpaper) -> String {
+  let stem = wallpaper
+    .name
+    .split('_')
+    .next()
+    .unwrap_or(&wallpaper.name)
+    .to_ascii_lowercase();
+  format!("{}:{stem}", wallpaper.folder.to_ascii_lowercase())
+}
+
+fn wallpaper_rank(wallpaper: &WindowsWallpaper) -> (u8, &str) {
+  let rank = if wallpaper.folder == "Windows" {
+    0
+  } else if wallpaper.folder.starts_with("Theme") {
+    1
+  } else if wallpaper.folder == "Spotlight" {
+    2
+  } else {
+    3
+  };
+  (rank, wallpaper.folder.as_str())
+}
+
+fn collect_wallpapers(dir: &Path, depth: usize, found: &mut Vec<WindowsWallpaper>) {
+  if depth > 4 {
+    return;
+  }
+  let Ok(entries) = fs::read_dir(dir) else {
+    return;
+  };
+  for entry in entries.flatten() {
+    let path = entry.path();
+    if path.is_dir() {
+      collect_wallpapers(&path, depth + 1, found);
+      continue;
+    }
+    let extension = path
+      .extension()
+      .and_then(|extension| extension.to_str())
+      .unwrap_or_default()
+      .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
+      continue;
+    }
+    if entry.metadata().map(|meta| meta.len() < 20_000).unwrap_or(true) {
+      continue;
+    }
+    let Some(name) = path
+      .file_stem()
+      .map(|name| name.to_string_lossy().to_string())
+    else {
+      continue;
+    };
+    let folder = path
+      .parent()
+      .and_then(|parent| parent.file_name())
+      .map(|name| name.to_string_lossy().to_string())
+      .unwrap_or_default();
+    found.push(WindowsWallpaper {
+      path: path.to_string_lossy().to_string(),
+      name,
+      folder,
+    });
+  }
+}
+
 /// Schema 1 stored the wallpaper inside the active theme. Move it into the new
 /// global layer exactly once, leaving the original file on disk. A user who
 /// later removes the wallpaper is not fighting an automatic re-import, because

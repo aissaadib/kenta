@@ -1889,6 +1889,13 @@ function SettingsViewImpl({
                 </span>
               </Row>
 
+              <Switch
+                checked={draft.timestamp_overlay}
+                onChange={(checked) => update("timestamp_overlay", checked)}
+                label="Burn a timestamp into recordings"
+                description="Shows the local date and time in the bottom centre of the video. It is part of the saved file, not just the preview."
+              />
+
               <div className="inline-note">
                 <Info size={14} />
                 <span>

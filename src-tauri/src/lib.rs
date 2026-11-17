@@ -139,6 +139,8 @@ pub fn run() {
       commands::preview_appearance_theme,
       commands::preview_appearance_sound,
       commands::appearance_pick_image,
+      commands::list_windows_wallpapers,
+      commands::appearance_use_wallpaper,
        commands::appearance_analyze_wallpaper,
       commands::appearance_analyze_wallpaper_variants,
       commands::appearance_pick_sound,

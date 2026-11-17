@@ -26,6 +26,9 @@ pub struct Settings {
   pub bitrate_kbps: u32,
   pub encoder: String,
   pub quality_preset: String,
+  /// Burn the local date and time into every captured frame. The overlay is
+  /// encoded into the segments, so saved replays and recordings keep it.
+  pub timestamp_overlay: bool,
   pub mic_enabled: bool,
   pub mic_device: Option<String>,
   pub desktop_audio_enabled: bool,
@@ -115,6 +118,7 @@ impl Default for Settings {
       bitrate_kbps: 12000,
       encoder: "libx264".to_string(),
       quality_preset: "quality".to_string(),
+      timestamp_overlay: false,
       mic_enabled: false,
       mic_device: None,
       // Loopback capture is not available on every Windows PC. Starting with

@@ -68,6 +68,8 @@ export interface Settings {
   bitrate_kbps: number;
   encoder: string;
   quality_preset: string;
+  /** Burn the local date and time into every recorded frame. */
+  timestamp_overlay: boolean;
   mic_enabled: boolean;
   mic_device: string | null;
   desktop_audio_enabled: boolean;
@@ -812,6 +814,23 @@ export interface ImportedAsset {
   width: number;
   height: number;
   bytes: number;
+}
+
+/** A stock wallpaper that ships with Windows. */
+export interface WindowsWallpaper {
+  path: string;
+  name: string;
+  folder: string;
+}
+
+/** The stock wallpapers Windows keeps under `%WINDIR%\Web`. */
+export function listWindowsWallpapers(): Promise<WindowsWallpaper[]> {
+  return invoke("list_windows_wallpapers");
+}
+
+/** Copy one of the listed Windows wallpapers into Kenta's managed folder. */
+export function appearanceUseWallpaper(path: string): Promise<ImportedAsset> {
+  return invoke("appearance_use_wallpaper", { path });
 }
 
 export function getAppearance(): Promise<AppearancePayload> {

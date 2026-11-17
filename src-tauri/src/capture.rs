@@ -46,6 +46,8 @@ pub struct CaptureConfig {
   /// Encoder requested by the user.
   pub encoder: String,
   pub quality_preset: String,
+  /// Burn the wall clock into each frame before it is encoded.
+  pub timestamp_overlay: bool,
   pub replay_duration_seconds: u32,
   pub segment_seconds: u32,
   pub mic_enabled: bool,
@@ -73,6 +75,7 @@ impl Default for CaptureConfig {
       bitrate_kbps: 12000,
       encoder: "libx264".into(),
       quality_preset: "quality".into(),
+      timestamp_overlay: false,
       replay_duration_seconds: 60,
       segment_seconds: SEGMENT_SECONDS,
       mic_enabled: false,
@@ -1007,6 +1010,49 @@ pub fn resolve_backend(config: &CaptureConfig) -> CaptureBackend {
   }
 }
 
+/// The filter that burns the local date and time into every frame. FFmpeg
+/// expands `localtime` while encoding, so a replay saved minutes later still
+/// shows when the moment actually happened.
+fn timestamp_filter(height: u32) -> Option<String> {
+  if !ffmpeg::filter_available("drawtext") {
+    log::warn!("This FFmpeg build has no drawtext filter; the timestamp overlay stays off.");
+    return None;
+  }
+  let Some(font) = timestamp_font() else {
+    log::warn!("No Windows font was found for the timestamp overlay.");
+    return None;
+  };
+  Some(timestamp_drawtext(&font, height))
+}
+
+fn timestamp_font() -> Option<String> {
+  let windir = std::env::var_os("WINDIR")
+    .map(PathBuf::from)
+    .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+  ["consola.ttf", "segoeui.ttf", "arial.ttf"]
+    .iter()
+    .map(|name| windir.join("Fonts").join(name))
+    .find(|path| path.is_file())
+    .map(|path| {
+      path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', r"\:")
+    })
+}
+
+fn timestamp_drawtext(font: &str, height: u32) -> String {
+  let font_size = (height / 36).clamp(18, 48);
+  let padding = (height / 45).clamp(12, 40);
+  // Bottom-centre with a translucent box: readable over bright and dark
+  // scenes without covering the action. The escaped colon keeps the filter
+  // parser from splitting the clock expansion into separate options; `%T`
+  // expands to HH:MM:SS inside the same argument.
+  format!(
+    "drawtext=fontfile='{font}':text='%{{localtime\\:%Y-%m-%d %T}}':x=(w-tw)/2:y=h-th-{padding}:fontsize={font_size}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=8"
+  )
+}
+
 pub fn build_segment_args(
   config: &CaptureConfig,
   session_dir: &Path,
@@ -1101,11 +1147,23 @@ pub fn build_segment_args(
     args.push(format!("title={title}"));
   }
 
+  let timestamp = if config.timestamp_overlay {
+    timestamp_filter(config.height)
+  } else {
+    None
+  };
   if backend == CaptureBackend::Gfx {
     // gfxcapture emits D3D11 textures. Download once to BGRA; the encoder then
     // converts to its own pixel format.
+    let mut filters = vec!["hwdownload".to_string(), "format=bgra".to_string()];
+    if let Some(timestamp) = &timestamp {
+      filters.push(timestamp.clone());
+    }
     args.push("-vf".into());
-    args.push("hwdownload,format=bgra".into());
+    args.push(filters.join(","));
+  } else if let Some(timestamp) = &timestamp {
+    args.push("-vf".into());
+    args.push(timestamp.clone());
   }
 
   args.push("-c:v".into());
@@ -1398,6 +1456,31 @@ mod tests {
     assert!(joined.contains("-segment_list_flags +live"));
     assert!(joined.contains("-force_key_frames expr:gte(t,n_forced*2)"));
     assert!(joined.contains("-fps_mode cfr"));
+  }
+
+  #[test]
+  fn timestamp_overlay_names_the_wall_clock() {
+    let filter = timestamp_drawtext(r"C\:/Windows/Fonts/consola.ttf", 1080);
+    assert!(filter.starts_with("drawtext="));
+    assert!(filter.contains("localtime"));
+    assert!(filter.contains("%Y-%m-%d"));
+    assert!(filter.contains("%T"));
+    assert!(filter.contains("fontsize=30"));
+    assert!(filter.contains(r"fontfile='C\:/Windows/Fonts/consola.ttf'"));
+    assert!(filter.contains("y=h-th-24"));
+  }
+
+  #[test]
+  fn timestamp_overlay_is_off_by_default() {
+    let config = CaptureConfig::default();
+    let args = build_segment_args(
+      &config,
+      Path::new("C:/temp/session"),
+      Path::new("C:/temp/session/segments.csv"),
+      "libx264",
+    )
+    .unwrap();
+    assert!(!args.join(" ").contains("drawtext"));
   }
 
   #[test]
