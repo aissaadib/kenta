@@ -8,6 +8,15 @@ All notable changes to Kenta are documented here. The format follows
 
 ### Added
 
+- Recording: an optional timestamp burned into every captured frame. The local
+  date and time are drawn bottom-centre while the buffer encodes, so saved
+  replays and manual recordings keep the clock with them. It is off by default,
+  follows the capture height, and falls back to no overlay if the FFmpeg build
+  lacks `drawtext` or no Windows font is available.
+- Appearance Studio: a Windows wallpapers gallery in the Background tab. Kenta
+  lists the stock images under `%WINDIR%\Web`, shows live previews, and copies
+  only the image you choose into its managed folder. The gallery skips
+  thumbnails, merges 4K duplicates and caps the list at 24 entries.
 - Appearance Studio: one global wallpaper behind every tab, panel, menu and
   dialog. PNG, JPEG and WebP originals up to 48 MB are copied into Kenta's
   managed folder without re-encoding. Cover, contain, fill and center framing,

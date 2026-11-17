@@ -21,7 +21,8 @@ clip in a local library.
 ## Key capabilities
 
 - **Capture:** Windows Graphics Capture with a GDI fallback, constant frame
-  rate, monitor selection, resolution, bitrate, and encoder choice.
+  rate, monitor selection, resolution, bitrate, encoder choice, and an optional
+  timestamp burned into every saved frame.
 - **Encoding:** NVIDIA NVENC when available, CPU x264 fallback when not. The
   bundled FFmpeg includes both.
 - **Audio:** microphone and desktop loopback capture, with explicit warnings
@@ -37,9 +38,9 @@ clip in a local library.
   The player sits outside the views, so playback continues while you switch
   sections or hide Kenta to the tray.
 - **Appearance:** semantic theme tokens applied live, seven built-in presets, a
-  colour editor with WCAG warnings, typography, density, background images or
-  gradients, icon packs, runtime window and tray icons, per-event sounds, and
-  `.kenta-theme` import/export.
+  colour editor with WCAG warnings, typography, density, background images,
+  gradients or the stock Windows wallpapers, icon packs, runtime window and
+  tray icons, per-event sounds, and `.kenta-theme` import/export.
 - **Google Drive:** OAuth desktop flow, resumable uploads, retry, cancel, and
   a direct "Save to Google Drive" action.
 - **Tray and startup:** close to tray and optional launch at sign-in.
@@ -116,7 +117,8 @@ theme.
   Light, and High Contrast.
 - **Wallpaper** — one PNG/JPEG/WebP image behind every screen, with cover,
   contain, fill or center framing, focal point, zoom, dimming and optional blur.
-  Selecting another preset never removes it.
+  Selecting another preset never removes it. The Background tab also lists the
+  stock wallpapers Windows ships with, and imports the one you pick.
 - **Materials** — Immersive, Balanced and Readable transparency, a manual
   surface-opacity slider, and a minimum-readability safeguard. They apply to a
   wallpaper image or a solid/gradient canvas. The derived palette can drive the
